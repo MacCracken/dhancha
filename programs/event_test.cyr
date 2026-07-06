@@ -26,6 +26,16 @@ var g_enter1 = 0;   # widget of the 1st ENTER (proves per-widget targeting)
 var g_enter2 = 0;   # widget of the 2nd ENTER
 var g_leave1 = 0;   # widget of the 1st LEAVE
 var g_leave2 = 0;   # widget of the 2nd LEAVE
+var g_cap = 0;      # capture-phase handler invocations
+var g_bub = 0;      # bubble-phase handler invocations
+var g_phase_err = 0; # times a handler saw the wrong phase
+var g_cap_consume = 0; # 1 -> the capture handler consumes
+var g_dstart = 0;   # DRAG_START count
+var g_dmove = 0;    # DRAG_MOVE count
+var g_ddrop = 0;    # DRAG_DROP count
+var g_dend = 0;     # DRAG_END count
+var g_dactivate = 0; # ACTIVATE count seen by h_drag
+var g_drop_src = 0; # source widget recorded at DRAG_DROP
 
 fn check(got, want): i64 {
     if (got == want) { return 0; }
@@ -91,6 +101,37 @@ fn h_track(wgt, ev): i64 {
         if (g_leave == 2) { g_leave2 = wgt; }
     }
     if (k == ACTIVATE) { g_activate = g_activate + 1; }
+    return 0;
+}
+
+# capture: counts + checks it runs in the capture phase; consumes iff
+# g_cap_consume is set.
+fn h_capture(wgt, ev): i64 {
+    g_cap = g_cap + 1;
+    if (dh_event_phase(ev) != DH_PHASE_CAPTURE) { g_phase_err = g_phase_err + 1; }
+    if (g_cap_consume == 1) { return 1; }
+    return 0;
+}
+
+# bubble: counts + checks it runs in the bubble phase; never consumes.
+fn h_bubble(wgt, ev): i64 {
+    g_bub = g_bub + 1;
+    if (dh_event_phase(ev) != DH_PHASE_BUBBLE) { g_phase_err = g_phase_err + 1; }
+    return 0;
+}
+
+# drag: counts each drag phase + records the drop source; also counts
+# ACTIVATE so a test can prove a drag did NOT produce a click.
+fn h_drag(wgt, ev): i64 {
+    var k = dh_event_kind(ev);
+    if (k == DRAG_START) { g_dstart = g_dstart + 1; }
+    if (k == DRAG_MOVE)  { g_dmove = g_dmove + 1; }
+    if (k == DRAG_DROP)  {
+        g_ddrop = g_ddrop + 1;
+        g_drop_src = dh_event_source(ev);
+    }
+    if (k == DRAG_END)  { g_dend = g_dend + 1; }
+    if (k == ACTIVATE)  { g_dactivate = g_dactivate + 1; }
     return 0;
 }
 
@@ -319,8 +360,129 @@ fn main(): i64 {
     dh_dispatch(root2, t7);
     check(dh_focus_get(), bc);
 
+    # ================================================================
+    # Capture-phase routing.  root3(capture handler) > child(bubble handler)
+    # ================================================================
+    var root3 = dh_widget_new(WINDOW);
+    dh_widget_set_layout(root3, BOX_V);
+    var child = dh_widget_new(BUTTON);
+    dh_widget_set_pref(child, 0, 20);
+    dh_widget_add_child(root3, child);
+    dh_layout_apply(root3, 40, 40);
+    dh_widget_set_capture_handler(root3, &h_capture);
+    dh_widget_set_handler(child, &h_bubble);
+    dh_reset_input();
+    dh_focus_set(child);
+
+    # --- M: capture (root->target) runs THEN bubble; both fire, right phase ---
+    g_cap_consume = 0;
+    var mk = dh_event_new(KEY);
+    dh_event_set_payload(mk, 66, 0);           # 'B' (not an activation key)
+    dh_dispatch(root3, mk);
+    check(g_cap, 1);                            # root3 capture handler ran
+    check(g_bub, 1);                            # child bubble handler ran
+    check(g_phase_err, 0);                      # each saw its correct phase
+    check(dh_event_consumed(mk), 0);            # nobody consumed
+
+    # --- N: a capture handler that consumes suppresses the bubble pass ---
+    g_cap_consume = 1;
+    var nk = dh_event_new(KEY);
+    dh_event_set_payload(nk, 66, 0);
+    dh_dispatch(root3, nk);
+    check(g_cap, 2);                            # capture ran again
+    check(g_bub, 1);                            # bubble did NOT run (still 1)
+    check(dh_event_consumed(nk), 1);            # consumed during capture
+    check(g_phase_err, 0);
+    g_cap_consume = 0;
+
+    # ================================================================
+    # Drag-drop.  root4 > [ src(BUTTON, draggable), dst(BOX, drop target) ]
+    #   src=(0,0,40,15)  dst=(0,15,40,15); h_drag tracks both.
+    # ================================================================
+    var root4 = dh_widget_new(WINDOW);
+    dh_widget_set_layout(root4, BOX_V);
+    var src = dh_widget_new(BUTTON);
+    dh_widget_set_pref(src, 0, 15);
+    dh_widget_set_draggable(src, 1);
+    var dst = dh_widget_new(BOX);
+    dh_widget_set_pref(dst, 0, 15);
+    dh_widget_set_drop_target(dst, 1);
+    dh_widget_add_child(root4, src);
+    dh_widget_add_child(root4, dst);
+    dh_layout_apply(root4, 40, 40);
+    dh_widget_set_handler(src, &h_drag);
+    dh_widget_set_handler(dst, &h_drag);
+    dh_reset_input();
+
+    # --- O: press src, drag past threshold onto dst, release -> full cycle ---
+    var om0 = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(om0, 20, 7);          # over src
+    dh_dispatch(root4, om0);
+    var op = dh_event_new(POINTER_BTN);
+    dh_event_set_payload(op, 272, 1);          # press src
+    dh_dispatch(root4, op);
+    var om1 = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(om1, 20, 9);          # +2 from origin: below threshold
+    dh_dispatch(root4, om1);
+    check(g_dstart, 0);                         # no drag yet
+    var om2 = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(om2, 20, 13);         # +6 from origin: DRAG_START
+    dh_dispatch(root4, om2);
+    check(g_dstart, 1);
+    var om3 = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(om3, 20, 22);         # dragging over dst: DRAG_MOVE
+    dh_dispatch(root4, om3);
+    var om4 = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(om4, 20, 24);         # still dragging: DRAG_MOVE
+    dh_dispatch(root4, om4);
+    check(g_dmove, 2);
+    var orl = dh_event_new(POINTER_BTN);
+    dh_event_set_payload(orl, 272, 0);         # release over dst
+    dh_dispatch(root4, orl);
+    check(g_ddrop, 1);                          # dropped on dst (a drop target)
+    check(g_drop_src, src);                     # drop carried the source widget
+    check(g_dend, 1);                           # drag ended
+    check(g_dactivate, 0);                      # a drag is NOT a click
+
+    # --- P: press+release on the draggable src WITHOUT crossing the
+    #        threshold is a click (ACTIVATE), not a drag ---
+    dh_reset_input();
+    var pm = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(pm, 20, 7);           # over src
+    dh_dispatch(root4, pm);
+    var pp = dh_event_new(POINTER_BTN);
+    dh_event_set_payload(pp, 272, 1);          # press src
+    dh_dispatch(root4, pp);
+    var pr = dh_event_new(POINTER_BTN);
+    dh_event_set_payload(pr, 272, 0);          # release src (no move)
+    dh_dispatch(root4, pr);
+    check(g_dactivate, 1);                      # clicked
+    check(g_dstart, 1);                         # unchanged: no new drag
+    check(g_ddrop, 1);                          # unchanged
+
+    # --- Q: a drag released where there is no drop target fires END, not DROP ---
+    dh_reset_input();
+    var qm0 = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(qm0, 20, 7);          # over src
+    dh_dispatch(root4, qm0);
+    var qp = dh_event_new(POINTER_BTN);
+    dh_event_set_payload(qp, 272, 1);          # press src
+    dh_dispatch(root4, qp);
+    var qm1 = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(qm1, 20, 13);         # DRAG_START
+    dh_dispatch(root4, qm1);
+    check(g_dstart, 2);                         # a new drag started
+    var qm2 = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(qm2, 35, 35);         # over root4 (not a drop target)
+    dh_dispatch(root4, qm2);
+    var qrl = dh_event_new(POINTER_BTN);
+    dh_event_set_payload(qrl, 272, 0);         # release over the non-target
+    dh_dispatch(root4, qrl);
+    check(g_ddrop, 1);                          # unchanged: root4 is not a drop target
+    check(g_dend, 2);                           # drag still ended
+
     if (g_fails == 0) {
-        var ok = "event_test: PASS (hit-test, focus, bubble, queue, run/quit, hover, click+key activate, tab)\n";
+        var ok = "event_test: PASS (hit-test, focus, bubble, queue, run/quit, hover, click+key activate, tab, capture, drag-drop)\n";
         syscall(1, 1, ok, strlen(ok));
     } else {
         var bad = "event_test: FAIL\n";

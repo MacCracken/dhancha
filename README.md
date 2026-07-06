@@ -1,6 +1,6 @@
 # dhancha
 
-Version: 0.3.0
+Version: 0.4.0
 
 **dhancha** (ढाँचा — Hindi/Sanskrit: *framework / structure / scaffold*)
 is a pure-Cyrius **client-side widget toolkit / desktop app framework**
@@ -54,11 +54,15 @@ aethersafha compositor composites onto the screen.
   propagation, hover enter/leave, click + keyboard activation, and an
   event-loop pump over a `DhQueue` (`dh_run` / `dh_quit`). Buttons hover, click,
   and keyboard-activate; the whole path is RUN-tested (`event_test`).
-- **v0.4+ — next.** The compositor-fd input source (decode `wl_pointer` /
-  `wl_keyboard` wire bytes into events + block on the Wayland socket),
-  capture-phase routing, a drag-drop state machine, flex layout + intrinsic
-  measure, real hmtx text advances, and the present path (mabda GPU upload +
-  the aethersafha Wayland commit).
+- **v0.4.0 — the event model completes (shipped).** Capture-phase propagation
+  (`dh_propagate` — capture root→target then bubble, opt-in capture handlers)
+  and a drag-drop state machine (draggable / drop-target flags, a move
+  threshold, `DRAG_START` / `MOVE` / `DROP` / `END`); a drag suppresses the
+  click. RUN-tested (`event_test`, sub-tests A–Q).
+- **v0.5+ — next.** The compositor-fd input source (decode `wl_pointer` /
+  `wl_keyboard` wire bytes into events + block on the Wayland socket), flex
+  layout + intrinsic measure, real hmtx text advances, and the present path
+  (mabda GPU upload + the aethersafha Wayland commit).
 
 ## Place in the stack
 

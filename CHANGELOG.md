@@ -5,6 +5,37 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-07-06
+
+Finishes the event model — the two items 0.3.0 deferred: capture-phase
+propagation and a drag-drop state machine. `event_test` now runs sub-tests
+A–Q (adds capture + drag coverage).
+
+### Added
+- **Capture-phase routing** — dispatch now runs a full two-phase propagation
+  (`dh_propagate`): a **capture** pass root→target invoking each node's
+  capture handler (`dh_widget_set_capture_handler`), then a **bubble** pass
+  target→root. The first handler in *either* pass to return 1 consumes the
+  event and stops all propagation, so a capture handler can intercept an event
+  before the target's bubble handler sees it. `DhEvent` gains `DH_E_PHASE`
+  (`dh_event_phase` → `DH_PHASE_CAPTURE` / `DH_PHASE_BUBBLE`). Existing bubble
+  handlers are unaffected (the capture pass is a no-op with none registered).
+- **Drag-drop state machine** — widgets opt in via flags
+  (`dh_widget_set_draggable` / `dh_widget_set_drop_target`). A press on a
+  draggable widget that then travels past `DH_DRAG_THRESHOLD` (Manhattan)
+  emits `DRAG_START`→`DRAG_MOVE…` to the source; the release emits `DRAG_DROP`
+  to the widget under the pointer *iff* it is a drop target, then always
+  `DRAG_END` to the source. Drag events carry the source in `DH_E_SOURCE`
+  (`dh_event_source`). A drag suppresses the click `ACTIVATE`; a press+release
+  that never crosses the threshold still clicks.
+- Event kinds `DRAG_START` / `DRAG_MOVE` / `DRAG_DROP` / `DRAG_END`; widget
+  flags `DH_FLAG_DRAGGABLE` / `DH_FLAG_DROP_TARGET`; `dh_reset_input` also
+  clears the in-progress drag.
+- Test: `event_test` sub-tests M–Q — capture runs-then-bubble with correct
+  phases, capture-consume suppresses bubble, a full press→drag→drop cycle
+  (with source identity + no spurious click), click-on-draggable (no drag),
+  and drop over a non-target (END, no DROP).
+
 ## [0.3.0] - 2026-07-06
 
 Event dispatch — the widget tree becomes interactive: hit-testing, keyboard

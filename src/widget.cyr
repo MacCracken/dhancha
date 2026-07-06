@@ -7,7 +7,7 @@
 # Layout (layout.cyr) walks the tree to assign bounds; event dispatch
 # (event.cyr) hit-tests it; the surface (surface.cyr) draws it.
 #
-# DhWidget struct layout (128 bytes, 16 u64 slots):
+# DhWidget struct layout (144 bytes, 18 u64 slots):
 #   +0:   id            — monotonic widget id (debug / focus routing)
 #   +8:   kind          — one of DhWidgetKind
 #   +16:  x             — resolved x (layout output)
@@ -22,8 +22,10 @@
 #   +88:  text          — cstring ptr for LABEL / BUTTON, or 0
 #   +96:  pref_w        — requested width (layout hint)
 #   +104: pref_h        — requested height
-#   +112: handler       — event handler fnptr `handler(wgt, ev) -> consumed`, or 0
+#   +112: handler       — bubble-phase handler fnptr `handler(wgt, ev) -> consumed`, or 0
 #   +120: userdata      — opaque app context the handler reads back, or 0
+#   +128: capture_h     — capture-phase handler fnptr (fires root->target first), or 0
+#   +136: flags         — bitmask: DH_FLAG_DRAGGABLE | DH_FLAG_DROP_TARGET
 
 enum DhWidgetKind {
     WINDOW    = 0;
@@ -49,10 +51,18 @@ enum DhWidgetField {
     DH_W_TEXT         = 88;    # cstring ptr for LABEL / BUTTON, or 0
     DH_W_PREF_W       = 96;    # requested width (layout hint)
     DH_W_PREF_H       = 104;   # requested height
-    DH_W_HANDLER      = 112;   # event handler fnptr, or 0
+    DH_W_HANDLER      = 112;   # bubble-phase handler fnptr, or 0
     DH_W_USERDATA     = 120;   # opaque app context for the handler, or 0
+    DH_W_CAPTURE_H    = 128;   # capture-phase handler fnptr, or 0
+    DH_W_FLAGS        = 136;   # bitmask (DH_FLAG_*)
 }
-var DH_WIDGET_SIZE = 128;
+var DH_WIDGET_SIZE = 144;
+
+# Widget behavior flags (DH_W_FLAGS bitmask).
+enum DhWidgetFlag {
+    DH_FLAG_DRAGGABLE   = 1;    # a press + drag on this widget starts a drag
+    DH_FLAG_DROP_TARGET = 2;    # a drag released over this widget drops onto it
+}
 
 # Monotonic widget-id source. A plain module-global SCALAR (not a `[1]` array —
 # module-global `var X[N]` sizing is non-uniform in cyrius, so an 8-byte
@@ -80,8 +90,10 @@ fn dh_widget_new(kind): i64 {
     store64(wgt + DH_W_TEXT, 0);
     store64(wgt + DH_W_PREF_W, 0);
     store64(wgt + DH_W_PREF_H, 0);
-    store64(wgt + DH_W_HANDLER, 0);        # no handler
+    store64(wgt + DH_W_HANDLER, 0);        # no bubble handler
     store64(wgt + DH_W_USERDATA, 0);
+    store64(wgt + DH_W_CAPTURE_H, 0);      # no capture handler
+    store64(wgt + DH_W_FLAGS, 0);          # no flags
     return wgt;
 }
 
@@ -193,5 +205,50 @@ fn dh_widget_focusable(wgt): i64 {
     var k = dh_widget_kind(wgt);
     if (k == BUTTON)    { return 1; }
     if (k == TEXTINPUT) { return 1; }
+    return 0;
+}
+
+# ---- capture-phase handler ----------------------------------------
+
+fn dh_widget_capture_handler(wgt): i64 { return load64(wgt + DH_W_CAPTURE_H); }
+
+# Attach a capture-phase handler (fires root -> target, BEFORE the bubble
+# handlers). Same `handler(wgt, ev): i64` shape; return 1 to consume the
+# event (which also cancels the bubble pass). Pass 0 to clear.
+fn dh_widget_set_capture_handler(wgt, fp): i64 {
+    if (wgt == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    store64(wgt + DH_W_CAPTURE_H, fp);
+    return DHANCHA_OK;
+}
+
+# ---- behavior flags (drag source / drop target) -------------------
+
+fn dh_widget_flags(wgt): i64 { return load64(wgt + DH_W_FLAGS); }
+
+# Set/clear one flag bit without touching the others.
+fn dh_widget_set_flag(wgt, flag, on): i64 {
+    if (wgt == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    var f = load64(wgt + DH_W_FLAGS);
+    if (on == 0) {
+        f = f & (0 - 1 - flag);            # clear: AND with ~flag (two's complement)
+    } else {
+        f = f | flag;
+    }
+    store64(wgt + DH_W_FLAGS, f);
+    return DHANCHA_OK;
+}
+
+fn dh_widget_set_draggable(wgt, on): i64   { return dh_widget_set_flag(wgt, DH_FLAG_DRAGGABLE, on); }
+fn dh_widget_set_drop_target(wgt, on): i64 { return dh_widget_set_flag(wgt, DH_FLAG_DROP_TARGET, on); }
+
+fn dh_widget_is_draggable(wgt): i64 {
+    if (wgt == 0) { return 0; }
+    if ((dh_widget_flags(wgt) & DH_FLAG_DRAGGABLE) != 0) { return 1; }
+    return 0;
+}
+
+fn dh_widget_is_drop_target(wgt): i64 {
+    if (wgt == 0) { return 0; }
+    if ((dh_widget_flags(wgt) & DH_FLAG_DROP_TARGET) != 0) { return 1; }
     return 0;
 }

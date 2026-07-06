@@ -25,10 +25,14 @@ enum DhEventKind {
     POINTER_MOVE  = 1;   # pointer motion to (x=`a`, y=`b`)
     POINTER_BTN   = 2;   # pointer button: code in `a`, state in `b` (0=release,1=press)
     FOCUS         = 3;   # focus enter/leave
-    DRAG          = 4;   # drag-drop phase transition
+    DRAG          = 4;   # raw drag phase (hit-tests at the tracked pointer)
     POINTER_ENTER = 5;   # synthesized: pointer entered a widget (hover)
     POINTER_LEAVE = 6;   # synthesized: pointer left a widget (hover)
     ACTIVATE      = 7;   # synthesized: click / keyboard activation of a widget
+    DRAG_START    = 8;   # synthesized: a drag began on a draggable widget (to source)
+    DRAG_MOVE     = 9;   # synthesized: pointer moved while dragging (to source)
+    DRAG_DROP     = 10;  # synthesized: drag released over a drop target
+    DRAG_END      = 11;  # synthesized: drag finished (to source)
 }
 
 # Well-known key codes the toolkit acts on itself (values are ASCII /
@@ -40,20 +44,37 @@ enum DhKey {
     DH_KEY_SPACE  = 32;
 }
 
-# DhEvent struct layout (40 bytes):
+# Event propagation phase (DH_E_PHASE): a dispatched event runs a CAPTURE
+# pass (root -> target, capture handlers) then a BUBBLE pass (target ->
+# root, bubble handlers). A handler reads dh_event_phase to tell them apart.
+enum DhPhase {
+    DH_PHASE_CAPTURE = 1;
+    DH_PHASE_BUBBLE  = 2;
+}
+
+# Pointer travel (Manhattan distance from the press point) before a press
+# on a draggable widget is promoted to a drag, so a jittery click doesn't
+# accidentally start one.
+var DH_DRAG_THRESHOLD = 4;
+
+# DhEvent struct layout (56 bytes):
 #   +0:  kind    — one of DhEventKind
 #   +8:  a       — primary payload (keysym / x / button code)
 #   +16: b       — secondary payload (mods / y / button state)
 #   +24: target  — resolved target DhWidget* (0 = unrouted): the ORIGINAL
-#                  hit/focus node (bubbling still reports currentTarget to
+#                  hit/focus node (propagation still reports currentTarget to
 #                  each handler as its first arg)
 #   +32: consumed — 1 once a handler claims it (stops propagation)
+#   +40: phase   — DH_PHASE_CAPTURE / _BUBBLE during propagation (0 otherwise)
+#   +48: source  — drag source DhWidget* on DRAG_* events (0 otherwise)
 enum DhEventField {
     DH_E_KIND     = 0;
     DH_E_A        = 8;
     DH_E_B        = 16;
     DH_E_TARGET   = 24;
     DH_E_CONSUMED = 32;
+    DH_E_PHASE    = 40;
+    DH_E_SOURCE   = 48;
 }
 
 # Currently-focused widget for keyboard routing. A plain module-global
@@ -72,17 +93,25 @@ var _dh_ptr_y = 0;
 var _dh_hover = 0;
 var _dh_press = 0;
 
+# Press origin (for the drag threshold) and the active drag source
+# (0 = no drag in progress).
+var _dh_press_x = 0;
+var _dh_press_y = 0;
+var _dh_drag_src = 0;
+
 # The event-loop run flag. dh_run sets it; dh_quit clears it.
 var _dh_running = 0;
 
 # Allocate a DhEvent of `kind` with zeroed payload.
 fn dh_event_new(kind): i64 {
-    var ev = alloc(40);
+    var ev = alloc(56);
     store64(ev + DH_E_KIND, kind);
     store64(ev + DH_E_A, 0);
     store64(ev + DH_E_B, 0);
     store64(ev + DH_E_TARGET, 0);
     store64(ev + DH_E_CONSUMED, 0);
+    store64(ev + DH_E_PHASE, 0);
+    store64(ev + DH_E_SOURCE, 0);
     return ev;
 }
 
@@ -91,6 +120,8 @@ fn dh_event_a(ev): i64        { return load64(ev + DH_E_A); }
 fn dh_event_b(ev): i64        { return load64(ev + DH_E_B); }
 fn dh_event_target(ev): i64   { return load64(ev + DH_E_TARGET); }
 fn dh_event_consumed(ev): i64 { return load64(ev + DH_E_CONSUMED); }
+fn dh_event_phase(ev): i64    { return load64(ev + DH_E_PHASE); }
+fn dh_event_source(ev): i64   { return load64(ev + DH_E_SOURCE); }
 
 # Set the payload fields.
 fn dh_event_set_payload(ev, a, b): i64 {
@@ -113,6 +144,7 @@ fn dh_reset_input(): i64 {
     _dh_focus = 0;
     _dh_hover = 0;
     _dh_press = 0;
+    _dh_drag_src = 0;
     return DHANCHA_OK;
 }
 
@@ -166,6 +198,58 @@ fn dh_bubble(target, ev): i64 {
     return DHANCHA_OK;
 }
 
+# Full two-phase propagation, the router dispatch uses: a CAPTURE pass
+# (root -> target, invoking each node's capture handler) then a BUBBLE pass
+# (target -> root, invoking each node's bubble handler). The first handler
+# in EITHER pass to return 1 CONSUMES the event (sets DH_E_CONSUMED) and
+# stops all further propagation — a capture handler can thus intercept an
+# event before the target's bubble handler ever sees it. Handlers get
+# (currentTarget, ev); dh_event_phase says which pass. Null slots skipped.
+fn dh_propagate(target, ev): i64 {
+    if (target == 0) { return DHANCHA_OK; }
+    # collect the chain target..root into buf (buf[0]=target .. buf[n-1]=root)
+    var cap = 256;
+    var buf = alloc(cap * 8);
+    var n = 0;
+    var node = target;
+    while (node != 0) {
+        if (n < cap) {
+            store64(buf + n * 8, node);
+            n = n + 1;
+        }
+        node = dh_widget_parent(node);
+    }
+    # capture pass: root -> target (indices n-1 .. 0)
+    store64(ev + DH_E_PHASE, DH_PHASE_CAPTURE);
+    var i = n - 1;
+    while (i >= 0) {
+        var wc = load64(buf + i * 8);
+        var fc = dh_widget_capture_handler(wc);
+        if (fc != 0) {
+            if (fncall2(fc, wc, ev) == 1) {
+                store64(ev + DH_E_CONSUMED, 1);
+                return DHANCHA_OK;
+            }
+        }
+        i = i - 1;
+    }
+    # bubble pass: target -> root (indices 0 .. n-1)
+    store64(ev + DH_E_PHASE, DH_PHASE_BUBBLE);
+    var j = 0;
+    while (j < n) {
+        var wb = load64(buf + j * 8);
+        var fb = dh_widget_handler(wb);
+        if (fb != 0) {
+            if (fncall2(fb, wb, ev) == 1) {
+                store64(ev + DH_E_CONSUMED, 1);
+                return DHANCHA_OK;
+            }
+        }
+        j = j + 1;
+    }
+    return DHANCHA_OK;
+}
+
 # ---- higher-level synthesis helpers --------------------------------
 
 # Emit a fresh synthetic event of `kind` targeted at `target` and bubble
@@ -176,7 +260,7 @@ fn dh_emit(target, kind): i64 {
     if (target == 0) { return DHANCHA_OK; }
     var ev = dh_event_new(kind);
     store64(ev + DH_E_TARGET, target);
-    dh_bubble(target, ev);
+    dh_propagate(target, ev);
     return DHANCHA_OK;
 }
 
@@ -250,6 +334,70 @@ fn dh_key_is_activate(k): i64 {
     return 0;
 }
 
+# ---- drag-drop state machine ---------------------------------------
+
+# |x| — for the Manhattan drag-threshold test.
+fn dh_abs(x): i64 {
+    if (x < 0) { return 0 - x; }
+    return x;
+}
+
+# Emit a synthetic drag event (DRAG_START / _MOVE / _DROP / _END): `target`
+# receives it, with the drag `source` in DH_E_SOURCE and the current pointer
+# in (a, b). Propagates like any other event.
+fn dh_emit_drag(target, kind, source): i64 {
+    if (target == 0) { return DHANCHA_OK; }
+    var ev = dh_event_new(kind);
+    store64(ev + DH_E_TARGET, target);
+    store64(ev + DH_E_SOURCE, source);
+    store64(ev + DH_E_A, _dh_ptr_x);
+    store64(ev + DH_E_B, _dh_ptr_y);
+    dh_propagate(target, ev);
+    return DHANCHA_OK;
+}
+
+# Advance the drag state after a POINTER_MOVE. If a draggable widget is
+# pressed and the pointer has travelled past the threshold, start the drag
+# (DRAG_START to the source); once dragging, every move emits DRAG_MOVE.
+fn dh_drag_progress(): i64 {
+    if (_dh_press == 0) { return DHANCHA_OK; }
+    if (_dh_drag_src == 0) {
+        if (dh_widget_is_draggable(_dh_press) == 1) {
+            var dx = _dh_ptr_x - _dh_press_x;
+            var dy = _dh_ptr_y - _dh_press_y;
+            if (dh_abs(dx) + dh_abs(dy) >= DH_DRAG_THRESHOLD) {
+                _dh_drag_src = _dh_press;
+                dh_emit_drag(_dh_drag_src, DRAG_START, _dh_drag_src);
+            }
+        }
+    } else {
+        dh_emit_drag(_dh_drag_src, DRAG_MOVE, _dh_drag_src);
+    }
+    return DHANCHA_OK;
+}
+
+# Handle a pointer release. If a drag is in progress: drop onto the widget
+# under the pointer when it is a drop target (DRAG_DROP), then always fire
+# DRAG_END to the source. Otherwise it's a click — a release on the pressed
+# widget synthesizes ACTIVATE. Clears press / drag state either way.
+fn dh_pointer_release(target): i64 {
+    if (_dh_drag_src != 0) {
+        if (target != 0) {
+            if (dh_widget_is_drop_target(target) == 1) {
+                dh_emit_drag(target, DRAG_DROP, _dh_drag_src);
+            }
+        }
+        dh_emit_drag(_dh_drag_src, DRAG_END, _dh_drag_src);
+        _dh_drag_src = 0;
+    } else {
+        if (target != 0) {
+            if (target == _dh_press) { dh_emit(target, ACTIVATE); }
+        }
+    }
+    _dh_press = 0;
+    return DHANCHA_OK;
+}
+
 # Dispatch an event into the tree.
 #   KEY   -> the focused widget; Tab / Shift-Tab (a==DH_KEY_TAB, b!=0 =>
 #            backward) instead moves focus and is toolkit-consumed;
@@ -258,12 +406,14 @@ fn dh_key_is_activate(k): i64 {
 #   POINTER_MOVE -> updates the tracked pointer position, hit-tests there,
 #            and emits POINTER_ENTER/LEAVE on hover boundary crossings.
 #   POINTER_BTN  -> hit-tests at the tracked position; a press records the
-#            press target + click-to-focus; a release on the SAME widget
-#            synthesizes ACTIVATE (a click).
+#            press target + origin + click-to-focus; a release either DROPS
+#            an in-progress drag or (if none) synthesizes ACTIVATE on the
+#            pressed widget (a click).
 #   DRAG  -> hit-tests at the tracked position.
-# The resolved target is stamped into ev, then the raw event bubbles up
-# from it; the higher-level events (ENTER/LEAVE/ACTIVATE) are synthesized
-# around that. Returns DHANCHA_OK.
+# The resolved target is stamped into ev, then the raw event PROPAGATES
+# (capture root->target, then bubble target->root). Higher-level events
+# (ENTER/LEAVE, ACTIVATE, DRAG_START/MOVE/DROP/END) are synthesized around
+# it. Returns DHANCHA_OK.
 fn dh_dispatch(root, ev): i64 {
     if (root == 0) { return DHANCHA_ERR_BAD_WIDGET; }
     if (ev == 0)   { return DHANCHA_ERR_OTHER; }
@@ -293,6 +443,9 @@ fn dh_dispatch(root, ev): i64 {
         target = dh_hit_test(root, _dh_ptr_x, _dh_ptr_y);
         if (dh_event_b(ev) == 1) {
             _dh_press = target;
+            _dh_press_x = _dh_ptr_x;
+            _dh_press_y = _dh_ptr_y;
+            _dh_drag_src = 0;
             if (target != 0) {
                 if (dh_widget_focusable(target) == 1) { dh_focus_set(target); }
             }
@@ -301,16 +454,12 @@ fn dh_dispatch(root, ev): i64 {
     if (kind == DRAG) { target = dh_hit_test(root, _dh_ptr_x, _dh_ptr_y); }
 
     store64(ev + DH_E_TARGET, target);
-    dh_bubble(target, ev);
+    dh_propagate(target, ev);
 
     # higher-level synthesis, AFTER the raw event has been delivered
+    if (kind == POINTER_MOVE) { dh_drag_progress(); }
     if (kind == POINTER_BTN) {
-        if (dh_event_b(ev) == 0) {
-            if (target != 0) {
-                if (target == _dh_press) { dh_emit(target, ACTIVATE); }
-            }
-            _dh_press = 0;
-        }
+        if (dh_event_b(ev) == 0) { dh_pointer_release(target); }
     }
     if (kind == KEY) {
         if (target != 0) {

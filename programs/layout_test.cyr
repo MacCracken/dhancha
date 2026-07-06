@@ -1,0 +1,66 @@
+# programs/layout_test.cyr — RUN test for box layout (BOX_V / BOX_H stacking).
+# Exit code = failed checks.
+
+include "src/lib.cyr"
+
+var g_fails = 0;
+
+fn check(got, want): i64 {
+    if (got == want) { return 0; }
+    g_fails = g_fails + 1;
+    return 1;
+}
+
+fn main(): i64 {
+    alloc_init();
+
+    # BOX_V: root 100x100, children pref-height 30 then 40
+    var root = dh_widget_new(WINDOW);
+    dh_widget_set_layout(root, BOX_V);
+    var c0 = dh_widget_new(BOX);
+    dh_widget_set_pref(c0, 0, 30);
+    var c1 = dh_widget_new(BOX);
+    dh_widget_set_pref(c1, 0, 40);
+    dh_widget_add_child(root, c0);
+    dh_widget_add_child(root, c1);
+    dh_layout_apply(root, 100, 100);
+    check(dh_widget_w(root), 100);
+    check(dh_widget_h(root), 100);
+    check(dh_widget_x(c0), 0);
+    check(dh_widget_y(c0), 0);
+    check(dh_widget_w(c0), 100);
+    check(dh_widget_h(c0), 30);
+    check(dh_widget_x(c1), 0);
+    check(dh_widget_y(c1), 30);      # stacked below c0
+    check(dh_widget_w(c1), 100);
+    check(dh_widget_h(c1), 40);
+
+    # BOX_H: root 200x50, children pref-width 60 then 80
+    var r2 = dh_widget_new(WINDOW);
+    dh_widget_set_layout(r2, BOX_H);
+    var d0 = dh_widget_new(BOX);
+    dh_widget_set_pref(d0, 60, 0);
+    var d1 = dh_widget_new(BOX);
+    dh_widget_set_pref(d1, 80, 0);
+    dh_widget_add_child(r2, d0);
+    dh_widget_add_child(r2, d1);
+    dh_layout_apply(r2, 200, 50);
+    check(dh_widget_x(d0), 0);
+    check(dh_widget_w(d0), 60);
+    check(dh_widget_h(d0), 50);      # full height
+    check(dh_widget_x(d1), 60);      # stacked right of d0
+    check(dh_widget_w(d1), 80);
+    check(dh_widget_h(d1), 50);
+
+    if (g_fails == 0) {
+        var ok = "layout_test: PASS (box stacking)\n";
+        syscall(1, 1, ok, strlen(ok));
+    } else {
+        var bad = "layout_test: FAIL\n";
+        syscall(1, 2, bad, strlen(bad));
+    }
+    return g_fails;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

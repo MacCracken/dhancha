@@ -1,6 +1,6 @@
 # dhancha
 
-Version: 0.1.0
+Version: 0.2.0
 
 **dhancha** (ढाँचा — Hindi/Sanskrit: *framework / structure / scaffold*)
 is a pure-Cyrius **client-side widget toolkit / desktop app framework**
@@ -44,10 +44,14 @@ aethersafha compositor composites onto the screen.
   - `src/surface.cyr` — `DhSurface` (client window + RGBA8 pixel
     buffer), `dh_surface_new` / `dh_surface_present` skeleton.
   - `programs/smoke.cyr` — the link-check entry.
-- **v0.2+ — the real toolkit.** Box/flex measure+arrange, live event
-  loop pumping the compositor connection, real routing (capture/bubble,
-  per-widget handlers, drag-drop state machine), and the draw/present
-  path (see below).
+- **v0.2.0 — the toolkit draws (shipped).** sadish + rekha wired; real box
+  layout (`dh_layout_at` — `BOX_V` / `BOX_H` stacking); a render path
+  (`dh_surface_render`) that draws the widget tree into a sadish `SdSurface` —
+  backgrounds/borders via sadish, `LABEL` / `BUTTON` text via rekha. The full
+  draw stack (dhancha → rekha → sadish → pixels) is RUN-tested.
+- **v0.3+ — next.** Event dispatch (hit-test + pointer/keyboard routing), flex
+  layout + intrinsic measure, real hmtx text advances, and the present path
+  (mabda GPU upload + the aethersafha Wayland commit).
 
 ## Place in the stack
 
@@ -89,8 +93,11 @@ scaffold. As the draw/present code lands (v0.2), add to `cyrius.cyml`:
   `syscalls`, `assert`, `bench`, `args`, plus `hashmap` (widget-id →
   handler routing), `fnptr` (event-callback dispatch), and `tagged`
   (tagged-value payloads). Resolved by `cyrius deps` into `lib/`.
-- **Deferred cross-deps** (not wired at scaffold): `sadish` + `rekha` +
-  `mabda` for the draw/present path.
+- **sadish** (0.4.0) + **rekha** (0.3.0) — the draw path: sadish fills/strokes
+  widget backgrounds/borders, rekha rasterizes text (via sadish). Wired as
+  `[deps.*]` (local `../` path overrides for dev; git tags as published pins).
+- **mabda** (GPU) — still deferred; the present path (GPU upload + Wayland
+  commit) is a later bite. The CPU draw is complete.
 
 The toolchain pin is `cyrius = "6.4.7"`.
 

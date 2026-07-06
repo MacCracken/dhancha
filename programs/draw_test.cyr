@@ -1,0 +1,57 @@
+# programs/draw_test.cyr — RUN test for the widget-tree draw (sadish path).
+#
+# Builds a window (gray, BOX_V) containing a red box + a blue button, lays it
+# out, renders into a sadish SdSurface (font=0, no text), and checks the
+# background/border pixels. Exit code = failed checks. Validates dhancha's
+# sadish integration end to end (tree → layout → sadish fills/strokes).
+
+include "src/lib.cyr"
+
+var g_fails = 0;
+
+fn check(got, want): i64 {
+    if (got == want) { return 0; }
+    g_fails = g_fails + 1;
+    return 1;
+}
+
+fn main(): i64 {
+    alloc_init();
+    var GRAY = sd_rgb(200, 200, 200);   # 0xC8C8C8 = 13158600
+    var RED  = sd_rgb(255, 0, 0);       # 0xFF0000 = 16711680
+    var BLUE = sd_rgb(0, 0, 255);       # 0x0000FF = 255
+
+    var root = dh_widget_new(WINDOW);
+    dh_widget_set_layout(root, BOX_V);
+    dh_widget_set_bg(root, GRAY);
+    var c0 = dh_widget_new(BOX);
+    dh_widget_set_bg(c0, RED);
+    dh_widget_set_pref(c0, 0, 15);
+    var c1 = dh_widget_new(BUTTON);
+    dh_widget_set_bg(c1, BLUE);
+    dh_widget_set_pref(c1, 0, 15);
+    dh_widget_add_child(root, c0);
+    dh_widget_add_child(root, c1);
+
+    var surf = dh_surface_new(40, 40);
+    dh_surface_set_root(surf, root);
+    dh_layout_apply(root, 40, 40);
+    var sds = dh_surface_render(surf, 0);
+
+    check(sd_surface_pixel_at(sds, 20, 35), 13158600);   # window gray (below children)
+    check(sd_surface_pixel_at(sds, 20, 7), 16711680);    # box red
+    check(sd_surface_pixel_at(sds, 20, 22), 255);        # button blue interior
+    check(sd_surface_pixel_at(sds, 0, 22), 0);           # button border (left edge, black)
+
+    if (g_fails == 0) {
+        var ok = "draw_test: PASS (bg + border render)\n";
+        syscall(1, 1, ok, strlen(ok));
+    } else {
+        var bad = "draw_test: FAIL\n";
+        syscall(1, 2, bad, strlen(bad));
+    }
+    return g_fails;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

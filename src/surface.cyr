@@ -64,7 +64,84 @@ fn dh_surface_set_root(surf, root): i64 {
 fn dh_surface_present(surf): i64 {
     if (surf == 0) { return DHANCHA_ERR_NO_SURFACE; }
     if (dh_surface_pixels(surf) == 0) { return DHANCHA_ERR_NO_SURFACE; }
-    # TODO(v0.2): layout → draw → GPU → Wayland commit.
+    # TODO(v0.4): GPU upload (mabda) + Wayland commit to aethersafha. The CPU
+    # render is dh_surface_render (below); wiring its SdSurface here + the
+    # compositor commit is the present-integration bite.
     store64(surf + DH_S_DIRTY, 0);
     return DHANCHA_OK;
+}
+
+# ---- widget-tree draw (sadish fills/strokes + rekha text) ----------
+
+# Draw `text` (a cstring) left-aligned inside a box at (x, y) of height h, onto
+# the sadish surface `sds`, using `font` (a RekhaFont). Each glyph is converted
+# to a sadish path (scaled so the em-height ~= h) and union-filled into one
+# coverage canvas, then blit as white. Advance is a fixed ~0.6em (real hmtx
+# advances are a rekha v0.4 item). No-op if font is 0.
+fn dh_draw_text(sds, font, text, x, y, h): i64 {
+    if (font == 0) { return 0; }
+    if (text == 0) { return 0; }
+    var upem = rekha_units_per_em(font);
+    if (upem <= 0) { return 0; }
+    var scale = (h << 16) / upem;          # 16.16 pixels per design unit
+    var advf = (h * 6) / 10;               # fixed advance ~0.6 em
+    if (advf <= 0) { advf = 4; }
+    var baseline = y + h - 2;              # sit text near the box bottom
+    var cx = x + 2;
+
+    var cv = sd_canvas_new(sd_surface_width(sds), sd_surface_height(sds));
+    var i = 0;
+    while (load8(text + i) != 0) {
+        var cp = load8(text + i);
+        if (cp != 32) {                    # spaces contribute no coverage
+            var path = rekha_char_to_sdpath(font, cp, scale, cx << 16, baseline << 16);
+            sd_canvas_fill_union(cv, path, SD_FILL_NONZERO);
+        }
+        cx = cx + advf;
+        i = i + 1;
+    }
+    sd_canvas_blit(cv, sds, sd_rgb(255, 255, 255));
+    return 0;
+}
+
+# Draw one widget (background, border, text) onto `sds`, then recurse into its
+# children. `font` may be 0 (text skipped).
+fn dh_draw_widget(sds, wgt, font): i64 {
+    var x = dh_widget_x(wgt);
+    var y = dh_widget_y(wgt);
+    var w = dh_widget_w(wgt);
+    var h = dh_widget_h(wgt);
+    var bg = dh_widget_bg(wgt);
+    if (bg != (0 - 1)) {
+        sd_fill_rect(sds, x, y, w, h, bg);
+    }
+    if (dh_widget_kind(wgt) == BUTTON) {
+        sd_rect(sds, x, y, w, h, sd_rgb(0, 0, 0));   # 1px black border
+    }
+    var text = dh_widget_text(wgt);
+    if (text != 0) {
+        dh_draw_text(sds, font, text, x, y, h);
+    }
+    var child = dh_widget_first_child(wgt);
+    while (child != 0) {
+        dh_draw_widget(sds, child, font);
+        child = dh_widget_next_sibling(child);
+    }
+    return 0;
+}
+
+# @public — render `surf`'s widget tree into a fresh sadish SdSurface and
+# return it (BGRA pixels; the caller can present/PPM it). `font` may be 0.
+# Returns 0 on a bad surface.
+fn dh_surface_render(surf, font): i64 {
+    if (surf == 0) { return 0; }
+    var w = dh_surface_width(surf);
+    var h = dh_surface_height(surf);
+    var sds = sd_surface_new(w, h);
+    sd_clear(sds, sd_rgb(32, 32, 40));     # desktop-ish backdrop
+    var root = dh_surface_root(surf);
+    if (root != 0) {
+        dh_draw_widget(sds, root, font);
+    }
+    return sds;
 }

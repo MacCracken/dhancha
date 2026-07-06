@@ -40,19 +40,26 @@ enum DhWidgetField {
     DH_W_PARENT       = 48;
     DH_W_FIRST_CHILD  = 56;
     DH_W_NEXT_SIBLING = 64;
+    DH_W_LAYOUT       = 72;    # DhLayout mode applied to this node's children
+    DH_W_BG           = 80;    # background color 0x00RRGGBB, or -1 = none
+    DH_W_TEXT         = 88;    # cstring ptr for LABEL / BUTTON, or 0
+    DH_W_PREF_W       = 96;    # requested width (layout hint)
+    DH_W_PREF_H       = 104;   # requested height
 }
+var DH_WIDGET_SIZE = 112;
 
-# Monotonic widget-id source. Module-global var X[N] = N×u64; we want a
-# single u64 counter, so N=1.
-var _dh_next_widget_id[1];
+# Monotonic widget-id source. A plain module-global SCALAR (not a `[1]` array —
+# module-global `var X[N]` sizing is non-uniform in cyrius, so an 8-byte
+# load64/store64 on a `[1]` can read/write out of bounds). A scalar i64 is a
+# reliable 8-byte cell accessed directly.
+var _dh_next_widget_id = 0;
 
 # Allocate + zero-init a widget of the given kind. Returns a DhWidget*.
 # All bounds start at 0 (layout fills them in); tree links start null.
 fn dh_widget_new(kind): i64 {
-    var wgt = alloc(72);
-    # assign a fresh id
-    var id = load64(_dh_next_widget_id);
-    store64(_dh_next_widget_id, id + 1);
+    var wgt = alloc(DH_WIDGET_SIZE);
+    var id = _dh_next_widget_id;
+    _dh_next_widget_id = id + 1;
     store64(wgt + DH_W_ID, id);
     store64(wgt + DH_W_KIND, kind);
     store64(wgt + DH_W_X, 0);
@@ -62,6 +69,11 @@ fn dh_widget_new(kind): i64 {
     store64(wgt + DH_W_PARENT, 0);
     store64(wgt + DH_W_FIRST_CHILD, 0);
     store64(wgt + DH_W_NEXT_SIBLING, 0);
+    store64(wgt + DH_W_LAYOUT, 0);         # NONE
+    store64(wgt + DH_W_BG, 0 - 1);         # -1 = no background
+    store64(wgt + DH_W_TEXT, 0);
+    store64(wgt + DH_W_PREF_W, 0);
+    store64(wgt + DH_W_PREF_H, 0);
     return wgt;
 }
 
@@ -104,5 +116,42 @@ fn dh_widget_set_bounds(wgt, x, y, w, h): i64 {
     store64(wgt + DH_W_Y, y);
     store64(wgt + DH_W_W, w);
     store64(wgt + DH_W_H, h);
+    return DHANCHA_OK;
+}
+
+# ---- style + layout properties ------------------------------------
+
+fn dh_widget_layout(wgt): i64 { return load64(wgt + DH_W_LAYOUT); }
+fn dh_widget_bg(wgt): i64     { return load64(wgt + DH_W_BG); }
+fn dh_widget_text(wgt): i64   { return load64(wgt + DH_W_TEXT); }
+fn dh_widget_pref_w(wgt): i64 { return load64(wgt + DH_W_PREF_W); }
+fn dh_widget_pref_h(wgt): i64 { return load64(wgt + DH_W_PREF_H); }
+
+# Set the child-layout mode (DhLayout: NONE / BOX_H / BOX_V / FLEX).
+fn dh_widget_set_layout(wgt, mode): i64 {
+    if (wgt == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    store64(wgt + DH_W_LAYOUT, mode);
+    return DHANCHA_OK;
+}
+
+# Set the background color (0x00RRGGBB), or -1 for no background.
+fn dh_widget_set_bg(wgt, color): i64 {
+    if (wgt == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    store64(wgt + DH_W_BG, color);
+    return DHANCHA_OK;
+}
+
+# Set the widget's text (a borrowed cstring pointer, or 0).
+fn dh_widget_set_text(wgt, text): i64 {
+    if (wgt == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    store64(wgt + DH_W_TEXT, text);
+    return DHANCHA_OK;
+}
+
+# Set the preferred (requested) size, a layout hint.
+fn dh_widget_set_pref(wgt, w, h): i64 {
+    if (wgt == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    store64(wgt + DH_W_PREF_W, w);
+    store64(wgt + DH_W_PREF_H, h);
     return DHANCHA_OK;
 }

@@ -1,0 +1,156 @@
+# programs/text_test.cyr — RUN test for text rendering (dhancha → rekha → sadish).
+#
+# Builds a synthetic font (a triangle glyph mapped to 'A' via cmap), puts a
+# LABEL with text "A" in a window, renders WITH the font, and confirms glyph
+# (white) pixels appear. This is the full-stack proof: dhancha draws text by
+# driving rekha (char → glyph path) into sadish (fill → coverage → blit).
+# Exit code = failed checks.
+
+include "src/lib.cyr"
+
+var g_fails = 0;
+
+fn check(got, want): i64 {
+    if (got == want) { return 0; }
+    g_fails = g_fails + 1;
+    return 1;
+}
+
+fn put_u16(buf, off, v): i64 {
+    store8(buf + off, (v >> 8) & 255);
+    store8(buf + off + 1, v & 255);
+    return 0;
+}
+
+fn put_u32(buf, off, v): i64 {
+    put_u16(buf, off, (v >> 16) & 65535);
+    put_u16(buf, off + 2, v & 65535);
+    return 0;
+}
+
+fn dir_entry(buf, ent, tag, off, tlen): i64 {
+    put_u32(buf, ent, tag);
+    put_u32(buf, ent + 8, off);
+    put_u32(buf, ent + 12, tlen);
+    return 0;
+}
+
+# Fill `buf` with a font: 1 triangle glyph (gid 1) mapped from 'A' via cmap.
+fn build_font(buf): i64 {
+    # 5 tables: head@92/54 maxp@146/32 loca@178/6 glyf@184/26 cmap@210/44
+    put_u32(buf, 0, 0x00010000);
+    put_u16(buf, 4, 5);
+    dir_entry(buf, 12, 0x68656164, 92, 54);
+    dir_entry(buf, 28, 0x6D617870, 146, 32);
+    dir_entry(buf, 44, 0x6C6F6361, 178, 6);
+    dir_entry(buf, 60, 0x676C7966, 184, 26);
+    dir_entry(buf, 76, 0x636D6170, 210, 44);
+
+    put_u16(buf, 92 + 18, 1000);       # unitsPerEm
+    put_u16(buf, 92 + 50, 0);          # short loca
+    put_u16(buf, 146 + 4, 2);          # numGlyphs = 2
+    put_u16(buf, 178 + 0, 0);          # loca[0] = 0 (glyph0 empty)
+    put_u16(buf, 178 + 2, 0);          # loca[1] = 0
+    put_u16(buf, 178 + 4, 13);         # loca[2] = 13 -> glyph1 = glyf[0,26)
+
+    # glyph 1 @184: triangle (10,10)(90,10)(50,90) all on-curve
+    var g = 184;
+    put_u16(buf, g + 0, 1);
+    put_u16(buf, g + 2, 10);
+    put_u16(buf, g + 4, 10);
+    put_u16(buf, g + 6, 90);
+    put_u16(buf, g + 8, 90);
+    put_u16(buf, g + 10, 2);
+    put_u16(buf, g + 12, 0);
+    store8(buf + g + 14, 0x01);
+    store8(buf + g + 15, 0x21);
+    store8(buf + g + 16, 0x03);
+    put_u16(buf, g + 17, 10);
+    put_u16(buf, g + 19, 80);
+    store8(buf + g + 21, 40);
+    put_u16(buf, g + 22, 10);
+    put_u16(buf, g + 24, 80);
+
+    # cmap @210: 1 subtable (plat 3/enc 1), format 4, 'A'(0x41)->gid 1
+    put_u16(buf, 210 + 0, 0);
+    put_u16(buf, 210 + 2, 1);
+    put_u16(buf, 210 + 4, 3);
+    put_u16(buf, 210 + 6, 1);
+    put_u32(buf, 210 + 8, 12);
+    var s = 222;
+    put_u16(buf, s + 0, 4);
+    put_u16(buf, s + 2, 32);
+    put_u16(buf, s + 4, 0);
+    put_u16(buf, s + 6, 4);
+    put_u16(buf, s + 8, 4);
+    put_u16(buf, s + 10, 1);
+    put_u16(buf, s + 12, 0);
+    put_u16(buf, s + 14, 0x41);        # endCode[0]
+    put_u16(buf, s + 16, 0xFFFF);
+    put_u16(buf, s + 18, 0);           # reservedPad
+    put_u16(buf, s + 20, 0x41);        # startCode[0]
+    put_u16(buf, s + 22, 0xFFFF);
+    put_u16(buf, s + 24, 0xFFC0);      # idDelta[0] = -64 -> gid = 0x41-64 = 1
+    put_u16(buf, s + 26, 1);
+    put_u16(buf, s + 28, 0);           # idRangeOffset
+    put_u16(buf, s + 30, 0);
+    return 0;
+}
+
+# count pixels differing from `bg` in a w*h sadish surface (text coverage
+# blends toward white, so any text pixel — even partial — differs from bg)
+fn count_nonbg(sds, w, h, bg): i64 {
+    var n = 0;
+    var y = 0;
+    while (y < h) {
+        var x = 0;
+        while (x < w) {
+            if (sd_surface_pixel_at(sds, x, y) != bg) { n = n + 1; }
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    return n;
+}
+
+fn main(): i64 {
+    alloc_init();
+    var fbuf = alloc(300);
+    memset(fbuf, 0, 300);
+    build_font(fbuf);
+    var font = rekha_font_open(fbuf, 300);
+    if (font == 0) { g_fails = g_fails + 1; }
+    check(rekha_char_to_glyph(font, 0x41), 1);   # 'A' maps to the triangle
+
+    # window (dark) with one LABEL "A", 40x40
+    var root = dh_widget_new(WINDOW);
+    dh_widget_set_layout(root, BOX_V);
+    dh_widget_set_bg(root, sd_rgb(20, 20, 30));
+    var lbl = dh_widget_new(LABEL);
+    dh_widget_set_pref(lbl, 0, 32);
+    var txt = "A";
+    dh_widget_set_text(lbl, txt);
+    dh_widget_add_child(root, lbl);
+
+    var surf = dh_surface_new(40, 40);
+    dh_surface_set_root(surf, root);
+    dh_layout_apply(root, 40, 40);
+    var sds = dh_surface_render(surf, font);
+
+    # the 'A' glyph renders as text coverage -> pixels differing from the bg
+    var nonbg = count_nonbg(sds, 40, 40, sd_rgb(20, 20, 30));
+    if (nonbg <= 0) { g_fails = g_fails + 1; }
+    if (nonbg >= 1600) { g_fails = g_fails + 1; }   # not the whole 40x40 surface
+
+    if (g_fails == 0) {
+        var ok = "text_test: PASS (dhancha -> rekha -> sadish text)\n";
+        syscall(1, 1, ok, strlen(ok));
+    } else {
+        var bad = "text_test: FAIL\n";
+        syscall(1, 2, bad, strlen(bad));
+    }
+    return g_fails;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

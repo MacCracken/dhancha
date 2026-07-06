@@ -40,26 +40,50 @@ fn dh_rect_y(r): i64 { return load64(r + DH_R_Y); }
 fn dh_rect_w(r): i64 { return load64(r + DH_R_W); }
 fn dh_rect_h(r): i64 { return load64(r + DH_R_H); }
 
-# Apply layout to `root` within an available (avail_w × avail_h) box at
-# origin (0,0). Walks the child chain; recurses into each child.
-# Returns DHANCHA_OK / an error code.
-#
-# TODO(v0.2): real box/flex measure+arrange. Two-pass: (1) measure
-# intrinsic sizes bottom-up, (2) arrange top-down honoring the parent's
-# DhLayout mode, main-axis stacking, cross-axis alignment, and flex
-# grow/shrink. v0.1.0 just assigns the full box to the root and recurses
-# so the tree walk + accessor wiring is proven.
-fn dh_layout_apply(root, avail_w, avail_h): i64 {
-    if (root == 0) { return DHANCHA_ERR_BAD_WIDGET; }
-    # v0.1.0 skeleton: give the root the full available box.
-    dh_widget_set_bounds(root, 0, 0, avail_w, avail_h);
-    # Walk children — trivial full-box assignment, recurse.
-    var child = dh_widget_first_child(root);
-    while (child != 0) {
-        # TODO(v0.2): position per DhLayout mode instead of overlapping.
-        var rc = dh_layout_apply(child, avail_w, avail_h);
-        if (rc != DHANCHA_OK) { return rc; }
-        child = dh_widget_next_sibling(child);
+# Assign `wgt` the box (x, y, w, h), then arrange its children per its
+# DhLayout mode and recurse:
+#   BOX_V — stack top→bottom; each child gets full width + its pref height.
+#   BOX_H — stack left→right; each child gets its pref width + full height.
+#   NONE / FLEX — place each child at (x,y) sized to its pref (0 → fill).
+# TODO(v0.4): flex grow/shrink, intrinsic measure pass, padding/spacing,
+# cross-axis alignment.
+fn dh_layout_at(wgt, x, y, w, h): i64 {
+    if (wgt == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    dh_widget_set_bounds(wgt, x, y, w, h);
+    var mode = dh_widget_layout(wgt);
+    var child = dh_widget_first_child(wgt);
+    if (mode == BOX_V) {
+        var cy = y;
+        while (child != 0) {
+            var ch = dh_widget_pref_h(child);
+            dh_layout_at(child, x, cy, w, ch);
+            cy = cy + ch;
+            child = dh_widget_next_sibling(child);
+        }
+    } else {
+        if (mode == BOX_H) {
+            var cx = x;
+            while (child != 0) {
+                var cw = dh_widget_pref_w(child);
+                dh_layout_at(child, cx, y, cw, h);
+                cx = cx + cw;
+                child = dh_widget_next_sibling(child);
+            }
+        } else {
+            while (child != 0) {
+                var cw = dh_widget_pref_w(child);
+                var chh = dh_widget_pref_h(child);
+                if (cw == 0) { cw = w; }
+                if (chh == 0) { chh = h; }
+                dh_layout_at(child, x, y, cw, chh);
+                child = dh_widget_next_sibling(child);
+            }
+        }
     }
     return DHANCHA_OK;
+}
+
+# @public — lay out `root` within an (avail_w × avail_h) box at origin (0,0).
+fn dh_layout_apply(root, avail_w, avail_h): i64 {
+    return dh_layout_at(root, 0, 0, avail_w, avail_h);
 }

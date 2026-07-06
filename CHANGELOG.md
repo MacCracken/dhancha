@@ -5,6 +5,37 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+The layout engine — `BOX_V` / `BOX_H` become real flex containers.
+`layout_test` now covers stacking, padding, gap, flex, and alignment.
+
+### Added
+- **Flex grow** — `dh_widget_set_flex(w, weight)`. Fixed children (weight 0)
+  take their preferred main-axis size; children with weight > 0 split the
+  container's leftover main-axis space in proportion to their weights. The
+  last flex child gets the exact remainder, so integer rounding never loses
+  or overshoots a pixel.
+- **Padding** — `dh_widget_set_padding(w, px)` uniformly insets a container's
+  content box before its children are arranged.
+- **Spacing** — `dh_widget_set_gap(w, px)` separates consecutive children in
+  `BOX_H` / `BOX_V`.
+- **Cross-axis alignment** — `dh_widget_set_align(w, DhAlign)` positions a
+  child on the cross axis: `ALIGN_STRETCH` (default) fills it, `ALIGN_START` /
+  `ALIGN_CENTER` / `ALIGN_END` use the child's preferred cross size.
+- `BOX_V` / `BOX_H` are now flexbox-style rows/columns; `FLEX` is an alias of
+  `BOX_V`; `NONE` remains absolute overlay (now padding-aware). The arranger
+  is factored into `dh_layout_box` (flex) + `dh_layout_none` (overlay).
+- Test: `layout_test` — padding + gap insets, flex 50/50, weighted flex (1:2
+  with exact remainder), mixed fixed + flex, and cross-axis align in both
+  `BOX_V` (cross = width) and `BOX_H` (cross = height).
+
+### Deferred
+- **Intrinsic measure** — auto-sizing a container to its content (a measure
+  pass; box layout ships with explicit / flex sizing today).
+- Per-edge padding + margins; wrap; the compositor-fd input source; the
+  present path (mabda GPU upload + the aethersafha Wayland commit).
+
 ## [0.4.0] - 2026-07-06
 
 Finishes the event model — the two items 0.3.0 deferred: capture-phase

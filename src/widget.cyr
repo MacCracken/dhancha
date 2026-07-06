@@ -26,6 +26,10 @@
 #   +120: userdata      — opaque app context the handler reads back, or 0
 #   +128: capture_h     — capture-phase handler fnptr (fires root->target first), or 0
 #   +136: flags         — bitmask: DH_FLAG_DRAGGABLE | DH_FLAG_DROP_TARGET
+#   +144: flex          — flex weight for BOX layout (0 = fixed, use pref size)
+#   +152: pad           — uniform padding inside this container (px)
+#   +160: gap           — spacing between this container's children (px)
+#   +168: align         — cross-axis align-self (DhAlign; 0 = STRETCH)
 
 enum DhWidgetKind {
     WINDOW    = 0;
@@ -55,13 +59,27 @@ enum DhWidgetField {
     DH_W_USERDATA     = 120;   # opaque app context for the handler, or 0
     DH_W_CAPTURE_H    = 128;   # capture-phase handler fnptr, or 0
     DH_W_FLAGS        = 136;   # bitmask (DH_FLAG_*)
+    DH_W_FLEX         = 144;   # flex weight (0 = fixed)
+    DH_W_PAD          = 152;   # uniform content padding (px)
+    DH_W_GAP          = 160;   # spacing between children (px)
+    DH_W_ALIGN        = 168;   # cross-axis align-self (DhAlign)
 }
-var DH_WIDGET_SIZE = 144;
+var DH_WIDGET_SIZE = 176;
 
 # Widget behavior flags (DH_W_FLAGS bitmask).
 enum DhWidgetFlag {
     DH_FLAG_DRAGGABLE   = 1;    # a press + drag on this widget starts a drag
     DH_FLAG_DROP_TARGET = 2;    # a drag released over this widget drops onto it
+}
+
+# Cross-axis alignment of a child within its BOX container's cross size
+# (align-self). STRETCH (the default) fills the cross axis; the others use
+# the child's preferred cross size and position it.
+enum DhAlign {
+    ALIGN_STRETCH = 0;
+    ALIGN_START   = 1;
+    ALIGN_CENTER  = 2;
+    ALIGN_END     = 3;
 }
 
 # Monotonic widget-id source. A plain module-global SCALAR (not a `[1]` array —
@@ -94,6 +112,10 @@ fn dh_widget_new(kind): i64 {
     store64(wgt + DH_W_USERDATA, 0);
     store64(wgt + DH_W_CAPTURE_H, 0);      # no capture handler
     store64(wgt + DH_W_FLAGS, 0);          # no flags
+    store64(wgt + DH_W_FLEX, 0);           # fixed (not flexible)
+    store64(wgt + DH_W_PAD, 0);            # no padding
+    store64(wgt + DH_W_GAP, 0);            # no gap
+    store64(wgt + DH_W_ALIGN, 0);          # ALIGN_STRETCH
     return wgt;
 }
 
@@ -251,4 +273,40 @@ fn dh_widget_is_drop_target(wgt): i64 {
     if (wgt == 0) { return 0; }
     if ((dh_widget_flags(wgt) & DH_FLAG_DROP_TARGET) != 0) { return 1; }
     return 0;
+}
+
+# ---- flex / box layout properties ---------------------------------
+
+fn dh_widget_flex(wgt): i64    { return load64(wgt + DH_W_FLEX); }
+fn dh_widget_padding(wgt): i64 { return load64(wgt + DH_W_PAD); }
+fn dh_widget_gap(wgt): i64     { return load64(wgt + DH_W_GAP); }
+fn dh_widget_align(wgt): i64   { return load64(wgt + DH_W_ALIGN); }
+
+# Flex weight: 0 = fixed (takes its pref main-axis size); > 0 = flexible
+# (grows to share the container's leftover main-axis space by weight).
+fn dh_widget_set_flex(wgt, weight): i64 {
+    if (wgt == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    store64(wgt + DH_W_FLEX, weight);
+    return DHANCHA_OK;
+}
+
+# Uniform padding inset applied to this container's content box.
+fn dh_widget_set_padding(wgt, pad): i64 {
+    if (wgt == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    store64(wgt + DH_W_PAD, pad);
+    return DHANCHA_OK;
+}
+
+# Spacing inserted between consecutive children in BOX_H / BOX_V.
+fn dh_widget_set_gap(wgt, gap): i64 {
+    if (wgt == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    store64(wgt + DH_W_GAP, gap);
+    return DHANCHA_OK;
+}
+
+# Cross-axis alignment of this child within its container (a DhAlign).
+fn dh_widget_set_align(wgt, align): i64 {
+    if (wgt == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    store64(wgt + DH_W_ALIGN, align);
+    return DHANCHA_OK;
 }

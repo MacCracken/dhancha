@@ -1,20 +1,24 @@
 # @public — dhancha layout engine.
-# layout.cyr — box / flex measure + arrange over a DhWidget tree.
+# layout.cyr — flexbox-style box layout over a DhWidget tree.
 #
-# A DhRect is the geometric primitive the layout pass produces. The
-# arrange pass walks the widget tree top-down: it assigns each node a
-# DhRect within its parent's content box according to the parent's
-# DhLayout mode, then recurses. v0.1.0 is a walking skeleton — it fills
-# the root's bounds and recurses, stacking children trivially; the real
-# measure/arrange (intrinsic sizes, flex grow/shrink, spacing) lands in
-# v0.2.
+# The arrange pass walks the tree top-down: each node is assigned a box
+# (x, y, w, h), then it arranges its children within its PADDED content
+# box according to its DhLayout mode, and recurses. BOX_V (column) and
+# BOX_H (row) are flex containers: a child with flex weight 0 takes its
+# preferred main-axis size, and children with flex > 0 split the leftover
+# main-axis space in proportion to their weights. `gap` separates
+# children; `pad` insets the content box; each child's DhAlign positions
+# it on the cross axis (STRETCH fills it). NONE is absolute overlay.
+#
+# Intrinsic measure (auto-sizing a container to its content) is tracked
+# in the CHANGELOG as a follow-up.
 
 # Layout modes a container applies to its children.
 enum DhLayout {
-    NONE  = 0;   # children keep their own bounds (absolute)
-    BOX_H = 1;   # stack children left→right
-    BOX_V = 2;   # stack children top→bottom
-    FLEX  = 3;   # flex grow/shrink along the main axis
+    NONE  = 0;   # children keep their own bounds (absolute overlay)
+    BOX_H = 1;   # flex row: stack children left→right
+    BOX_V = 2;   # flex column: stack children top→bottom
+    FLEX  = 3;   # alias of BOX_V (a flex column)
 }
 
 # DhRect struct layout (32 bytes): x, y, w, h.
@@ -40,47 +44,133 @@ fn dh_rect_y(r): i64 { return load64(r + DH_R_Y); }
 fn dh_rect_w(r): i64 { return load64(r + DH_R_W); }
 fn dh_rect_h(r): i64 { return load64(r + DH_R_H); }
 
+# Arrange a NONE container: children overlay the padded content box, each
+# at its preferred size (a 0 dimension fills the content box).
+fn dh_layout_none(wgt, x, y, w, h): i64 {
+    var pad = dh_widget_padding(wgt);
+    var cx = x + pad;
+    var cy = y + pad;
+    var cw = w - pad - pad;
+    var chh = h - pad - pad;
+    if (cw < 0) { cw = 0; }
+    if (chh < 0) { chh = 0; }
+    var child = dh_widget_first_child(wgt);
+    while (child != 0) {
+        var pw = dh_widget_pref_w(child);
+        var ph = dh_widget_pref_h(child);
+        if (pw == 0) { pw = cw; }
+        if (ph == 0) { ph = chh; }
+        dh_layout_at(child, cx, cy, pw, ph);
+        child = dh_widget_next_sibling(child);
+    }
+    return DHANCHA_OK;
+}
+
+# Arrange a flex BOX container. `vertical` = 1 for a column (BOX_V: main
+# axis = height, cross = width), 0 for a row (BOX_H: main = width, cross =
+# height). Fixed children (flex 0) take their pref main size; flex > 0
+# children split the leftover main space by weight (the last flex child
+# gets the exact remainder so rounding never loses a pixel). `gap`
+# separates children; each child is placed on the cross axis per its
+# DhAlign (STRETCH fills the cross size).
+fn dh_layout_box(wgt, x, y, w, h, vertical): i64 {
+    var pad = dh_widget_padding(wgt);
+    var gap = dh_widget_gap(wgt);
+    var cx = x + pad;
+    var cy = y + pad;
+    var cw = w - pad - pad;
+    var chh = h - pad - pad;
+    if (cw < 0) { cw = 0; }
+    if (chh < 0) { chh = 0; }
+
+    # main-axis available space
+    var main_avail = cw;
+    if (vertical == 1) { main_avail = chh; }
+
+    # pass 1: count children, sum fixed main sizes + flex weights
+    var count = 0;
+    var fixed = 0;
+    var flex_total = 0;
+    var child = dh_widget_first_child(wgt);
+    while (child != 0) {
+        count = count + 1;
+        var cflex = dh_widget_flex(child);
+        if (cflex > 0) {
+            flex_total = flex_total + cflex;
+        } else {
+            var pm = dh_widget_pref_w(child);
+            if (vertical == 1) { pm = dh_widget_pref_h(child); }
+            fixed = fixed + pm;
+        }
+        child = dh_widget_next_sibling(child);
+    }
+    var total_gap = 0;
+    if (count > 1) { total_gap = (count - 1) * gap; }
+    var free = main_avail - fixed - total_gap;
+    if (free < 0) { free = 0; }
+
+    # pass 2: place children along the main axis
+    var pos = cy;
+    if (vertical == 0) { pos = cx; }
+    var flex_used = 0;
+    var flex_seen = 0;
+    child = dh_widget_first_child(wgt);
+    while (child != 0) {
+        var cflex = dh_widget_flex(child);
+        var msize = 0;
+        if (cflex > 0) {
+            flex_seen = flex_seen + cflex;
+            # proportional share; the LAST flex child gets the exact
+            # remainder so integer rounding never leaves/overshoots pixels
+            if (flex_seen == flex_total) {
+                msize = free - flex_used;
+            } else {
+                msize = free * cflex / flex_total;
+                flex_used = flex_used + msize;
+            }
+        } else {
+            msize = dh_widget_pref_w(child);
+            if (vertical == 1) { msize = dh_widget_pref_h(child); }
+        }
+        # cross axis: available + this child's pref cross size
+        var cross_avail = cw;
+        if (vertical == 0) { cross_avail = chh; }
+        var cross_pref = dh_widget_pref_w(child);
+        if (vertical == 0) { cross_pref = dh_widget_pref_h(child); }
+        var align = dh_widget_align(child);
+        var csize = cross_avail;             # STRETCH fills the cross size
+        var coff = 0;
+        if (align != ALIGN_STRETCH) {
+            if (cross_pref == 0) { cross_pref = cross_avail; }
+            csize = cross_pref;
+            if (csize > cross_avail) { csize = cross_avail; }
+            if (align == ALIGN_CENTER) { coff = (cross_avail - csize) / 2; }
+            if (align == ALIGN_END) { coff = cross_avail - csize; }
+            if (coff < 0) { coff = 0; }
+        }
+        if (vertical == 1) {
+            dh_layout_at(child, cx + coff, pos, csize, msize);
+        } else {
+            dh_layout_at(child, pos, cy + coff, msize, csize);
+        }
+        pos = pos + msize + gap;
+        child = dh_widget_next_sibling(child);
+    }
+    return DHANCHA_OK;
+}
+
 # Assign `wgt` the box (x, y, w, h), then arrange its children per its
-# DhLayout mode and recurse:
-#   BOX_V — stack top→bottom; each child gets full width + its pref height.
-#   BOX_H — stack left→right; each child gets its pref width + full height.
-#   NONE / FLEX — place each child at (x,y) sized to its pref (0 → fill).
-# TODO (see CHANGELOG): flex grow/shrink, intrinsic measure, padding/spacing,
-# cross-axis alignment.
+# DhLayout mode and recurse. BOX_V / FLEX = flex column, BOX_H = flex row
+# (both honor pad / gap / per-child flex + align); NONE = overlay.
+# Intrinsic measure (auto-size to content) is a CHANGELOG follow-up.
 fn dh_layout_at(wgt, x, y, w, h): i64 {
     if (wgt == 0) { return DHANCHA_ERR_BAD_WIDGET; }
     dh_widget_set_bounds(wgt, x, y, w, h);
     var mode = dh_widget_layout(wgt);
-    var child = dh_widget_first_child(wgt);
-    if (mode == BOX_V) {
-        var cy = y;
-        while (child != 0) {
-            var ch = dh_widget_pref_h(child);
-            dh_layout_at(child, x, cy, w, ch);
-            cy = cy + ch;
-            child = dh_widget_next_sibling(child);
-        }
-    } else {
-        if (mode == BOX_H) {
-            var cx = x;
-            while (child != 0) {
-                var cw = dh_widget_pref_w(child);
-                dh_layout_at(child, cx, y, cw, h);
-                cx = cx + cw;
-                child = dh_widget_next_sibling(child);
-            }
-        } else {
-            while (child != 0) {
-                var cw = dh_widget_pref_w(child);
-                var chh = dh_widget_pref_h(child);
-                if (cw == 0) { cw = w; }
-                if (chh == 0) { chh = h; }
-                dh_layout_at(child, x, y, cw, chh);
-                child = dh_widget_next_sibling(child);
-            }
-        }
-    }
-    return DHANCHA_OK;
+    if (mode == BOX_V) { return dh_layout_box(wgt, x, y, w, h, 1); }
+    if (mode == FLEX)  { return dh_layout_box(wgt, x, y, w, h, 1); }
+    if (mode == BOX_H) { return dh_layout_box(wgt, x, y, w, h, 0); }
+    return dh_layout_none(wgt, x, y, w, h);
 }
 
 # @public — lay out `root` within an (avail_w × avail_h) box at origin (0,0).

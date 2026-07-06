@@ -52,8 +52,121 @@ fn main(): i64 {
     check(dh_widget_w(d1), 80);
     check(dh_widget_h(d1), 50);
 
+    # --- padding + gap: BOX_V pad=10 gap=5, two 20-tall children ---
+    var rp = dh_widget_new(WINDOW);
+    dh_widget_set_layout(rp, BOX_V);
+    dh_widget_set_padding(rp, 10);
+    dh_widget_set_gap(rp, 5);
+    var p0 = dh_widget_new(BOX);
+    dh_widget_set_pref(p0, 0, 20);
+    var p1 = dh_widget_new(BOX);
+    dh_widget_set_pref(p1, 0, 20);
+    dh_widget_add_child(rp, p0);
+    dh_widget_add_child(rp, p1);
+    dh_layout_apply(rp, 100, 100);
+    check(dh_widget_x(p0), 10);      # inset by pad
+    check(dh_widget_y(p0), 10);
+    check(dh_widget_w(p0), 80);      # 100 - 2*pad
+    check(dh_widget_h(p0), 20);
+    check(dh_widget_y(p1), 35);      # 10 + 20 + 5 gap
+    check(dh_widget_w(p1), 80);
+
+    # --- flex: BOX_V height 100, f0 flex=1 + f1 flex=1 -> 50/50 ---
+    var rf = dh_widget_new(WINDOW);
+    dh_widget_set_layout(rf, BOX_V);
+    var f0 = dh_widget_new(BOX);
+    dh_widget_set_flex(f0, 1);
+    var f1 = dh_widget_new(BOX);
+    dh_widget_set_flex(f1, 1);
+    dh_widget_add_child(rf, f0);
+    dh_widget_add_child(rf, f1);
+    dh_layout_apply(rf, 100, 100);
+    check(dh_widget_h(f0), 50);
+    check(dh_widget_y(f1), 50);
+    check(dh_widget_h(f1), 50);
+
+    # --- weighted flex + last-child remainder: 1 vs 2 over 100 ---
+    var rw2 = dh_widget_new(WINDOW);
+    dh_widget_set_layout(rw2, BOX_V);
+    var w0 = dh_widget_new(BOX);
+    dh_widget_set_flex(w0, 1);
+    var w1 = dh_widget_new(BOX);
+    dh_widget_set_flex(w1, 2);
+    dh_widget_add_child(rw2, w0);
+    dh_widget_add_child(rw2, w1);
+    dh_layout_apply(rw2, 100, 100);
+    check(dh_widget_h(w0), 33);      # floor(100*1/3)
+    check(dh_widget_h(w1), 67);      # exact remainder (33+67=100, no lost px)
+    check(dh_widget_y(w1), 33);
+
+    # --- mixed fixed + flex: fixed 20 then flex fills the rest ---
+    var rm = dh_widget_new(WINDOW);
+    dh_widget_set_layout(rm, BOX_V);
+    var m0 = dh_widget_new(BOX);
+    dh_widget_set_pref(m0, 0, 20);   # fixed 20
+    var m1 = dh_widget_new(BOX);
+    dh_widget_set_flex(m1, 1);       # flexible
+    dh_widget_add_child(rm, m0);
+    dh_widget_add_child(rm, m1);
+    dh_layout_apply(rm, 100, 100);
+    check(dh_widget_h(m0), 20);
+    check(dh_widget_y(m1), 20);
+    check(dh_widget_h(m1), 80);      # 100 - 20
+
+    # --- cross-axis align in BOX_V (cross = width), pref_w 40 in a 100 box ---
+    var ra = dh_widget_new(WINDOW);
+    dh_widget_set_layout(ra, BOX_V);
+    var a_st = dh_widget_new(BOX);   # STRETCH (default): fills width
+    dh_widget_set_pref(a_st, 40, 10);
+    var a_ce = dh_widget_new(BOX);   # CENTER
+    dh_widget_set_pref(a_ce, 40, 10);
+    dh_widget_set_align(a_ce, ALIGN_CENTER);
+    var a_en = dh_widget_new(BOX);   # END
+    dh_widget_set_pref(a_en, 40, 10);
+    dh_widget_set_align(a_en, ALIGN_END);
+    dh_widget_add_child(ra, a_st);
+    dh_widget_add_child(ra, a_ce);
+    dh_widget_add_child(ra, a_en);
+    dh_layout_apply(ra, 100, 100);
+    check(dh_widget_x(a_st), 0);     # stretch ignores pref_w
+    check(dh_widget_w(a_st), 100);
+    check(dh_widget_x(a_ce), 30);    # (100-40)/2
+    check(dh_widget_w(a_ce), 40);
+    check(dh_widget_x(a_en), 60);    # 100-40
+    check(dh_widget_w(a_en), 40);
+
+    # --- BOX_H cross-axis align (cross = height): CENTER a 20-tall child ---
+    var rz = dh_widget_new(WINDOW);
+    dh_widget_set_layout(rz, BOX_H);
+    var z_ce = dh_widget_new(BOX);
+    dh_widget_set_pref(z_ce, 30, 20);
+    dh_widget_set_align(z_ce, ALIGN_CENTER);
+    dh_widget_add_child(rz, z_ce);
+    dh_layout_apply(rz, 200, 50);
+    check(dh_widget_x(z_ce), 0);
+    check(dh_widget_w(z_ce), 30);
+    check(dh_widget_y(z_ce), 15);    # (50-20)/2
+    check(dh_widget_h(z_ce), 20);
+
+    # --- BOX_H flex on a NON-square container: pins the row main-axis so a
+    #     main/cross axis swap can't hide behind a square box ---
+    var rhf = dh_widget_new(WINDOW);
+    dh_widget_set_layout(rhf, BOX_H);
+    var hf0 = dh_widget_new(BOX);
+    dh_widget_set_flex(hf0, 1);
+    var hf1 = dh_widget_new(BOX);
+    dh_widget_set_flex(hf1, 1);
+    dh_widget_add_child(rhf, hf0);
+    dh_widget_add_child(rhf, hf1);
+    dh_layout_apply(rhf, 100, 40);   # wide, not square
+    check(dh_widget_w(hf0), 50);     # flex splits WIDTH (a row's main axis)
+    check(dh_widget_h(hf0), 40);     # stretch fills the 40 height
+    check(dh_widget_x(hf1), 50);
+    check(dh_widget_w(hf1), 50);
+    check(dh_widget_h(hf1), 40);
+
     if (g_fails == 0) {
-        var ok = "layout_test: PASS (box stacking)\n";
+        var ok = "layout_test: PASS (box stacking, padding, gap, flex, align)\n";
         syscall(1, 1, ok, strlen(ok));
     } else {
         var bad = "layout_test: FAIL\n";

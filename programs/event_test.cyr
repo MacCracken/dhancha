@@ -482,7 +482,7 @@ fn main(): i64 {
     check(g_dend, 2);                           # drag still ended
 
     if (g_fails == 0) {
-        var ok = "event_test: PASS (hit-test, focus, bubble, queue, run/quit, hover, click+key activate, tab, capture, drag-drop)\n";
+        var ok = "event_test: PASS (routing, hover, click+key activate, tab, capture, drag-drop)\n";
         syscall(1, 1, ok, strlen(ok));
     } else {
         var bad = "event_test: FAIL\n";

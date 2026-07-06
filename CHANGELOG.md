@@ -36,6 +36,22 @@ A–Q (adds capture + drag coverage).
   (with source identity + no spurious click), click-on-draggable (no drag),
   and drop over a non-target (END, no DROP).
 
+### Deferred
+
+The client-side toolkit is feature-rich; these are the remaining v0.5+ items
+(referenced from the in-code `TODO (see CHANGELOG)` markers):
+
+- **Compositor-fd input source** — decode `wl_pointer` / `wl_keyboard` wire
+  bytes into `DhEvent`s and block on the Wayland socket (the `dh_run` loop
+  currently pumps an in-memory `DhQueue`). Cross-repo (needs aethersafha's
+  wire); the `DhQueue` is the seam it will feed.
+- **Present path** — `dh_surface_present`: mabda GPU upload + the aethersafha
+  Wayland commit. The CPU draw shipped in 0.2.0 (`dh_surface_render`).
+- **Flex layout** — flex grow/shrink, an intrinsic measure pass,
+  padding/spacing, cross-axis alignment (box stacking ships today).
+- **Hit-test refinement** — z-order, clipping, and input-transparency (the
+  current hit-test is a plain contains-point walk).
+
 ## [0.3.0] - 2026-07-06
 
 Event dispatch — the widget tree becomes interactive: hit-testing, keyboard

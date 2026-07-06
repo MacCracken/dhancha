@@ -15,9 +15,9 @@
 # events against it, not against the button event's payload.
 #
 # The compositor-fd source (decode wl_pointer / wl_keyboard wire bytes
-# into DhEvents and pump the socket) is a later bite; the DhQueue is the
-# seam it will feed. Until then a caller (or a test) posts DhEvents into
-# the queue directly, which keeps the whole dispatch path exercisable.
+# into DhEvents and pump the socket) is a later bite (see CHANGELOG); the
+# DhQueue is the seam it will feed. Until then a caller (or a test) posts
+# DhEvents into the queue directly, keeping the whole dispatch path usable.
 
 # The kinds of input event the toolkit routes.
 enum DhEventKind {
@@ -155,8 +155,8 @@ fn dh_pointer_y(): i64 { return _dh_ptr_y; }
 # Hit-test: which widget contains point (px, py)? Depth-first, last
 # match wins (children paint over parents). Returns a DhWidget* or 0.
 #
-# TODO: honor z-order + clipping + input-transparency. This is a plain
-# contains-point walk of the laid-out bounds.
+# TODO (see CHANGELOG): honor z-order + clipping + input-transparency. This
+# is a plain contains-point walk of the laid-out bounds.
 fn dh_hit_test(root, px, py): i64 {
     if (root == 0) { return 0; }
     var hit = 0;

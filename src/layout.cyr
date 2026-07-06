@@ -45,7 +45,7 @@ fn dh_rect_h(r): i64 { return load64(r + DH_R_H); }
 #   BOX_V — stack top→bottom; each child gets full width + its pref height.
 #   BOX_H — stack left→right; each child gets its pref width + full height.
 #   NONE / FLEX — place each child at (x,y) sized to its pref (0 → fill).
-# TODO(v0.4): flex grow/shrink, intrinsic measure pass, padding/spacing,
+# TODO (see CHANGELOG): flex grow/shrink, intrinsic measure, padding/spacing,
 # cross-axis alignment.
 fn dh_layout_at(wgt, x, y, w, h): i64 {
     if (wgt == 0) { return DHANCHA_ERR_BAD_WIDGET; }

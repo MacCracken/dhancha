@@ -165,8 +165,95 @@ fn main(): i64 {
     check(dh_widget_w(hf1), 50);
     check(dh_widget_h(hf1), 40);
 
+    # ================================================================
+    # Intrinsic measure (natural content size, bottom-up)
+    # ================================================================
+    var mout = alloc(16);
+
+    # --- leaf: natural size == pref ---
+    var leaf = dh_widget_new(BOX);
+    dh_widget_set_pref(leaf, 30, 20);
+    dh_measure(leaf, mout);
+    check(load64(mout), 30);
+    check(load64(mout + 8), 20);
+    check(dh_measure_w(leaf), 30);
+    check(dh_measure_h(leaf), 20);
+
+    # --- BOX_V (pad 5, gap 4): w = max(30,50)+2*5 = 60; h = (20+10)+4+2*5 = 44 ---
+    var mv = dh_widget_new(WINDOW);
+    dh_widget_set_layout(mv, BOX_V);
+    dh_widget_set_padding(mv, 5);
+    dh_widget_set_gap(mv, 4);
+    var mv0 = dh_widget_new(BOX);
+    dh_widget_set_pref(mv0, 30, 20);
+    var mv1 = dh_widget_new(BOX);
+    dh_widget_set_pref(mv1, 50, 10);
+    dh_widget_add_child(mv, mv0);
+    dh_widget_add_child(mv, mv1);
+    dh_measure(mv, mout);
+    check(load64(mout), 60);
+    check(load64(mout + 8), 44);
+
+    # --- BOX_H: w = 30+50 = 80; h = max(20,10) = 20 ---
+    var mh = dh_widget_new(WINDOW);
+    dh_widget_set_layout(mh, BOX_H);
+    var mh0 = dh_widget_new(BOX);
+    dh_widget_set_pref(mh0, 30, 20);
+    var mh1 = dh_widget_new(BOX);
+    dh_widget_set_pref(mh1, 50, 10);
+    dh_widget_add_child(mh, mh0);
+    dh_widget_add_child(mh, mh1);
+    dh_measure(mh, mout);
+    check(load64(mout), 80);
+    check(load64(mout + 8), 20);
+
+    # --- nested: BOX_V > [ inner(BOX_H 20+25 x 15), leaf 10x8 ] ---
+    var mn = dh_widget_new(WINDOW);
+    dh_widget_set_layout(mn, BOX_V);
+    var inner = dh_widget_new(BOX);
+    dh_widget_set_layout(inner, BOX_H);
+    var in0 = dh_widget_new(BOX);
+    dh_widget_set_pref(in0, 20, 15);
+    var in1 = dh_widget_new(BOX);
+    dh_widget_set_pref(in1, 25, 15);
+    dh_widget_add_child(inner, in0);
+    dh_widget_add_child(inner, in1);
+    var leaf2 = dh_widget_new(BOX);
+    dh_widget_set_pref(leaf2, 10, 8);
+    dh_widget_add_child(mn, inner);
+    dh_widget_add_child(mn, leaf2);
+    dh_measure(mn, mout);
+    check(load64(mout), 45);         # max(inner 45, leaf 10)
+    check(load64(mout + 8), 23);     # inner 15 + leaf 8
+
+    # --- dh_layout_fit + auto-size: inner (pref 0) fits its measured content ---
+    dh_layout_fit(mn);
+    check(dh_widget_w(mn), 45);
+    check(dh_widget_h(mn), 23);
+    check(dh_widget_y(inner), 0);
+    check(dh_widget_h(inner), 15);   # auto-sized: pref_h was 0 -> measured 15
+    check(dh_widget_y(leaf2), 15);   # stacked below the auto-sized inner
+    check(dh_widget_h(leaf2), 8);
+
+    # --- fit with a fixed child container carrying its OWN pref main size:
+    #     measure honors the pref, so the parent contains it (no overflow) ---
+    var rfx = dh_widget_new(WINDOW);
+    dh_widget_set_layout(rfx, BOX_V);
+    var cfx = dh_widget_new(BOX);
+    dh_widget_set_layout(cfx, BOX_V);
+    dh_widget_set_pref(cfx, 0, 100);   # explicit height 100...
+    var lfx = dh_widget_new(BOX);
+    dh_widget_set_pref(lfx, 30, 20);   # ...over only 20 of content
+    dh_widget_add_child(cfx, lfx);
+    dh_widget_add_child(rfx, cfx);
+    dh_measure(rfx, mout);
+    check(load64(mout + 8), 100);      # parent measures to the child's pref, not its content
+    dh_layout_fit(rfx);
+    check(dh_widget_h(rfx), 100);
+    check(dh_widget_h(cfx), 100);      # child fits inside the parent (no spill)
+
     if (g_fails == 0) {
-        var ok = "layout_test: PASS (box stacking, padding, gap, flex, align)\n";
+        var ok = "layout_test: PASS (box stacking, padding, gap, flex, align, measure, fit)\n";
         syscall(1, 1, ok, strlen(ok));
     } else {
         var bad = "layout_test: FAIL\n";

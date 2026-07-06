@@ -5,10 +5,11 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.5.0] - 2026-07-06
 
-The layout engine — `BOX_V` / `BOX_H` become real flex containers.
-`layout_test` now covers stacking, padding, gap, flex, and alignment.
+The layout engine — `BOX_V` / `BOX_H` become real flex containers, plus
+intrinsic measure (natural content size). `layout_test` now covers stacking,
+padding, gap, flex, alignment, measure, and fit.
 
 ### Added
 - **Flex grow** — `dh_widget_set_flex(w, weight)`. Fixed children (weight 0)
@@ -23,18 +24,25 @@ The layout engine — `BOX_V` / `BOX_H` become real flex containers.
 - **Cross-axis alignment** — `dh_widget_set_align(w, DhAlign)` positions a
   child on the cross axis: `ALIGN_STRETCH` (default) fills it, `ALIGN_START` /
   `ALIGN_CENTER` / `ALIGN_END` use the child's preferred cross size.
+- **Intrinsic measure** — `dh_measure(w, out)` computes a widget's natural
+  content size bottom-up (leaf → its pref; container → children combined per
+  mode + padding + gaps), with `dh_measure_w` / `dh_measure_h` shorthands.
+  `dh_layout_fit(root)` measures then lays out at the natural size (a
+  shrink-to-fit window). Inside a flex box, a fixed child with no preferred
+  main size now auto-sizes to its measured content, so nested containers fit.
 - `BOX_V` / `BOX_H` are now flexbox-style rows/columns; `FLEX` is an alias of
   `BOX_V`; `NONE` remains absolute overlay (now padding-aware). The arranger
   is factored into `dh_layout_box` (flex) + `dh_layout_none` (overlay).
 - Test: `layout_test` — padding + gap insets, flex 50/50, weighted flex (1:2
-  with exact remainder), mixed fixed + flex, and cross-axis align in both
-  `BOX_V` (cross = width) and `BOX_H` (cross = height).
+  with exact remainder), mixed fixed + flex, cross-axis align in both `BOX_V`
+  (cross = width) and `BOX_H` (cross = height), and measure / `dh_layout_fit`
+  (leaf, BOX_V/BOX_H, a nested tree, and auto-sizing a pref-less container).
 
 ### Deferred
-- **Intrinsic measure** — auto-sizing a container to its content (a measure
-  pass; box layout ships with explicit / flex sizing today).
-- Per-edge padding + margins; wrap; the compositor-fd input source; the
-  present path (mabda GPU upload + the aethersafha Wayland commit).
+- Per-edge padding + margins; flex-wrap; the compositor-fd input source
+  (decode `wl_pointer` / `wl_keyboard` wire bytes + block on the Wayland
+  socket — cross-repo, needs aethersafha); the present path (mabda GPU upload
+  + the aethersafha Wayland commit).
 
 ## [0.4.0] - 2026-07-06
 

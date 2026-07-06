@@ -10,8 +10,9 @@
 # children; `pad` insets the content box; each child's DhAlign positions
 # it on the cross axis (STRETCH fills it). NONE is absolute overlay.
 #
-# Intrinsic measure (auto-sizing a container to its content) is tracked
-# in the CHANGELOG as a follow-up.
+# Intrinsic measure (dh_measure / dh_layout_fit) computes a widget's
+# natural content size bottom-up; inside a flex box a fixed child with no
+# preferred main size auto-sizes to its measured content.
 
 # Layout modes a container applies to its children.
 enum DhLayout {
@@ -43,6 +44,106 @@ fn dh_rect_x(r): i64 { return load64(r + DH_R_X); }
 fn dh_rect_y(r): i64 { return load64(r + DH_R_Y); }
 fn dh_rect_w(r): i64 { return load64(r + DH_R_W); }
 fn dh_rect_h(r): i64 { return load64(r + DH_R_H); }
+
+# ---- intrinsic measure --------------------------------------------
+
+# @public — compute `wgt`'s natural content size bottom-up, writing
+# (width, height) into the 16-byte `out` buffer. A CHILDLESS widget
+# measures to its preferred size — so padding on an empty widget adds
+# nothing; use a pref for a spacer. A container's content size derives
+# from its measured children per mode (BOX_V: max width, summed heights +
+# gaps; BOX_H: summed widths + gaps, max height; NONE: bounding box) plus
+# 2*padding; an explicit pref on an axis is an EXACT size and overrides the
+# computed content on that axis, so dh_measure and the dh_child_main layout
+# path agree — dh_layout_fit never sizes a parent smaller than a pref-
+# bearing child (which would otherwise overflow it).
+fn dh_measure(wgt, out): i64 {
+    if (wgt == 0) {
+        store64(out, 0);
+        store64(out + 8, 0);
+        return DHANCHA_OK;
+    }
+    var child = dh_widget_first_child(wgt);
+    if (child == 0) {
+        store64(out, dh_widget_pref_w(wgt));
+        store64(out + 8, dh_widget_pref_h(wgt));
+        return DHANCHA_OK;
+    }
+    var pad = dh_widget_padding(wgt);
+    var gap = dh_widget_gap(wgt);
+    var mode = dh_widget_layout(wgt);
+    var cbuf = alloc(16);
+    var count = 0;
+    var sum_w = 0;
+    var sum_h = 0;
+    var max_w = 0;
+    var max_h = 0;
+    while (child != 0) {
+        dh_measure(child, cbuf);
+        var cw = load64(cbuf);
+        var chn = load64(cbuf + 8);
+        count = count + 1;
+        sum_w = sum_w + cw;
+        sum_h = sum_h + chn;
+        if (cw > max_w) { max_w = cw; }
+        if (chn > max_h) { max_h = chn; }
+        child = dh_widget_next_sibling(child);
+    }
+    var gap_total = 0;
+    if (count > 1) { gap_total = (count - 1) * gap; }
+    var nat_w = max_w;              # default (NONE = bounding box)
+    var nat_h = max_h;
+    if (mode == BOX_H) {
+        nat_w = sum_w + gap_total;
+        nat_h = max_h;
+    }
+    if (mode == BOX_V) {
+        nat_w = max_w;
+        nat_h = sum_h + gap_total;
+    }
+    if (mode == FLEX) {
+        nat_w = max_w;
+        nat_h = sum_h + gap_total;
+    }
+    var out_w = nat_w + pad + pad;
+    var out_h = nat_h + pad + pad;
+    # an explicit pref on an axis is an exact size — it wins over content,
+    # matching dh_child_main so measure and layout agree (no fit overflow)
+    var pw = dh_widget_pref_w(wgt);
+    var ph = dh_widget_pref_h(wgt);
+    if (pw != 0) { out_w = pw; }
+    if (ph != 0) { out_h = ph; }
+    store64(out, out_w);
+    store64(out + 8, out_h);
+    return DHANCHA_OK;
+}
+
+# Convenience: natural width / height only.
+fn dh_measure_w(wgt): i64 {
+    var m = alloc(16);
+    dh_measure(wgt, m);
+    return load64(m);
+}
+fn dh_measure_h(wgt): i64 {
+    var m = alloc(16);
+    dh_measure(wgt, m);
+    return load64(m + 8);
+}
+
+# The main-axis size a FIXED child occupies in a box: its preferred main
+# size, or — when that is 0 — its measured content size. This is what lets
+# a nested container with no explicit size auto-fit its content inside a
+# flex parent.
+fn dh_child_main(child, vertical): i64 {
+    var pm = dh_widget_pref_w(child);
+    if (vertical == 1) { pm = dh_widget_pref_h(child); }
+    if (pm != 0) { return pm; }
+    var m = alloc(16);
+    dh_measure(child, m);
+    var mm = load64(m);
+    if (vertical == 1) { mm = load64(m + 8); }
+    return mm;
+}
 
 # Arrange a NONE container: children overlay the padded content box, each
 # at its preferred size (a 0 dimension fills the content box).
@@ -98,9 +199,7 @@ fn dh_layout_box(wgt, x, y, w, h, vertical): i64 {
         if (cflex > 0) {
             flex_total = flex_total + cflex;
         } else {
-            var pm = dh_widget_pref_w(child);
-            if (vertical == 1) { pm = dh_widget_pref_h(child); }
-            fixed = fixed + pm;
+            fixed = fixed + dh_child_main(child, vertical);
         }
         child = dh_widget_next_sibling(child);
     }
@@ -129,8 +228,7 @@ fn dh_layout_box(wgt, x, y, w, h, vertical): i64 {
                 flex_used = flex_used + msize;
             }
         } else {
-            msize = dh_widget_pref_w(child);
-            if (vertical == 1) { msize = dh_widget_pref_h(child); }
+            msize = dh_child_main(child, vertical);
         }
         # cross axis: available + this child's pref cross size
         var cross_avail = cw;
@@ -161,8 +259,8 @@ fn dh_layout_box(wgt, x, y, w, h, vertical): i64 {
 
 # Assign `wgt` the box (x, y, w, h), then arrange its children per its
 # DhLayout mode and recurse. BOX_V / FLEX = flex column, BOX_H = flex row
-# (both honor pad / gap / per-child flex + align); NONE = overlay.
-# Intrinsic measure (auto-size to content) is a CHANGELOG follow-up.
+# (both honor pad / gap / per-child flex + align); NONE = overlay. A fixed
+# child with no pref main size auto-sizes to its measured content.
 fn dh_layout_at(wgt, x, y, w, h): i64 {
     if (wgt == 0) { return DHANCHA_ERR_BAD_WIDGET; }
     dh_widget_set_bounds(wgt, x, y, w, h);
@@ -176,4 +274,12 @@ fn dh_layout_at(wgt, x, y, w, h): i64 {
 # @public — lay out `root` within an (avail_w × avail_h) box at origin (0,0).
 fn dh_layout_apply(root, avail_w, avail_h): i64 {
     return dh_layout_at(root, 0, 0, avail_w, avail_h);
+}
+
+# @public — measure `root`'s natural size, then lay it out at that size
+# (origin 0,0). Convenience for a window that shrinks to fit its content.
+fn dh_layout_fit(root): i64 {
+    var m = alloc(16);
+    dh_measure(root, m);
+    return dh_layout_at(root, 0, 0, load64(m), load64(m + 8));
 }

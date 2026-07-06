@@ -2,26 +2,51 @@
 # event.cyr — this module OWNS the input-dispatch role.
 #
 # Input (keyboard / pointer) arrives from the aethersafha compositor over
-# the Wayland client connection as DhEvents. dh_dispatch hit-tests the
-# widget tree and routes an event to the focused (or hit) widget;
-# dh_run is the client event loop that pumps events until the app exits.
-# v0.1.0 is a skeleton: real hit-testing, focus tracking, and drag-drop
-# state machine land in v0.2.
+# the Wayland client connection as DhEvents. dh_dispatch resolves a
+# target (the focused widget for keys, the widget under the pointer for
+# clicks) and BUBBLES the event up the parent chain, invoking each node's
+# handler until one CONSUMES it. dh_run pumps a DhQueue of events and
+# dispatches them until the queue drains or a handler calls dh_quit.
+#
+# Wire model (per Wayland wl_pointer / wl_keyboard): a pointer BUTTON
+# event carries (button, state) but NOT coordinates — the compositor
+# tracks position from MOTION events. So dhancha keeps the current
+# pointer position (updated on POINTER_MOVE) and hit-tests button/drag
+# events against it, not against the button event's payload.
+#
+# The compositor-fd source (decode wl_pointer / wl_keyboard wire bytes
+# into DhEvents and pump the socket) is a later bite; the DhQueue is the
+# seam it will feed. Until then a caller (or a test) posts DhEvents into
+# the queue directly, which keeps the whole dispatch path exercisable.
 
 # The kinds of input event the toolkit routes.
 enum DhEventKind {
-    KEY           = 0;   # keyboard key press/release (keysym in `a`)
+    KEY           = 0;   # keyboard key: keysym / codepoint in `a`, mods in `b`
     POINTER_MOVE  = 1;   # pointer motion to (x=`a`, y=`b`)
-    POINTER_BTN   = 2;   # pointer button (button in `a`, state in `b`)
+    POINTER_BTN   = 2;   # pointer button: code in `a`, state in `b` (0=release,1=press)
     FOCUS         = 3;   # focus enter/leave
     DRAG          = 4;   # drag-drop phase transition
+    POINTER_ENTER = 5;   # synthesized: pointer entered a widget (hover)
+    POINTER_LEAVE = 6;   # synthesized: pointer left a widget (hover)
+    ACTIVATE      = 7;   # synthesized: click / keyboard activation of a widget
+}
+
+# Well-known key codes the toolkit acts on itself (values are ASCII /
+# Unicode codepoints, matching the puka keymap's sym space).
+enum DhKey {
+    DH_KEY_TAB    = 9;
+    DH_KEY_ENTER  = 10;
+    DH_KEY_RETURN = 13;
+    DH_KEY_SPACE  = 32;
 }
 
 # DhEvent struct layout (40 bytes):
 #   +0:  kind    — one of DhEventKind
-#   +8:  a       — primary payload (keysym / x / button)
-#   +16: b       — secondary payload (y / state)
-#   +24: target  — resolved target DhWidget* (0 = unrouted)
+#   +8:  a       — primary payload (keysym / x / button code)
+#   +16: b       — secondary payload (mods / y / button state)
+#   +24: target  — resolved target DhWidget* (0 = unrouted): the ORIGINAL
+#                  hit/focus node (bubbling still reports currentTarget to
+#                  each handler as its first arg)
 #   +32: consumed — 1 once a handler claims it (stops propagation)
 enum DhEventField {
     DH_E_KIND     = 0;
@@ -31,8 +56,24 @@ enum DhEventField {
     DH_E_CONSUMED = 32;
 }
 
-# Currently-focused widget for keyboard routing. Module-global u64 slot.
-var _dh_focus[1];
+# Currently-focused widget for keyboard routing. A plain module-global
+# SCALAR (NOT a `var X[1]` array — module-global `var X[N]` sizing is
+# non-uniform in cyrius, so an 8-byte load64/store64 on a `[1]` can read
+# or write out of bounds). A scalar i64 is a reliable 8-byte cell.
+var _dh_focus = 0;
+
+# Last known pointer position (set by POINTER_MOVE; button/drag events
+# hit-test against this, matching the Wayland wire model).
+var _dh_ptr_x = 0;
+var _dh_ptr_y = 0;
+
+# Widget currently under the pointer (hover), and the widget that received
+# the last still-unreleased press (for click / ACTIVATE synthesis).
+var _dh_hover = 0;
+var _dh_press = 0;
+
+# The event-loop run flag. dh_run sets it; dh_quit clears it.
+var _dh_running = 0;
 
 # Allocate a DhEvent of `kind` with zeroed payload.
 fn dh_event_new(kind): i64 {
@@ -45,10 +86,11 @@ fn dh_event_new(kind): i64 {
     return ev;
 }
 
-fn dh_event_kind(ev): i64   { return load64(ev + DH_E_KIND); }
-fn dh_event_a(ev): i64      { return load64(ev + DH_E_A); }
-fn dh_event_b(ev): i64      { return load64(ev + DH_E_B); }
-fn dh_event_target(ev): i64 { return load64(ev + DH_E_TARGET); }
+fn dh_event_kind(ev): i64     { return load64(ev + DH_E_KIND); }
+fn dh_event_a(ev): i64        { return load64(ev + DH_E_A); }
+fn dh_event_b(ev): i64        { return load64(ev + DH_E_B); }
+fn dh_event_target(ev): i64   { return load64(ev + DH_E_TARGET); }
+fn dh_event_consumed(ev): i64 { return load64(ev + DH_E_CONSUMED); }
 
 # Set the payload fields.
 fn dh_event_set_payload(ev, a, b): i64 {
@@ -58,14 +100,31 @@ fn dh_event_set_payload(ev, a, b): i64 {
 }
 
 # Set / get the keyboard focus target.
-fn dh_focus_set(wgt): i64 { store64(_dh_focus, wgt); return DHANCHA_OK; }
-fn dh_focus_get(): i64    { return load64(_dh_focus); }
+fn dh_focus_set(wgt): i64 { _dh_focus = wgt; return DHANCHA_OK; }
+fn dh_focus_get(): i64    { return _dh_focus; }
+
+# Widget currently under the pointer (0 = none).
+fn dh_hover_get(): i64 { return _dh_hover; }
+
+# Clear all transient input state (focus, hover, press). Apps call this
+# when swapping the widget tree (a new window / scene) so a stale pointer
+# can't route into a torn-down tree.
+fn dh_reset_input(): i64 {
+    _dh_focus = 0;
+    _dh_hover = 0;
+    _dh_press = 0;
+    return DHANCHA_OK;
+}
+
+# Current pointer position (last POINTER_MOVE).
+fn dh_pointer_x(): i64 { return _dh_ptr_x; }
+fn dh_pointer_y(): i64 { return _dh_ptr_y; }
 
 # Hit-test: which widget contains point (px, py)? Depth-first, last
 # match wins (children paint over parents). Returns a DhWidget* or 0.
 #
-# TODO(v0.2): honor z-order + clipping + input-transparency. v0.1.0 is
-# a plain contains-point walk.
+# TODO: honor z-order + clipping + input-transparency. This is a plain
+# contains-point walk of the laid-out bounds.
 fn dh_hit_test(root, px, py): i64 {
     if (root == 0) { return 0; }
     var hit = 0;
@@ -86,46 +145,285 @@ fn dh_hit_test(root, px, py): i64 {
     return hit;
 }
 
-# Dispatch an event into the tree. Keyboard/focus events route to the
-# focused widget; pointer events hit-test. Returns DHANCHA_OK.
-#
-# TODO(v0.2): real routing — capture/bubble phases, per-widget handler
-# fnptr table (hashmap widget-id → handler), drag-drop state machine,
-# accelerator table. v0.1.0 just resolves + stamps `target`.
+# Bubble `ev` up the parent chain starting at `target`: invoke each
+# node's handler (if any); the first handler that returns 1 CONSUMES the
+# event and stops propagation (sets DH_E_CONSUMED). Handlers receive
+# (currentTarget, ev); the original hit/focus node is ev's DH_E_TARGET.
+# A null handler ptr is skipped (fncall on 0 would crash).
+fn dh_bubble(target, ev): i64 {
+    var node = target;
+    while (node != 0) {
+        var fp = dh_widget_handler(node);
+        if (fp != 0) {
+            var consumed = fncall2(fp, node, ev);
+            if (consumed == 1) {
+                store64(ev + DH_E_CONSUMED, 1);
+                return DHANCHA_OK;
+            }
+        }
+        node = dh_widget_parent(node);
+    }
+    return DHANCHA_OK;
+}
+
+# ---- higher-level synthesis helpers --------------------------------
+
+# Emit a fresh synthetic event of `kind` targeted at `target` and bubble
+# it. Used for POINTER_ENTER / POINTER_LEAVE / ACTIVATE, which the toolkit
+# DERIVES from raw motion/button/key events rather than receiving off the
+# wire. No-op on a null target.
+fn dh_emit(target, kind): i64 {
+    if (target == 0) { return DHANCHA_OK; }
+    var ev = dh_event_new(kind);
+    store64(ev + DH_E_TARGET, target);
+    dh_bubble(target, ev);
+    return DHANCHA_OK;
+}
+
+# Update the hovered widget; on a boundary crossing emit POINTER_LEAVE to
+# the widget left and POINTER_ENTER to the widget entered.
+fn dh_update_hover(target): i64 {
+    if (target == _dh_hover) { return DHANCHA_OK; }
+    if (_dh_hover != 0) { dh_emit(_dh_hover, POINTER_LEAVE); }
+    _dh_hover = target;
+    if (target != 0) { dh_emit(target, POINTER_ENTER); }
+    return DHANCHA_OK;
+}
+
+# Pre-order (DFS) collect of focusable widgets into `buf` (up to `cap`
+# slots). Returns the running count, threaded through the return value so
+# no address-of-a-local is needed.
+fn dh_collect_focusable(node, buf, count, cap): i64 {
+    if (node == 0) { return count; }
+    var c = count;
+    if (dh_widget_focusable(node) == 1) {
+        if (c < cap) {
+            store64(buf + c * 8, node);
+            c = c + 1;
+        }
+    }
+    var child = dh_widget_first_child(node);
+    while (child != 0) {
+        c = dh_collect_focusable(child, buf, c, cap);
+        child = dh_widget_next_sibling(child);
+    }
+    return c;
+}
+
+# Move keyboard focus to the next (backward==0) or previous (backward!=0)
+# focusable widget in pre-order, wrapping. With no current focus, forward
+# picks the first and backward the last. Caps at 256 focusables (a UI with
+# more is beyond this toolkit's current scope).
+fn dh_focus_advance(root, backward): i64 {
+    var cap = 256;
+    var buf = alloc(cap * 8);
+    var count = dh_collect_focusable(root, buf, 0, cap);
+    if (count == 0) { return DHANCHA_OK; }
+    var cur = dh_focus_get();
+    var idx = 0 - 1;
+    var i = 0;
+    while (i < count) {
+        if (load64(buf + i * 8) == cur) { idx = i; }
+        i = i + 1;
+    }
+    var next = 0;
+    if (idx == (0 - 1)) {
+        if (backward == 0) { next = load64(buf); }
+        if (backward != 0) { next = load64(buf + (count - 1) * 8); }
+    }
+    if (idx != (0 - 1)) {
+        var ni = idx + 1;
+        if (backward != 0) { ni = idx - 1; }
+        if (ni >= count) { ni = 0; }
+        if (ni < 0) { ni = count - 1; }
+        next = load64(buf + ni * 8);
+    }
+    dh_focus_set(next);
+    return DHANCHA_OK;
+}
+
+# True if `k` is an activation key (Enter / Return / Space).
+fn dh_key_is_activate(k): i64 {
+    if (k == DH_KEY_ENTER)  { return 1; }
+    if (k == DH_KEY_RETURN) { return 1; }
+    if (k == DH_KEY_SPACE)  { return 1; }
+    return 0;
+}
+
+# Dispatch an event into the tree.
+#   KEY   -> the focused widget; Tab / Shift-Tab (a==DH_KEY_TAB, b!=0 =>
+#            backward) instead moves focus and is toolkit-consumed;
+#            Enter/Return/Space on a focused BUTTON also synthesizes ACTIVATE.
+#   FOCUS -> the focused widget.
+#   POINTER_MOVE -> updates the tracked pointer position, hit-tests there,
+#            and emits POINTER_ENTER/LEAVE on hover boundary crossings.
+#   POINTER_BTN  -> hit-tests at the tracked position; a press records the
+#            press target + click-to-focus; a release on the SAME widget
+#            synthesizes ACTIVATE (a click).
+#   DRAG  -> hit-tests at the tracked position.
+# The resolved target is stamped into ev, then the raw event bubbles up
+# from it; the higher-level events (ENTER/LEAVE/ACTIVATE) are synthesized
+# around that. Returns DHANCHA_OK.
 fn dh_dispatch(root, ev): i64 {
     if (root == 0) { return DHANCHA_ERR_BAD_WIDGET; }
     if (ev == 0)   { return DHANCHA_ERR_OTHER; }
     var kind = dh_event_kind(ev);
-    var target = 0;
+
+    # Tab traversal is a toolkit-level action: retarget focus, do not route
+    # to the (old) focused widget, and consume the key.
     if (kind == KEY) {
-        target = dh_focus_get();
+        if (dh_event_a(ev) == DH_KEY_TAB) {
+            dh_focus_advance(root, dh_event_b(ev));
+            store64(ev + DH_E_TARGET, dh_focus_get());
+            store64(ev + DH_E_CONSUMED, 1);
+            return DHANCHA_OK;
+        }
     }
-    if (kind == FOCUS) {
-        target = dh_focus_get();
-    }
+
+    var target = 0;
+    if (kind == KEY)   { target = dh_focus_get(); }
+    if (kind == FOCUS) { target = dh_focus_get(); }
     if (kind == POINTER_MOVE) {
-        target = dh_hit_test(root, dh_event_a(ev), dh_event_b(ev));
+        _dh_ptr_x = dh_event_a(ev);
+        _dh_ptr_y = dh_event_b(ev);
+        target = dh_hit_test(root, _dh_ptr_x, _dh_ptr_y);
+        dh_update_hover(target);
     }
     if (kind == POINTER_BTN) {
-        target = dh_hit_test(root, dh_event_a(ev), dh_event_b(ev));
+        target = dh_hit_test(root, _dh_ptr_x, _dh_ptr_y);
+        if (dh_event_b(ev) == 1) {
+            _dh_press = target;
+            if (target != 0) {
+                if (dh_widget_focusable(target) == 1) { dh_focus_set(target); }
+            }
+        }
     }
-    if (kind == DRAG) {
-        target = dh_hit_test(root, dh_event_a(ev), dh_event_b(ev));
-    }
+    if (kind == DRAG) { target = dh_hit_test(root, _dh_ptr_x, _dh_ptr_y); }
+
     store64(ev + DH_E_TARGET, target);
-    # TODO(v0.2): invoke the target's handler fnptr; set _CONSUMED.
+    dh_bubble(target, ev);
+
+    # higher-level synthesis, AFTER the raw event has been delivered
+    if (kind == POINTER_BTN) {
+        if (dh_event_b(ev) == 0) {
+            if (target != 0) {
+                if (target == _dh_press) { dh_emit(target, ACTIVATE); }
+            }
+            _dh_press = 0;
+        }
+    }
+    if (kind == KEY) {
+        if (target != 0) {
+            if (dh_widget_kind(target) == BUTTON) {
+                if (dh_key_is_activate(dh_event_a(ev)) == 1) { dh_emit(target, ACTIVATE); }
+            }
+        }
+    }
     return DHANCHA_OK;
 }
 
-# The client event loop. Pumps events off the Wayland connection,
-# dispatches each into `root`, redraws when dirty, until the app quits.
-# Returns the app exit code.
+# ---- event queue (the dh_run pump source) --------------------------
 #
-# TODO(v0.2): the real loop — block on the compositor fd, translate
-# wire events into DhEvents, dispatch, run layout when dirty, present
-# the surface. v0.1.0 returns immediately (nothing to pump yet).
-fn dh_run(root): i64 {
-    if (root == 0) { return DHANCHA_ERR_BAD_WIDGET; }
-    # v0.1.0 skeleton: no compositor connection wired, so return cleanly.
+# A DhQueue is a fixed-capacity ring of DhEvent pointers. The future
+# compositor-fd translator pushes wire events here; dh_run pops +
+# dispatches. A ring (not a growable vec) so an input flood DROPS the
+# overflow rather than growing without bound (puka's wl_kq discipline).
+#
+# DhQueue struct layout (32 bytes):
+#   +0:  head   — index of the next event to pop
+#   +8:  count  — number of queued events
+#   +16: cap    — ring capacity (slots)
+#   +24: buf    — cap i64 slots of DhEvent*
+enum DhQueueField {
+    DH_Q_HEAD  = 0;
+    DH_Q_COUNT = 8;
+    DH_Q_CAP   = 16;
+    DH_Q_BUF   = 24;
+}
+
+# Allocate a ring of `cap` DhEvent-pointer slots. Returns a DhQueue* (or
+# 0 for cap <= 0 / on OOM).
+fn dh_queue_new(cap): i64 {
+    if (cap <= 0) { return 0; }
+    var q = alloc(32);
+    var buf = alloc(cap * 8);
+    store64(q + DH_Q_HEAD, 0);
+    store64(q + DH_Q_COUNT, 0);
+    store64(q + DH_Q_CAP, cap);
+    store64(q + DH_Q_BUF, buf);
+    return q;
+}
+
+fn dh_queue_count(q): i64 { return load64(q + DH_Q_COUNT); }
+fn dh_queue_empty(q): i64 {
+    if (load64(q + DH_Q_COUNT) == 0) { return 1; }
+    return 0;
+}
+
+# Push `ev` onto the tail. Returns DHANCHA_OK; DHANCHA_ERR_OTHER if `ev`
+# is null or the ring is full (in both cases nothing is enqueued). A null
+# event is rejected here so dh_run's drain can treat a null pop strictly
+# as "ring empty" (a null slot mid-ring would otherwise truncate the drain).
+fn dh_queue_push(q, ev): i64 {
+    if (q == 0)  { return DHANCHA_ERR_OTHER; }
+    if (ev == 0) { return DHANCHA_ERR_OTHER; }
+    var count = load64(q + DH_Q_COUNT);
+    var cap = load64(q + DH_Q_CAP);
+    if (count >= cap) { return DHANCHA_ERR_OTHER; }
+    var head = load64(q + DH_Q_HEAD);
+    var buf = load64(q + DH_Q_BUF);
+    var idx = (head + count) % cap;
+    store64(buf + idx * 8, ev);
+    store64(q + DH_Q_COUNT, count + 1);
     return DHANCHA_OK;
+}
+
+# Pop from the head. Returns a DhEvent*, or 0 if the ring is empty.
+fn dh_queue_pop(q): i64 {
+    if (q == 0) { return 0; }
+    var count = load64(q + DH_Q_COUNT);
+    if (count == 0) { return 0; }
+    var head = load64(q + DH_Q_HEAD);
+    var cap = load64(q + DH_Q_CAP);
+    var buf = load64(q + DH_Q_BUF);
+    var ev = load64(buf + head * 8);
+    store64(q + DH_Q_HEAD, (head + 1) % cap);
+    store64(q + DH_Q_COUNT, count - 1);
+    return ev;
+}
+
+# ---- event loop ----------------------------------------------------
+
+# Stop the running dh_run loop (a handler calls this to quit the app).
+fn dh_quit(): i64 { _dh_running = 0; return DHANCHA_OK; }
+
+# The client event loop. Pops events off `q` and dispatches each into
+# `root` until the queue drains or a handler calls dh_quit. Returns the
+# count of events processed (>= 0), or -1 if `root` / `q` is null (a
+# negative return means "did not run" — it can never be a real count).
+#
+# Termination is on queue-EMPTY, not on a null pop: dh_queue_push rejects
+# null events, so the ring never holds a 0 slot, but keying off emptiness
+# is the self-evidently-correct condition regardless.
+#
+# The compositor-connected loop (block on the Wayland fd, decode wire
+# events into DhEvents, run layout + present when dirty) replaces the
+# empty-check branch with an fd wait; the dispatch core is the same.
+fn dh_run(root, q): i64 {
+    if (root == 0) { return 0 - 1; }
+    if (q == 0)    { return 0 - 1; }
+    _dh_running = 1;
+    var n = 0;
+    while (_dh_running == 1) {
+        if (dh_queue_empty(q) == 1) {
+            _dh_running = 0;
+        } else {
+            var ev = dh_queue_pop(q);
+            if (ev != 0) {
+                dh_dispatch(root, ev);
+                n = n + 1;
+            }
+        }
+    }
+    return n;
 }

@@ -7,19 +7,23 @@
 # Layout (layout.cyr) walks the tree to assign bounds; event dispatch
 # (event.cyr) hit-tests it; the surface (surface.cyr) draws it.
 #
-# DhWidget struct layout (64 bytes):
-#   +0:  id            — monotonic widget id (debug / focus routing)
-#   +8:  kind          — one of DhWidgetKind
-#   +16: x             — resolved x (layout output)
-#   +24: y             — resolved y
-#   +32: w             — resolved width
-#   +40: h             — resolved height
-#   +48: parent        — parent DhWidget* (0 = root)
-#   +56: first_child   — first child DhWidget* (0 = leaf)
-#   +64: next_sibling  — next sibling under the same parent (0 = last)
-#
-# NOTE: 9 slots → 72 bytes. (Kept explicit rather than packed; the
-# extra slot is next_sibling at +64.)
+# DhWidget struct layout (128 bytes, 16 u64 slots):
+#   +0:   id            — monotonic widget id (debug / focus routing)
+#   +8:   kind          — one of DhWidgetKind
+#   +16:  x             — resolved x (layout output)
+#   +24:  y             — resolved y
+#   +32:  w             — resolved width
+#   +40:  h             — resolved height
+#   +48:  parent        — parent DhWidget* (0 = root)
+#   +56:  first_child   — first child DhWidget* (0 = leaf)
+#   +64:  next_sibling  — next sibling under the same parent (0 = last)
+#   +72:  layout        — DhLayout mode applied to this node's children
+#   +80:  bg            — background color 0x00RRGGBB, or -1 = none
+#   +88:  text          — cstring ptr for LABEL / BUTTON, or 0
+#   +96:  pref_w        — requested width (layout hint)
+#   +104: pref_h        — requested height
+#   +112: handler       — event handler fnptr `handler(wgt, ev) -> consumed`, or 0
+#   +120: userdata      — opaque app context the handler reads back, or 0
 
 enum DhWidgetKind {
     WINDOW    = 0;
@@ -45,8 +49,10 @@ enum DhWidgetField {
     DH_W_TEXT         = 88;    # cstring ptr for LABEL / BUTTON, or 0
     DH_W_PREF_W       = 96;    # requested width (layout hint)
     DH_W_PREF_H       = 104;   # requested height
+    DH_W_HANDLER      = 112;   # event handler fnptr, or 0
+    DH_W_USERDATA     = 120;   # opaque app context for the handler, or 0
 }
-var DH_WIDGET_SIZE = 112;
+var DH_WIDGET_SIZE = 128;
 
 # Monotonic widget-id source. A plain module-global SCALAR (not a `[1]` array —
 # module-global `var X[N]` sizing is non-uniform in cyrius, so an 8-byte
@@ -74,6 +80,8 @@ fn dh_widget_new(kind): i64 {
     store64(wgt + DH_W_TEXT, 0);
     store64(wgt + DH_W_PREF_W, 0);
     store64(wgt + DH_W_PREF_H, 0);
+    store64(wgt + DH_W_HANDLER, 0);        # no handler
+    store64(wgt + DH_W_USERDATA, 0);
     return wgt;
 }
 
@@ -154,4 +162,36 @@ fn dh_widget_set_pref(wgt, w, h): i64 {
     store64(wgt + DH_W_PREF_W, w);
     store64(wgt + DH_W_PREF_H, h);
     return DHANCHA_OK;
+}
+
+# ---- event handler + userdata -------------------------------------
+
+fn dh_widget_handler(wgt): i64  { return load64(wgt + DH_W_HANDLER); }
+fn dh_widget_userdata(wgt): i64 { return load64(wgt + DH_W_USERDATA); }
+
+# Attach an event-handler function pointer. Take the address with
+# `&fn_name` (the fn must be `handler(wgt, ev): i64` returning 1 to
+# consume the event, 0 to let it bubble). Pass 0 to clear.
+fn dh_widget_set_handler(wgt, fp): i64 {
+    if (wgt == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    store64(wgt + DH_W_HANDLER, fp);
+    return DHANCHA_OK;
+}
+
+# Attach opaque app context the handler can read back via
+# dh_widget_userdata (dispatch passes only the widget + event).
+fn dh_widget_set_userdata(wgt, ud): i64 {
+    if (wgt == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    store64(wgt + DH_W_USERDATA, ud);
+    return DHANCHA_OK;
+}
+
+# Can this widget take keyboard focus? BUTTON / TEXTINPUT do; structural
+# nodes (WINDOW / BOX / LABEL) do not. Click-to-focus consults this.
+fn dh_widget_focusable(wgt): i64 {
+    if (wgt == 0) { return 0; }
+    var k = dh_widget_kind(wgt);
+    if (k == BUTTON)    { return 1; }
+    if (k == TEXTINPUT) { return 1; }
+    return 0;
 }

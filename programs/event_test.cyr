@@ -1,0 +1,333 @@
+# programs/event_test.cyr — RUN test for input dispatch + the event loop.
+#
+# Builds a WINDOW(BOX_V) with two BUTTON children, registers handlers, and
+# drives events through dh_dispatch / dh_run to verify:
+#   A. pointer motion + button press hit-test to the right widget, and a
+#      press on a focusable widget takes keyboard focus (click-to-focus);
+#   B. keyboard events route to the focused widget with the right payload;
+#   C. an unconsumed handler BUBBLES to the parent, which consumes;
+#   D. a consuming handler STOPS the bubble (parent handler not called);
+#   E. dh_run drains a DhQueue and reports the count;
+#   F. dh_quit stops the loop mid-drain, leaving the rest queued.
+# Exit code = failed checks.
+
+include "src/lib.cyr"
+
+var g_fails = 0;
+var g_b0 = 0;       # b0 handler invocations (raw events only)
+var g_b1 = 0;       # b1 handler invocations
+var g_root = 0;     # root handler invocations
+var g_lastkey = 0;  # last keysym b0 saw
+var g_quit = 0;     # quit-handler invocations
+var g_enter = 0;    # POINTER_ENTER count seen by h_track
+var g_leave = 0;    # POINTER_LEAVE count seen by h_track
+var g_activate = 0; # ACTIVATE count seen by h_track
+var g_enter1 = 0;   # widget of the 1st ENTER (proves per-widget targeting)
+var g_enter2 = 0;   # widget of the 2nd ENTER
+var g_leave1 = 0;   # widget of the 1st LEAVE
+var g_leave2 = 0;   # widget of the 2nd LEAVE
+
+fn check(got, want): i64 {
+    if (got == want) { return 0; }
+    g_fails = g_fails + 1;
+    return 1;
+}
+
+# Is this a synthesized (derived) event kind? The A-H routing tests count
+# raw events only; hover ENTER/LEAVE + ACTIVATE are proven separately by
+# h_track, so the routing handlers skip them to keep their counts clean.
+fn is_synth(ev): i64 {
+    var k = dh_event_kind(ev);
+    if (k == POINTER_ENTER) { return 1; }
+    if (k == POINTER_LEAVE) { return 1; }
+    if (k == ACTIVATE)      { return 1; }
+    return 0;
+}
+
+# b0: counts raw events, records a key payload, does NOT consume (bubbles).
+fn h_b0(wgt, ev): i64 {
+    if (is_synth(ev) == 1) { return 0; }
+    g_b0 = g_b0 + 1;
+    if (dh_event_kind(ev) == KEY) { g_lastkey = dh_event_a(ev); }
+    return 0;
+}
+
+# b1: counts raw events, CONSUMES (returns 1 -> stops bubbling).
+fn h_b1(wgt, ev): i64 {
+    if (is_synth(ev) == 1) { return 0; }
+    g_b1 = g_b1 + 1;
+    return 1;
+}
+
+# root: counts raw events, CONSUMES.
+fn h_root(wgt, ev): i64 {
+    if (is_synth(ev) == 1) { return 0; }
+    g_root = g_root + 1;
+    return 1;
+}
+
+# quit: counts a raw event, stops the loop, consumes.
+fn h_quit(wgt, ev): i64 {
+    if (is_synth(ev) == 1) { return 0; }
+    g_quit = g_quit + 1;
+    dh_quit();
+    return 1;
+}
+
+# track: counts the synthesized events (ENTER / LEAVE / ACTIVATE) AND
+# records which widget (the handler's own node, wgt) received each of the
+# first two enters/leaves, so a mis-targeted hover notification is caught.
+# Does not consume.
+fn h_track(wgt, ev): i64 {
+    var k = dh_event_kind(ev);
+    if (k == POINTER_ENTER) {
+        g_enter = g_enter + 1;
+        if (g_enter == 1) { g_enter1 = wgt; }
+        if (g_enter == 2) { g_enter2 = wgt; }
+    }
+    if (k == POINTER_LEAVE) {
+        g_leave = g_leave + 1;
+        if (g_leave == 1) { g_leave1 = wgt; }
+        if (g_leave == 2) { g_leave2 = wgt; }
+    }
+    if (k == ACTIVATE) { g_activate = g_activate + 1; }
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+
+    # tree: WINDOW(BOX_V) > [ b0(BUTTON), b1(BUTTON) ], laid out in 40x40
+    #   b0 = (0, 0, 40, 15)   b1 = (0, 15, 40, 15)
+    var root = dh_widget_new(WINDOW);
+    dh_widget_set_layout(root, BOX_V);
+    var b0 = dh_widget_new(BUTTON);
+    dh_widget_set_pref(b0, 0, 15);
+    var b1 = dh_widget_new(BUTTON);
+    dh_widget_set_pref(b1, 0, 15);
+    dh_widget_add_child(root, b0);
+    dh_widget_add_child(root, b1);
+    dh_layout_apply(root, 40, 40);
+
+    dh_widget_set_handler(b0, &h_b0);
+
+    # --- A: pointer motion + press hit-test to b0; press takes focus ---
+    var e_mv = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(e_mv, 20, 7);         # move to (20,7) -> inside b0
+    dh_dispatch(root, e_mv);
+    check(dh_event_target(e_mv), b0);          # hit b0
+    check(dh_pointer_x(), 20);                 # pointer position tracked
+    check(dh_pointer_y(), 7);
+    check(g_b0, 1);                            # b0 handler ran
+
+    var e_bt = dh_event_new(POINTER_BTN);
+    dh_event_set_payload(e_bt, 272, 1);        # BTN_LEFT press (no coords!)
+    dh_dispatch(root, e_bt);
+    check(dh_event_target(e_bt), b0);          # hit-tested at tracked (20,7)
+    check(dh_focus_get(), b0);                 # click-to-focus
+    check(dh_event_consumed(e_bt), 0);         # b0 didn't consume; no parent handler
+    check(g_b0, 2);
+
+    # --- B: keyboard routes to focus (b0) with payload ---
+    var e_k = dh_event_new(KEY);
+    dh_event_set_payload(e_k, 65, 0);          # 'A'
+    dh_dispatch(root, e_k);
+    check(dh_event_target(e_k), b0);           # routed to focused widget
+    check(g_lastkey, 65);
+    check(g_b0, 3);
+
+    # --- C: unconsumed bubbles to root, which consumes ---
+    dh_widget_set_handler(root, &h_root);
+    var e_c = dh_event_new(POINTER_BTN);
+    dh_event_set_payload(e_c, 272, 1);
+    dh_dispatch(root, e_c);                     # (20,7) -> b0 (returns 0) -> root consumes
+    check(dh_event_consumed(e_c), 1);
+    check(g_root, 1);
+    check(g_b0, 4);
+
+    # --- D: a consuming child stops the bubble (root NOT called) ---
+    dh_widget_set_handler(b1, &h_b1);
+    var e_d = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(e_d, 20, 22);         # move into b1
+    dh_dispatch(root, e_d);                     # b1 consumes -> no bubble to root
+    check(dh_event_target(e_d), b1);
+    check(dh_event_consumed(e_d), 1);
+    check(g_b1, 1);
+    check(g_root, 1);                           # unchanged: bubble stopped at b1
+
+    # --- E: dh_run drains a queue and reports the count ---
+    var q = dh_queue_new(8);
+    dh_queue_push(q, dh_event_new(POINTER_MOVE));
+    dh_queue_push(q, dh_event_new(POINTER_MOVE));
+    dh_queue_push(q, dh_event_new(POINTER_MOVE));
+    check(dh_queue_count(q), 3);
+    var processed = dh_run(root, q);
+    check(processed, 3);
+    check(dh_queue_empty(q), 1);
+
+    # --- F: dh_quit stops the loop mid-drain; the rest stays queued ---
+    dh_widget_set_handler(b0, &h_quit);        # a POINTER_MOVE at (20,7) hits b0
+    var q2 = dh_queue_new(8);
+    var m0 = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(m0, 20, 7);
+    var m1 = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(m1, 20, 7);
+    var m2 = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(m2, 20, 7);
+    dh_queue_push(q2, m0);
+    dh_queue_push(q2, m1);
+    dh_queue_push(q2, m2);
+    var did = dh_run(root, q2);                 # first event -> h_quit -> dh_quit
+    check(did, 1);                             # only one processed
+    check(g_quit, 1);
+    check(dh_queue_count(q2), 2);              # two left un-drained
+
+    # --- G: ring wrap-around preserves FIFO + full drops the overflow ---
+    var qr = dh_queue_new(2);                   # cap 2 -> forces a wrap
+    var eA = dh_event_new(FOCUS);
+    var eB = dh_event_new(FOCUS);
+    var eC = dh_event_new(FOCUS);
+    dh_queue_push(qr, eA);
+    dh_queue_push(qr, eB);                      # ring now full
+    check(dh_queue_push(qr, eC), DHANCHA_ERR_OTHER);  # full -> dropped
+    check(dh_queue_pop(qr), eA);               # FIFO
+    dh_queue_push(qr, eC);                      # fits now; tail wraps to slot 0
+    check(dh_queue_pop(qr), eB);
+    check(dh_queue_pop(qr), eC);               # the wrapped element, in order
+    check(dh_queue_pop(qr), 0);                # empty
+
+    # --- H: null-event push rejected; dh_run bad-arg returns negative ---
+    check(dh_queue_push(qr, 0), DHANCHA_ERR_OTHER);   # null never enters the ring
+    var bad_root = dh_run(0, qr);
+    if (bad_root >= 0) { g_fails = g_fails + 1; }      # null root -> negative sentinel
+    var bad_q = dh_run(root, 0);
+    if (bad_q >= 0) { g_fails = g_fails + 1; }         # null queue -> negative sentinel
+
+    # ================================================================
+    # Interactive model (fresh tree; h_track counts + records targets).
+    #   root2(BOX_V) > [ ba, bb, bc ]  (all BUTTON, pref-h 15)
+    #   laid out: ba=(0,0,40,15) bb=(0,15,40,15) bc=(0,30,40,15)
+    # A third focusable (bc) lets Tab prove forward != backward.
+    # ================================================================
+    var root2 = dh_widget_new(WINDOW);
+    dh_widget_set_layout(root2, BOX_V);
+    var ba = dh_widget_new(BUTTON);
+    dh_widget_set_pref(ba, 0, 15);
+    var bb = dh_widget_new(BUTTON);
+    dh_widget_set_pref(bb, 0, 15);
+    var bc = dh_widget_new(BUTTON);
+    dh_widget_set_pref(bc, 0, 15);
+    dh_widget_add_child(root2, ba);
+    dh_widget_add_child(root2, bb);
+    dh_widget_add_child(root2, bc);
+    dh_layout_apply(root2, 40, 40);
+    dh_widget_set_handler(ba, &h_track);
+    dh_widget_set_handler(bb, &h_track);
+    dh_widget_set_handler(bc, &h_track);
+    dh_reset_input();
+
+    # --- I: hover enter/leave on pointer boundary crossings ---
+    var mi1 = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(mi1, 20, 7);          # -> ba: enter ba
+    dh_dispatch(root2, mi1);
+    var mi2 = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(mi2, 20, 22);         # -> bb: leave ba, enter bb
+    dh_dispatch(root2, mi2);
+    var mi3 = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(mi3, 100, 100);       # -> outside: leave bb
+    dh_dispatch(root2, mi3);
+    check(g_enter, 2);                          # entered ba then bb
+    check(g_leave, 2);                          # left ba then bb
+    check(g_enter1, ba);                        # ENTER targeted ba first,
+    check(g_enter2, bb);                        #   then bb
+    check(g_leave1, ba);                        # LEAVE targeted ba first,
+    check(g_leave2, bb);                        #   then bb
+    check(dh_hover_get(), 0);                   # now hovering nothing
+
+    # --- J: click (press+release on same widget) synthesizes ACTIVATE ---
+    var jm = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(jm, 20, 7);           # -> ba
+    dh_dispatch(root2, jm);
+    var jp = dh_event_new(POINTER_BTN);
+    dh_event_set_payload(jp, 272, 1);          # press on ba
+    dh_dispatch(root2, jp);
+    var jr = dh_event_new(POINTER_BTN);
+    dh_event_set_payload(jr, 272, 0);          # release on ba -> ACTIVATE
+    dh_dispatch(root2, jr);
+    check(g_activate, 1);
+    check(dh_focus_get(), ba);                  # press also focused ba
+
+    # release off the pressed widget does NOT activate
+    var jp2 = dh_event_new(POINTER_BTN);
+    dh_event_set_payload(jp2, 272, 1);         # press on ba
+    dh_dispatch(root2, jp2);
+    var jmv = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(jmv, 20, 22);         # slide onto bb
+    dh_dispatch(root2, jmv);
+    var jr2 = dh_event_new(POINTER_BTN);
+    dh_event_set_payload(jr2, 272, 0);         # release over bb (!= press ba)
+    dh_dispatch(root2, jr2);
+    check(g_activate, 1);                       # unchanged
+
+    # --- K: Enter/Space on a focused BUTTON synthesizes ACTIVATE ---
+    dh_focus_set(ba);
+    var ke1 = dh_event_new(KEY);
+    dh_event_set_payload(ke1, DH_KEY_SPACE, 0);
+    dh_dispatch(root2, ke1);
+    var ke2 = dh_event_new(KEY);
+    dh_event_set_payload(ke2, DH_KEY_RETURN, 0);
+    dh_dispatch(root2, ke2);
+    var ke3 = dh_event_new(KEY);
+    dh_event_set_payload(ke3, 65, 0);          # 'A' -> not an activation key
+    dh_dispatch(root2, ke3);
+    check(g_activate, 3);                       # +Space +Return; 'A' does nothing
+
+    # --- L: Tab / Shift-Tab cycle focus among 3 focusables (ba, bb, bc) ---
+    dh_focus_set(0);
+    var t1 = dh_event_new(KEY);
+    dh_event_set_payload(t1, DH_KEY_TAB, 0);   # forward, no focus -> ba (first)
+    dh_dispatch(root2, t1);
+    check(dh_focus_get(), ba);
+    check(dh_event_consumed(t1), 1);           # Tab is toolkit-consumed
+    var t2 = dh_event_new(KEY);
+    dh_event_set_payload(t2, DH_KEY_TAB, 0);   # ba -> bb
+    dh_dispatch(root2, t2);
+    check(dh_focus_get(), bb);
+    var t3 = dh_event_new(KEY);
+    dh_event_set_payload(t3, DH_KEY_TAB, 0);   # bb -> bc
+    dh_dispatch(root2, t3);
+    check(dh_focus_get(), bc);
+    var t4 = dh_event_new(KEY);
+    dh_event_set_payload(t4, DH_KEY_TAB, 0);   # bc -> wrap -> ba
+    dh_dispatch(root2, t4);
+    check(dh_focus_get(), ba);
+
+    # forward vs backward DIVERGE from the middle widget (bb):
+    dh_focus_set(bb);
+    var t5 = dh_event_new(KEY);
+    dh_event_set_payload(t5, DH_KEY_TAB, 0);   # forward from bb -> bc
+    dh_dispatch(root2, t5);
+    check(dh_focus_get(), bc);
+    dh_focus_set(bb);
+    var t6 = dh_event_new(KEY);
+    dh_event_set_payload(t6, DH_KEY_TAB, 1);   # backward from bb -> ba
+    dh_dispatch(root2, t6);
+    check(dh_focus_get(), ba);                  # != bc, so backward is honored
+    dh_focus_set(ba);
+    var t7 = dh_event_new(KEY);
+    dh_event_set_payload(t7, DH_KEY_TAB, 1);   # backward from ba -> wrap -> bc
+    dh_dispatch(root2, t7);
+    check(dh_focus_get(), bc);
+
+    if (g_fails == 0) {
+        var ok = "event_test: PASS (hit-test, focus, bubble, queue, run/quit, hover, click+key activate, tab)\n";
+        syscall(1, 1, ok, strlen(ok));
+    } else {
+        var bad = "event_test: FAIL\n";
+        syscall(1, 2, bad, strlen(bad));
+    }
+    return g_fails;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

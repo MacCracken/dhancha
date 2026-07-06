@@ -1,0 +1,108 @@
+# @public — dhancha widget-tree model.
+# widget.cyr — DhWidget: the retained-mode widget node.
+#
+# A DhWidget is the unit of the UI tree. Nodes form a first-child /
+# next-sibling tree (the classic space-efficient n-ary tree encoding),
+# so a parent holds one child pointer and children chain via siblings.
+# Layout (layout.cyr) walks the tree to assign bounds; event dispatch
+# (event.cyr) hit-tests it; the surface (surface.cyr) draws it.
+#
+# DhWidget struct layout (64 bytes):
+#   +0:  id            — monotonic widget id (debug / focus routing)
+#   +8:  kind          — one of DhWidgetKind
+#   +16: x             — resolved x (layout output)
+#   +24: y             — resolved y
+#   +32: w             — resolved width
+#   +40: h             — resolved height
+#   +48: parent        — parent DhWidget* (0 = root)
+#   +56: first_child   — first child DhWidget* (0 = leaf)
+#   +64: next_sibling  — next sibling under the same parent (0 = last)
+#
+# NOTE: 9 slots → 72 bytes. (Kept explicit rather than packed; the
+# extra slot is next_sibling at +64.)
+
+enum DhWidgetKind {
+    WINDOW    = 0;
+    BOX       = 1;
+    LABEL     = 2;
+    BUTTON    = 3;
+    TEXTINPUT = 4;
+}
+
+# Field offsets (bytes) into a DhWidget record.
+enum DhWidgetField {
+    DH_W_ID           = 0;
+    DH_W_KIND         = 8;
+    DH_W_X            = 16;
+    DH_W_Y            = 24;
+    DH_W_W            = 32;
+    DH_W_H            = 40;
+    DH_W_PARENT       = 48;
+    DH_W_FIRST_CHILD  = 56;
+    DH_W_NEXT_SIBLING = 64;
+}
+
+# Monotonic widget-id source. Module-global var X[N] = N×u64; we want a
+# single u64 counter, so N=1.
+var _dh_next_widget_id[1];
+
+# Allocate + zero-init a widget of the given kind. Returns a DhWidget*.
+# All bounds start at 0 (layout fills them in); tree links start null.
+fn dh_widget_new(kind): i64 {
+    var wgt = alloc(72);
+    # assign a fresh id
+    var id = load64(_dh_next_widget_id);
+    store64(_dh_next_widget_id, id + 1);
+    store64(wgt + DH_W_ID, id);
+    store64(wgt + DH_W_KIND, kind);
+    store64(wgt + DH_W_X, 0);
+    store64(wgt + DH_W_Y, 0);
+    store64(wgt + DH_W_W, 0);
+    store64(wgt + DH_W_H, 0);
+    store64(wgt + DH_W_PARENT, 0);
+    store64(wgt + DH_W_FIRST_CHILD, 0);
+    store64(wgt + DH_W_NEXT_SIBLING, 0);
+    return wgt;
+}
+
+# Append `child` as the last child of `parent`. Sets child.parent and
+# links it onto the sibling chain. Returns DHANCHA_OK / an error code.
+fn dh_widget_add_child(parent, child): i64 {
+    if (parent == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    if (child == 0)  { return DHANCHA_ERR_BAD_WIDGET; }
+    store64(child + DH_W_PARENT, parent);
+    var head = load64(parent + DH_W_FIRST_CHILD);
+    if (head == 0) {
+        store64(parent + DH_W_FIRST_CHILD, child);
+        return DHANCHA_OK;
+    }
+    # walk to the last sibling and append
+    var cur = head;
+    while (load64(cur + DH_W_NEXT_SIBLING) != 0) {
+        cur = load64(cur + DH_W_NEXT_SIBLING);
+    }
+    store64(cur + DH_W_NEXT_SIBLING, child);
+    return DHANCHA_OK;
+}
+
+# ---- accessors ----------------------------------------------------
+
+fn dh_widget_id(wgt): i64          { return load64(wgt + DH_W_ID); }
+fn dh_widget_kind(wgt): i64        { return load64(wgt + DH_W_KIND); }
+fn dh_widget_x(wgt): i64           { return load64(wgt + DH_W_X); }
+fn dh_widget_y(wgt): i64           { return load64(wgt + DH_W_Y); }
+fn dh_widget_w(wgt): i64           { return load64(wgt + DH_W_W); }
+fn dh_widget_h(wgt): i64           { return load64(wgt + DH_W_H); }
+fn dh_widget_parent(wgt): i64      { return load64(wgt + DH_W_PARENT); }
+fn dh_widget_first_child(wgt): i64 { return load64(wgt + DH_W_FIRST_CHILD); }
+fn dh_widget_next_sibling(wgt): i64 { return load64(wgt + DH_W_NEXT_SIBLING); }
+
+# Set the resolved bounds (called by the layout pass).
+fn dh_widget_set_bounds(wgt, x, y, w, h): i64 {
+    if (wgt == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    store64(wgt + DH_W_X, x);
+    store64(wgt + DH_W_Y, y);
+    store64(wgt + DH_W_W, w);
+    store64(wgt + DH_W_H, h);
+    return DHANCHA_OK;
+}

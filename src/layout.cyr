@@ -1,0 +1,65 @@
+# @public — dhancha layout engine.
+# layout.cyr — box / flex measure + arrange over a DhWidget tree.
+#
+# A DhRect is the geometric primitive the layout pass produces. The
+# arrange pass walks the widget tree top-down: it assigns each node a
+# DhRect within its parent's content box according to the parent's
+# DhLayout mode, then recurses. v0.1.0 is a walking skeleton — it fills
+# the root's bounds and recurses, stacking children trivially; the real
+# measure/arrange (intrinsic sizes, flex grow/shrink, spacing) lands in
+# v0.2.
+
+# Layout modes a container applies to its children.
+enum DhLayout {
+    NONE  = 0;   # children keep their own bounds (absolute)
+    BOX_H = 1;   # stack children left→right
+    BOX_V = 2;   # stack children top→bottom
+    FLEX  = 3;   # flex grow/shrink along the main axis
+}
+
+# DhRect struct layout (32 bytes): x, y, w, h.
+enum DhRectField {
+    DH_R_X = 0;
+    DH_R_Y = 8;
+    DH_R_W = 16;
+    DH_R_H = 24;
+}
+
+# Allocate a DhRect.
+fn dh_rect_new(x, y, w, h): i64 {
+    var r = alloc(32);
+    store64(r + DH_R_X, x);
+    store64(r + DH_R_Y, y);
+    store64(r + DH_R_W, w);
+    store64(r + DH_R_H, h);
+    return r;
+}
+
+fn dh_rect_x(r): i64 { return load64(r + DH_R_X); }
+fn dh_rect_y(r): i64 { return load64(r + DH_R_Y); }
+fn dh_rect_w(r): i64 { return load64(r + DH_R_W); }
+fn dh_rect_h(r): i64 { return load64(r + DH_R_H); }
+
+# Apply layout to `root` within an available (avail_w × avail_h) box at
+# origin (0,0). Walks the child chain; recurses into each child.
+# Returns DHANCHA_OK / an error code.
+#
+# TODO(v0.2): real box/flex measure+arrange. Two-pass: (1) measure
+# intrinsic sizes bottom-up, (2) arrange top-down honoring the parent's
+# DhLayout mode, main-axis stacking, cross-axis alignment, and flex
+# grow/shrink. v0.1.0 just assigns the full box to the root and recurses
+# so the tree walk + accessor wiring is proven.
+fn dh_layout_apply(root, avail_w, avail_h): i64 {
+    if (root == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    # v0.1.0 skeleton: give the root the full available box.
+    dh_widget_set_bounds(root, 0, 0, avail_w, avail_h);
+    # Walk children — trivial full-box assignment, recurse.
+    var child = dh_widget_first_child(root);
+    while (child != 0) {
+        # TODO(v0.2): position per DhLayout mode instead of overlapping.
+        var rc = dh_layout_apply(child, avail_w, avail_h);
+        if (rc != DHANCHA_OK) { return rc; }
+        child = dh_widget_next_sibling(child);
+    }
+    return DHANCHA_OK;
+}

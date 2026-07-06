@@ -1,0 +1,74 @@
+# @public — stable API surface for dhancha error handling.
+# error.cyr — dhancha widget-toolkit error codes + Result helpers.
+#
+# DhanchaErr is a 16-byte record: a consumer (a desktop app, or a
+# higher toolkit layer) can map a toolkit failure cleanly onto its own
+# error domain. Error codes are integer constants; for errors that
+# carry context (a message pointer), use dhancha_err_new(code, msg).
+#
+# DhanchaErr struct layout (16 bytes):
+#   +0: code    — error code constant (one of the DHANCHA_* below)
+#   +8: detail  — pointer to detail string (or 0)
+
+# ================================================================
+# Error code constants
+# ================================================================
+
+enum DhanchaErrCode {
+    DHANCHA_OK              = 0;   # no error
+    DHANCHA_ERR_OOM        = 1;   # allocation failed
+    DHANCHA_ERR_BAD_WIDGET = 2;   # null / malformed widget handle or kind
+    DHANCHA_ERR_NO_SURFACE = 3;   # no client surface / present target
+    DHANCHA_ERR_LAYOUT     = 4;   # layout measure/arrange could not resolve
+    DHANCHA_ERR_UNSUPPORTED = 5;  # valid request dhancha can't service yet
+    DHANCHA_ERR_OTHER      = 99;  # catch-all
+}
+
+# ================================================================
+# DhanchaErr struct
+# ================================================================
+
+# Create a DhanchaErr with code and an optional detail string (0 = none).
+fn dhancha_err_new(code, detail): i64 {
+    var e = alloc(16);
+    store64(e, code);
+    store64(e + 8, detail);
+    return e;
+}
+
+# Create a DhanchaErr with code only (no detail).
+fn dhancha_err(code): i64 {
+    return dhancha_err_new(code, 0);
+}
+
+# Get the error code.
+fn dhancha_err_code(e): i64 {
+    return load64(e);
+}
+
+# Get the detail string pointer (or 0).
+fn dhancha_err_detail(e): i64 {
+    return load64(e + 8);
+}
+
+# ================================================================
+# Error name lookup — returns a cstring (never null).
+# ================================================================
+
+fn dhancha_err_name(code): i64 {
+    if (code == DHANCHA_OK)              { return "ok"; }
+    if (code == DHANCHA_ERR_OOM)         { return "out of memory"; }
+    if (code == DHANCHA_ERR_BAD_WIDGET)  { return "bad widget"; }
+    if (code == DHANCHA_ERR_NO_SURFACE)  { return "no surface"; }
+    if (code == DHANCHA_ERR_LAYOUT)      { return "layout failed"; }
+    if (code == DHANCHA_ERR_UNSUPPORTED) { return "unsupported feature"; }
+    if (code == DHANCHA_ERR_OTHER)       { return "other error"; }
+    return "unknown error";
+}
+
+# Print an error name to stderr (fd 2).
+fn dhancha_err_print_name(code): i64 {
+    var name = dhancha_err_name(code);
+    syscall(1, 2, name, strlen(name));
+    return 0;
+}

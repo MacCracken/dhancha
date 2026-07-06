@@ -1,0 +1,107 @@
+# dhancha
+
+Version: 0.1.0
+
+**dhancha** (ढाँचा — Hindi/Sanskrit: *framework / structure / scaffold*)
+is a pure-Cyrius **client-side widget toolkit / desktop app framework**
+for AGNOS — the Qt/GTK-equivalent layer. Desktop GUI apps build their
+UIs on dhancha instead of hand-rolling raw GPU + raw Wayland (which
+`puka`, the first windowed program, does today). dhancha is the
+spiritual extraction of puka's windowing code.
+
+It owns:
+
+- a retained-mode **widget tree** (window / box / label / button / text
+  input),
+- **layout** (box + flex measure/arrange),
+- an **event loop**, and
+- **input dispatch** — keyboard / pointer, focus, and drag-drop.
+
+It is the **CLIENT-side counterpart to `aethersafha`** (the
+compositor/server) — analogous to how `cmdit` is the arg/CLI lib for
+terminal apps. dhancha produces Wayland client surfaces that the
+aethersafha compositor composites onto the screen.
+
+## Scope
+
+- **v0.1.0 — scaffold.** A buildable, link-checkable pure-Cyrius
+  skeleton — **not** the functional toolkit yet. Real types and real
+  function signatures with small/stub bodies, so the include chain
+  (stdlib + domain modules) compiles clean and `cyrius distlib` can
+  bundle it. The domain modules present their public API surface:
+  - `src/error.cyr` — `DhanchaErr` model (`DHANCHA_OK` / `_ERR_OOM` /
+    `_ERR_BAD_WIDGET` / `_ERR_NO_SURFACE` / `_ERR_LAYOUT` /
+    `_ERR_UNSUPPORTED` / `_ERR_OTHER`), a 16-byte record, and
+    `dhancha_err_name`.
+  - `src/widget.cyr` — `DhWidget` (first-child / next-sibling tree),
+    `DhWidgetKind { WINDOW / BOX / LABEL / BUTTON / TEXTINPUT }`,
+    `dh_widget_new` / `dh_widget_add_child` + bounds accessors.
+  - `src/layout.cyr` — `DhRect`, `DhLayout { NONE / BOX_H / BOX_V /
+    FLEX }`, and a `dh_layout_apply` tree-walk skeleton.
+  - `src/event.cyr` — the **input-dispatch** module: `DhEventKind`,
+    `DhEvent`, `dh_event_new`, hit-testing, `dh_dispatch` (route to the
+    focused / hit widget), and the `dh_run` event-loop skeleton.
+  - `src/surface.cyr` — `DhSurface` (client window + RGBA8 pixel
+    buffer), `dh_surface_new` / `dh_surface_present` skeleton.
+  - `programs/smoke.cyr` — the link-check entry.
+- **v0.2+ — the real toolkit.** Box/flex measure+arrange, live event
+  loop pumping the compositor connection, real routing (capture/bubble,
+  per-widget handlers, drag-drop state machine), and the draw/present
+  path (see below).
+
+## Place in the stack
+
+```
+  desktop apps  (build UIs on dhancha)
+        │
+     dhancha            ← client-side widget toolkit (this repo)
+        │  draws via
+   sadish · rekha · mabda   ← 2D vector · fonts · GPU  (DEFERRED cross-deps)
+        │  presents a Wayland client surface to
+   aethersafha         ← compositor / server (composites to screen)
+```
+
+The draw/present path — **sadish** (2D vector), **rekha** (fonts), and
+**mabda** (GPU) — is a **deferred cross-dependency**: not wired at the
+scaffold. As the draw/present code lands (v0.2), add to `cyrius.cyml`:
+
+```toml
+[deps.sadish] path = "../sadish"
+[deps.rekha]  path = "../rekha"
+[deps.mabda]  path = "../mabda"
+```
+
+## Consumers
+
+- **Desktop GUI apps** — build their UIs on dhancha's widget tree,
+  layout, event loop, and input dispatch instead of hand-rolling raw GPU
+  + raw Wayland.
+- **puka** — the first windowed program; its windowing code is the
+  spiritual origin of dhancha, and it is the reference consumer as the
+  toolkit fills in.
+- **aethersafha** — the compositor on the other side of the Wayland
+  wire: dhancha emits the client surfaces it composites (dhancha is the
+  client-side counterpart to aethersafha's server side).
+
+## Dependencies
+
+- **Cyrius stdlib** — `string`, `fmt`, `alloc`, `io`, `vec`, `str`,
+  `syscalls`, `assert`, `bench`, `args`, plus `hashmap` (widget-id →
+  handler routing), `fnptr` (event-callback dispatch), and `tagged`
+  (tagged-value payloads). Resolved by `cyrius deps` into `lib/`.
+- **Deferred cross-deps** (not wired at scaffold): `sadish` + `rekha` +
+  `mabda` for the draw/present path.
+
+The toolchain pin is `cyrius = "6.4.7"`.
+
+## Quick Start
+
+```bash
+cyrius deps                                          # resolve stdlib into lib/
+cyrius build programs/smoke.cyr build/dhancha-smoke  # link-check
+./build/dhancha-smoke                                # prints the banner
+```
+
+## License
+
+GPL-3.0-only.

@@ -1,0 +1,69 @@
+[package]
+name = "dhancha"
+version = "${file:VERSION}"
+description = "dhancha (ढाँचा — framework) — pure-Cyrius client-side widget toolkit / desktop app framework for AGNOS (Qt/GTK-equivalent): widget tree, box/flex layout, event loop, input dispatch (keyboard/pointer/focus/drag-drop). Apps build UIs here; draws via sadish + rekha + mabda; emits Wayland client surfaces for the aethersafha compositor."
+license = "GPL-3.0-only"
+repository = "https://github.com/MacCracken/dhancha"
+language = "cyrius"
+cyrius = "6.4.7"
+
+# dhancha is a library — no CLI binary. `cyrius build` targets a smoke
+# program that links the full include chain to prove lib.cyr parses clean.
+# It is the CLIENT-side widget toolkit (Qt/GTK-equivalent) — the counterpart
+# to aethersafha (the compositor/server). Desktop apps build UIs on dhancha
+# instead of hand-rolling raw GPU + raw Wayland the way puka (the first
+# windowed program) does today; dhancha is the spiritual extraction of
+# puka's windowing code.
+[build]
+entry = "programs/smoke.cyr"
+output = "build/dhancha-smoke"
+
+# `[lib]` feeds `cyrius distlib` — module order matters: stdlib first
+# (declared in src/lib.cyr), then domain modules in dependency order.
+# error.cyr is dep-free; widget/layout/event/surface build on it. Don't
+# reorder without re-running `cyrius distlib` and verifying the concatenated
+# bundle still compiles clean.
+[lib]
+modules = [
+    "src/error.cyr",
+    "src/widget.cyr",
+    "src/layout.cyr",
+    "src/event.cyr",
+    "src/surface.cyr",
+]
+
+[deps]
+# Base stdlib set. `hashmap` + `fnptr` + `tagged` are pulled in now so the
+# widget-registry / event-callback / dispatch bites have them ready.
+stdlib = [
+    "string",
+    "fmt",
+    "alloc",
+    "io",
+    "vec",
+    "str",
+    "syscalls",
+    "assert",
+    "bench",
+    "args",
+    "hashmap",
+    "fnptr",
+    "tagged",
+]
+
+# Draw-path deps: sadish (2D vector fills/strokes) + rekha (glyph outlines,
+# which itself pulls sadish). The widget draw walks the tree filling
+# backgrounds/borders via sadish and text via rekha. Local path overrides for
+# cross-repo dev; git tags are the published pins. mabda (GPU) + the aethersafha
+# Wayland commit are a later bite — the CPU draw path comes first.
+[deps.sadish]
+git = "https://github.com/MacCracken/sadish.git"
+path = "../sadish"
+tag = "0.4.0"
+modules = ["dist/sadish.cyr"]
+
+[deps.rekha]
+git = "https://github.com/MacCracken/rekha.git"
+path = "../rekha"
+tag = "0.3.0"
+modules = ["dist/rekha.cyr"]

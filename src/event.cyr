@@ -1,0 +1,131 @@
+# @public — dhancha input dispatch + event loop.
+# event.cyr — this module OWNS the input-dispatch role.
+#
+# Input (keyboard / pointer) arrives from the aethersafha compositor over
+# the Wayland client connection as DhEvents. dh_dispatch hit-tests the
+# widget tree and routes an event to the focused (or hit) widget;
+# dh_run is the client event loop that pumps events until the app exits.
+# v0.1.0 is a skeleton: real hit-testing, focus tracking, and drag-drop
+# state machine land in v0.2.
+
+# The kinds of input event the toolkit routes.
+enum DhEventKind {
+    KEY           = 0;   # keyboard key press/release (keysym in `a`)
+    POINTER_MOVE  = 1;   # pointer motion to (x=`a`, y=`b`)
+    POINTER_BTN   = 2;   # pointer button (button in `a`, state in `b`)
+    FOCUS         = 3;   # focus enter/leave
+    DRAG          = 4;   # drag-drop phase transition
+}
+
+# DhEvent struct layout (40 bytes):
+#   +0:  kind    — one of DhEventKind
+#   +8:  a       — primary payload (keysym / x / button)
+#   +16: b       — secondary payload (y / state)
+#   +24: target  — resolved target DhWidget* (0 = unrouted)
+#   +32: consumed — 1 once a handler claims it (stops propagation)
+enum DhEventField {
+    DH_E_KIND     = 0;
+    DH_E_A        = 8;
+    DH_E_B        = 16;
+    DH_E_TARGET   = 24;
+    DH_E_CONSUMED = 32;
+}
+
+# Currently-focused widget for keyboard routing. Module-global u64 slot.
+var _dh_focus[1];
+
+# Allocate a DhEvent of `kind` with zeroed payload.
+fn dh_event_new(kind): i64 {
+    var ev = alloc(40);
+    store64(ev + DH_E_KIND, kind);
+    store64(ev + DH_E_A, 0);
+    store64(ev + DH_E_B, 0);
+    store64(ev + DH_E_TARGET, 0);
+    store64(ev + DH_E_CONSUMED, 0);
+    return ev;
+}
+
+fn dh_event_kind(ev): i64   { return load64(ev + DH_E_KIND); }
+fn dh_event_a(ev): i64      { return load64(ev + DH_E_A); }
+fn dh_event_b(ev): i64      { return load64(ev + DH_E_B); }
+fn dh_event_target(ev): i64 { return load64(ev + DH_E_TARGET); }
+
+# Set the payload fields.
+fn dh_event_set_payload(ev, a, b): i64 {
+    store64(ev + DH_E_A, a);
+    store64(ev + DH_E_B, b);
+    return DHANCHA_OK;
+}
+
+# Set / get the keyboard focus target.
+fn dh_focus_set(wgt): i64 { store64(_dh_focus, wgt); return DHANCHA_OK; }
+fn dh_focus_get(): i64    { return load64(_dh_focus); }
+
+# Hit-test: which widget contains point (px, py)? Depth-first, last
+# match wins (children paint over parents). Returns a DhWidget* or 0.
+#
+# TODO(v0.2): honor z-order + clipping + input-transparency. v0.1.0 is
+# a plain contains-point walk.
+fn dh_hit_test(root, px, py): i64 {
+    if (root == 0) { return 0; }
+    var hit = 0;
+    var rx = dh_widget_x(root);
+    var ry = dh_widget_y(root);
+    var rw = dh_widget_w(root);
+    var rh = dh_widget_h(root);
+    if (px >= rx) { if (py >= ry) { if (px < rx + rw) { if (py < ry + rh) {
+                    hit = root;
+                } } } }
+    # recurse; a deeper hit overrides
+    var child = dh_widget_first_child(root);
+    while (child != 0) {
+        var ch = dh_hit_test(child, px, py);
+        if (ch != 0) { hit = ch; }
+        child = dh_widget_next_sibling(child);
+    }
+    return hit;
+}
+
+# Dispatch an event into the tree. Keyboard/focus events route to the
+# focused widget; pointer events hit-test. Returns DHANCHA_OK.
+#
+# TODO(v0.2): real routing — capture/bubble phases, per-widget handler
+# fnptr table (hashmap widget-id → handler), drag-drop state machine,
+# accelerator table. v0.1.0 just resolves + stamps `target`.
+fn dh_dispatch(root, ev): i64 {
+    if (root == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    if (ev == 0)   { return DHANCHA_ERR_OTHER; }
+    var kind = dh_event_kind(ev);
+    var target = 0;
+    if (kind == KEY) {
+        target = dh_focus_get();
+    }
+    if (kind == FOCUS) {
+        target = dh_focus_get();
+    }
+    if (kind == POINTER_MOVE) {
+        target = dh_hit_test(root, dh_event_a(ev), dh_event_b(ev));
+    }
+    if (kind == POINTER_BTN) {
+        target = dh_hit_test(root, dh_event_a(ev), dh_event_b(ev));
+    }
+    if (kind == DRAG) {
+        target = dh_hit_test(root, dh_event_a(ev), dh_event_b(ev));
+    }
+    store64(ev + DH_E_TARGET, target);
+    # TODO(v0.2): invoke the target's handler fnptr; set _CONSUMED.
+    return DHANCHA_OK;
+}
+
+# The client event loop. Pumps events off the Wayland connection,
+# dispatches each into `root`, redraws when dirty, until the app quits.
+# Returns the app exit code.
+#
+# TODO(v0.2): the real loop — block on the compositor fd, translate
+# wire events into DhEvents, dispatch, run layout when dirty, present
+# the surface. v0.1.0 returns immediately (nothing to pump yet).
+fn dh_run(root): i64 {
+    if (root == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    # v0.1.0 skeleton: no compositor connection wired, so return cleanly.
+    return DHANCHA_OK;
+}

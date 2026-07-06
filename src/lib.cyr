@@ -1,0 +1,57 @@
+# @public — dhancha library include chain.
+# dhancha (ढाँचा — framework / structure / scaffold) — pure-Cyrius
+# client-side widget toolkit / desktop app framework (Qt/GTK-equivalent).
+#
+# Provides: widget tree, box/flex layout, an event loop, and INPUT
+# DISPATCH (keyboard/pointer/focus/drag-drop). Apps build UIs here
+# instead of hand-rolling raw GPU + raw Wayland the way puka (the first
+# windowed program) does today — dhancha is the spiritual extraction of
+# puka's windowing code. It is the CLIENT-side counterpart to aethersafha
+# (the compositor/server), analogous to how cmdit is the arg/CLI lib for
+# terminal apps. Drawing (v0.2+) routes through sadish (2D vector) +
+# rekha (fonts) + mabda (GPU); the composited output is a Wayland client
+# surface the aethersafha compositor draws to screen.
+#
+# Stdlib includes live ONLY in this file — domain modules are flat,
+# which is what makes `cyrius distlib` (strip-include concatenation)
+# produce a compile-clean `dist/dhancha.cyr`. Don't add stdlib includes
+# in individual src/*.cyr files.
+
+# ================================================================
+# Standard library
+# ================================================================
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/vec.cyr"
+include "lib/str.cyr"
+include "lib/io.cyr"
+include "lib/args.cyr"
+include "lib/syscalls.cyr"
+include "lib/assert.cyr"
+include "lib/bench.cyr"
+
+# hashmap (widget-id → handler routing), fnptr (event-callback dispatch),
+# tagged (tagged-value payloads) — pulled in now so the v0.2 dispatch /
+# registry bites have them ready.
+include "lib/hashmap.cyr"
+include "lib/fnptr.cyr"
+include "lib/tagged.cyr"
+
+# Draw-path deps: sadish (2D vector) THEN rekha (fonts; rekha references sd_*,
+# so it must follow sadish). surface.cyr draws the widget tree through both.
+include "lib/sadish.cyr"
+include "lib/rekha.cyr"
+
+# ================================================================
+# dhancha domain modules — flat, dependency order.
+# error.cyr is dep-free. widget.cyr (the DhWidget tree node) is the
+# foundation; layout.cyr (box/flex arrange) walks it; event.cyr (input
+# dispatch + the event loop) hit-tests it; surface.cyr (the client
+# window / present path) draws it and hands the buffer to the compositor.
+# ================================================================
+include "src/error.cyr"
+include "src/widget.cyr"
+include "src/layout.cyr"
+include "src/event.cyr"
+include "src/surface.cyr"

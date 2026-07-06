@@ -1,0 +1,70 @@
+# @public — dhancha client surface / present path.
+# surface.cyr — DhSurface: a client window backed by a pixel buffer.
+#
+# A DhSurface is the app's window from the client's side: a CPU pixel
+# buffer the toolkit draws the widget tree into, then presents to the
+# aethersafha compositor as a Wayland client surface (which the
+# compositor composites onto the screen). v0.1.0 allocates the buffer;
+# the draw + present code lands in v0.2 once sadish / rekha / mabda are
+# wired.
+#
+# DhSurface struct layout (40 bytes):
+#   +0:  width   — surface width in pixels
+#   +8:  height  — surface height in pixels
+#   +16: pixels  — owned RGBA8 buffer (width*height*4 bytes), or 0
+#   +24: root    — the DhWidget tree root drawn into this surface (or 0)
+#   +32: dirty   — 1 if the buffer needs a redraw before next present
+enum DhSurfaceField {
+    DH_S_WIDTH  = 0;
+    DH_S_HEIGHT = 8;
+    DH_S_PIXELS = 16;
+    DH_S_ROOT   = 24;
+    DH_S_DIRTY  = 32;
+}
+
+# Allocate a DhSurface with a w×h RGBA8 pixel buffer. Returns a
+# DhSurface* (or 0 on OOM — the caller can map that to
+# DHANCHA_ERR_NO_SURFACE / _OOM).
+fn dh_surface_new(w, h): i64 {
+    if (w <= 0) { return 0; }
+    if (h <= 0) { return 0; }
+    var surf = alloc(40);
+    var buf = alloc(w * h * 4);
+    store64(surf + DH_S_WIDTH, w);
+    store64(surf + DH_S_HEIGHT, h);
+    store64(surf + DH_S_PIXELS, buf);
+    store64(surf + DH_S_ROOT, 0);
+    store64(surf + DH_S_DIRTY, 1);
+    return surf;
+}
+
+fn dh_surface_width(surf): i64  { return load64(surf + DH_S_WIDTH); }
+fn dh_surface_height(surf): i64 { return load64(surf + DH_S_HEIGHT); }
+fn dh_surface_pixels(surf): i64 { return load64(surf + DH_S_PIXELS); }
+fn dh_surface_root(surf): i64   { return load64(surf + DH_S_ROOT); }
+
+# Attach the widget-tree root that this surface renders.
+fn dh_surface_set_root(surf, root): i64 {
+    if (surf == 0) { return DHANCHA_ERR_NO_SURFACE; }
+    store64(surf + DH_S_ROOT, root);
+    store64(surf + DH_S_DIRTY, 1);
+    return DHANCHA_OK;
+}
+
+# Present the surface to the compositor. In the full toolkit this runs
+# layout (if dirty), draws the widget tree into `pixels`, and hands the
+# buffer to aethersafha as a Wayland client surface. Returns
+# DHANCHA_OK / an error code.
+#
+# TODO(v0.2): draw the widget tree via sadish (2D vector fills/strokes)
+# + rekha (glyph rasterization) into `pixels`, optionally upload via
+# mabda (GPU), and commit the buffer to the aethersafha compositor over
+# the Wayland client connection. v0.1.0 just validates the surface and
+# clears the dirty flag.
+fn dh_surface_present(surf): i64 {
+    if (surf == 0) { return DHANCHA_ERR_NO_SURFACE; }
+    if (dh_surface_pixels(surf) == 0) { return DHANCHA_ERR_NO_SURFACE; }
+    # TODO(v0.2): layout → draw → GPU → Wayland commit.
+    store64(surf + DH_S_DIRTY, 0);
+    return DHANCHA_OK;
+}

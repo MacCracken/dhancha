@@ -147,3 +147,33 @@ fn dh_setu_send_pixels(path, pix, w, h): i64 {
     syscall(SYS_CLOSE, fd);
     return 0;
 }
+
+# Read EXACTLY `n` bytes from `fd` into `buf`, looping over short reads. Returns
+# `n` (>= 0) or -6 on EOF/error. Needed to frame a STREAM of messages (the input
+# return-path) — dh_setu_recv bulk-reads one frame and would drop trailing ones.
+fn dh_setu_read_exact(fd, buf, n): i64 {
+    var got = 0;
+    while (got < n) {
+        var r = syscall(SYS_READ, fd, buf + got, n - got);
+        if (r <= 0) { return 0 - 6; }
+        got = got + r;
+    }
+    return got;
+}
+
+# Read ONE full setu frame from `fd` into `msg_out` using length-from-header
+# framing (kind + argc header → (2+argc)*8 total). Returns the frame length
+# (> 0), -6 on EOF / short read / bad argc, or a negated SetuErr. Use this (not
+# dh_setu_recv) when reading a continuous stream of frames.
+fn dh_setu_read_msg(fd, msg_out): i64 {
+    var buf = alloc(128);
+    if (dh_setu_read_exact(fd, buf, 16) < 0) { return 0 - 6; }
+    var argc = setu_get_i64(buf, 8);
+    if (argc < 0) { return 0 - 6; }
+    if (argc > 8) { return 0 - 6; }               # setu max argc is 5
+    var total = (2 + argc) * 8;
+    if (total > 16) {
+        if (dh_setu_read_exact(fd, buf + 16, total - 16) < 0) { return 0 - 6; }
+    }
+    return setu_decode(buf, total, msg_out);
+}

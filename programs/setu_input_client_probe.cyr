@@ -1,0 +1,68 @@
+# programs/setu_input_client_probe.cyr — bite-10 proof (client side): connect to
+# the compositor and pump the input return-path, decoding each setu INPUT_* frame
+# into a DhEvent and printing it. Pair with aethersafha's build/setu_input_server_probe,
+# which sends a scripted KEY / POINTER_MOVE / POINTER_BTN sequence. Throwaway harness.
+
+include "src/lib.cyr"          # DhEvent + DhEventKind (event.cyr)
+include "src/setu_client.cyr"  # transport + dh_setu_read_msg
+include "src/setu_input.cyr"   # setu INPUT_* → DhEvent adapter
+
+fn ev_kindname(k): i64 {
+    if (k == KEY)          { return "KEY"; }
+    if (k == POINTER_MOVE) { return "POINTER_MOVE"; }
+    if (k == POINTER_BTN)  { return "POINTER_BTN"; }
+    if (k == FOCUS)        { return "FOCUS"; }
+    return "?";
+}
+
+fn ip_emit_int(n): i64 {
+    var nb = alloc(24);
+    var nl = fmt_int_buf(n, nb);
+    syscall(SYS_WRITE, 1, nb, nl);
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+    var path = "/tmp/aethersafha-setu.sock";
+    var fd = dh_setu_connect(path);
+    if (fd < 0) {
+        var e = "setu_input_client_probe: connect failed\n";
+        syscall(SYS_WRITE, 2, e, strlen(e));
+        return 1;
+    }
+
+    var count = 0;
+    while (1 == 1) {
+        var ev = dh_setu_read_event(fd);
+        if (ev < 0) { break; }           # EOF / recv error
+        if (ev == 0) { continue; }       # non-input frame (skip)
+        var pre = "  DhEvent ";
+        syscall(SYS_WRITE, 1, pre, strlen(pre));
+        var nm = ev_kindname(dh_event_kind(ev));
+        syscall(SYS_WRITE, 1, nm, strlen(nm));
+        var am = " a=";
+        syscall(SYS_WRITE, 1, am, strlen(am));
+        ip_emit_int(dh_event_a(ev));
+        var bm = " b=";
+        syscall(SYS_WRITE, 1, bm, strlen(bm));
+        ip_emit_int(dh_event_b(ev));
+        syscall(SYS_WRITE, 1, "\n", 1);
+        count = count + 1;
+    }
+    syscall(SYS_CLOSE, fd);
+
+    var pre2 = "setu_input_client_probe: decoded ";
+    syscall(SYS_WRITE, 1, pre2, strlen(pre2));
+    ip_emit_int(count);
+    var post = " input events into DhEvents\n";
+    syscall(SYS_WRITE, 1, post, strlen(post));
+    return 0;
+}
+
+fn _entry(): i64 {
+    var r = main();
+    syscall(SYS_EXIT, r);
+    return 0;
+}
+_entry();

@@ -1,0 +1,39 @@
+# dhancha — setu input adapter: setu INPUT_* wire messages → DhEvents.
+#
+# The "compositor-fd input source" the sovereign-desktop doc describes: the
+# client reads input frames off the setu transport and feeds them as DhEvents
+# into the toolkit's dispatch (dh_run's DhQueue). Bridges event.cyr (DhEvent) +
+# setu (the wire) + setu_client.cyr (the transport) — include it alongside
+# src/lib.cyr + src/setu_client.cyr. Bite 11 wires dh_setu_read_event into
+# dh_run's loop; here it's the standalone seam.
+
+# Map a decoded setu INPUT_* message `m` to a fresh DhEvent (*DhEvent), or 0 if
+# `m` is not an input message. The (a,b) payload maps 1:1 onto DhEvent:
+#   INPUT_KEY(id,keysym,mods) → KEY(a=keysym, b=mods)
+#   INPUT_PTR_MOVE(id,x,y)    → POINTER_MOVE(a=x, b=y)
+#   INPUT_PTR_BTN(id,btn,st)  → POINTER_BTN(a=btn, b=st)
+#   INPUT_FOCUS(id,focused)   → FOCUS(a=focused, b=0)
+fn dh_setu_map_input(m): i64 {
+    var k = setu_msg_kind(m);
+    var dk = 0 - 1;
+    var a = 0;
+    var b = 0;
+    if (k == SETU_INPUT_KEY)        { dk = KEY;          a = setu_msg_arg(m, 1); b = setu_msg_arg(m, 2); }
+    elif (k == SETU_INPUT_PTR_MOVE) { dk = POINTER_MOVE; a = setu_msg_arg(m, 1); b = setu_msg_arg(m, 2); }
+    elif (k == SETU_INPUT_PTR_BTN)  { dk = POINTER_BTN;  a = setu_msg_arg(m, 1); b = setu_msg_arg(m, 2); }
+    elif (k == SETU_INPUT_FOCUS)    { dk = FOCUS;        a = setu_msg_arg(m, 1); b = 0; }
+    else { return 0; }
+    var ev = dh_event_new(dk);
+    store64(ev + DH_E_A, a);
+    store64(ev + DH_E_B, b);
+    return ev;
+}
+
+# Read one setu frame off `fd` (exact framing) and map it to a DhEvent. Returns
+# the DhEvent (*DhEvent, > 0), 0 on a non-input frame, or -6 on EOF / recv error.
+# The seam the compositor-fd loop in dh_run will pump.
+fn dh_setu_read_event(fd): i64 {
+    var m = setu_msg_new();
+    if (dh_setu_read_msg(fd, m) < 0) { return 0 - 6; }
+    return dh_setu_map_input(m);
+}

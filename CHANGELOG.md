@@ -5,6 +5,30 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.1] - 2026-07-08 — setu client dedup (delegate to setu's promoted client)
+
+### Changed
+
+- **The setu client transport is no longer duplicated — it is setu's.** setu
+  **0.2.0** promoted the reference client (`setu_connect` / `setu_send` /
+  `setu_read_msg` + the persistent `setu_client_*`) into the protocol lib so
+  dhancha and puka share ONE implementation. dhancha's `src/setu_client.cyr` is
+  now thin forwarders + one-shot (connect→do→close) convenience wrappers over
+  setu's primitives — **zero re-implemented framing** (no raw `SYS_SOCKET`/
+  `SYS_CONNECT` left in the client files). `DhClient` (`src/dh_client.cyr`)
+  delegates straight to `setu_client_*` — a `*DhClient` **is** a `*SetuClient`
+  (identical `{fd, sid}` layout) — keeping only `dh_surface_render`
+  (widgets → pixels) + the DhEvent map. All `dh_*` signatures are unchanged.
+- **`[deps.setu]` pinned to tag `0.2.0`** (was a dev `path` override + a stale
+  `0.1.0` tag).
+
+### Verified
+
+- All 6 setu programs build; end-to-end `setu_demo_client` → aethersafha
+  **blit-verified** (widget tree composited). No behavioral change on the
+  success path; `dh_client_present` now surfaces `setu_client_present`'s error
+  codes.
+
 ## [0.6.0] - 2026-07-08 — native display protocol (setu client binding)
 
 ### Added

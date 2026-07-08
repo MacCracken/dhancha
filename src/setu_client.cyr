@@ -1,109 +1,54 @@
-# dhancha — setu display-protocol client (connect side).
+# dhancha — setu client convenience layer (thin, over setu's reference client).
 #
-# Bite 3 of the native display protocol (agnosticos native-display-protocol.md
-# §2): the client half of the setu seam. Connect to the compositor's Unix
-# socket, encode a setu message, and write the frame. ISOLATED — not wired into
-# `dh_run` / `dh_surface_present` yet (later bites); a probe drives it standalone.
-# Mirrors the sovereign AF_UNIX pattern (prior-art: aethersafha setu_server,
-# bote transport_unix). All fns `dh_setu_*`. The codec is setu's
-# (`setu_encode`, [deps.setu]); the transport is dhancha's.
+# setu (>= 0.2.0) now OWNS the client transport IMPLEMENTATION (the framing
+# primitives `setu_connect` / `setu_send` / `setu_recv` / `setu_read_exact` /
+# `setu_read_msg` / `setu_cl_sockaddr`, and the persistent `setu_client_*`). The
+# client was promoted INTO setu so dhancha + puka share ONE implementation
+# (agnosticos native-display-protocol.md). This file no longer re-implements any
+# transport — it just keeps the `dh_setu_*` names dhancha's probes use as thin
+# forwarders + one-shot (connect → do → close) convenience wrappers over setu.
+# The codec + transport are setu's; the toolkit binding is `dh_client.cyr`.
 
-var DH_SETU_AF_UNIX     = 1;   # AF_UNIX
-var DH_SETU_SOCK_STREAM = 1;   # SOCK_STREAM
+# --- framing primitives: forwarders to setu -------------------------------
+fn dh_setu_sockaddr(addr_buf, path): i64 { return setu_cl_sockaddr(addr_buf, path); }
+fn dh_setu_connect(path): i64            { return setu_connect(path); }
+fn dh_setu_send(fd, msg): i64            { return setu_send(fd, msg); }
+fn dh_setu_recv(fd, msg_out): i64        { return setu_recv(fd, msg_out); }
+fn dh_setu_read_exact(fd, buf, n): i64   { return setu_read_exact(fd, buf, n); }
+fn dh_setu_read_msg(fd, msg_out): i64    { return setu_read_msg(fd, msg_out); }
 
-# Build a sockaddr_un (110 bytes) at `addr_buf` for `path` (cstr). Returns the
-# struct length to pass to connect() (sun_family + path + NUL).
-fn dh_setu_sockaddr(addr_buf, path): i64 {
-    memset(addr_buf, 0, 110);
-    store16(addr_buf, DH_SETU_AF_UNIX);
-    var plen = strlen(path);
-    if (plen > 107) { plen = 107; }
-    memcpy(addr_buf + 2, path, plen);
-    store8(addr_buf + 2 + plen, 0);
-    return 2 + plen + 1;
-}
+# --- one-shot convenience (connect → do → close), over setu's primitives ---
 
-# Connect to the compositor's setu socket at `path`. Returns the connected fd
-# (>= 0) or a negative step code (-2 socket, -3 connect).
-fn dh_setu_connect(path): i64 {
-    var fd = syscall(SYS_SOCKET, DH_SETU_AF_UNIX, DH_SETU_SOCK_STREAM, 0);
-    if (fd < 0) { return 0 - 2; }
-    var addr = alloc(110);
-    var alen = dh_setu_sockaddr(addr, path);
-    if (syscall(SYS_CONNECT, fd, addr, alen) < 0) { syscall(SYS_CLOSE, fd); return 0 - 3; }
-    return fd;
-}
-
-# Encode `msg` (a setu message) and write the whole frame to `fd`. Returns the
-# bytes written (> 0), a negated SetuErr on an encode failure, or -7 on a short
-# write. `buf`/`cap` are internal — the widest setu frame is 56 bytes.
-fn dh_setu_send(fd, msg): i64 {
-    var cap = 128;
-    var buf = alloc(cap);
-    var enc = setu_encode(msg, buf, cap);
-    if (enc < 0) { return enc; }
-    var w = syscall(SYS_WRITE, fd, buf, enc);
-    if (w != enc) { return 0 - 7; }
-    return w;
-}
-
-# Convenience: connect, send a HELLO(version, role), close. Returns 0 on
-# success or the first negative step/codec code.
+# Connect, send a HELLO(version, role), close. -> 0 or the first negative code.
 fn dh_setu_hello(path, version, role): i64 {
-    var fd = dh_setu_connect(path);
+    var fd = setu_connect(path);
     if (fd < 0) { return fd; }
-    var rc = dh_setu_send(fd, setu_hello(version, role));
+    var rc = setu_send(fd, setu_hello(version, role));
     syscall(SYS_CLOSE, fd);
     if (rc < 0) { return rc; }
     return 0;
 }
 
-# Read ONE setu frame from `fd` into `msg_out`. Returns the decoded length
-# (> 0), -6 on empty read / EOF, or a negated SetuErr from setu_decode.
-fn dh_setu_recv(fd, msg_out): i64 {
-    var cap = 256;
-    var buf = alloc(cap);
-    var n = syscall(SYS_READ, fd, buf, cap);
-    if (n <= 0) { return 0 - 6; }
-    return setu_decode(buf, n, msg_out);
-}
-
-# Bite 5: connect, send CREATE_SURFACE(w,h,flags), read the SURFACE_CREATED
-# reply, and return the compositor-assigned surface id (> 0). The compositor is
-# the source of truth for the id. Negative on failure:
-#   dh_setu_connect codes · dh_setu_send codes · -6 recv · -8 unexpected reply
-#   kind. Closes the fd either way.
+# Connect, CREATE_SURFACE(w,h,flags), read SURFACE_CREATED, close. -> surface id
+# (> 0), or a negative step/codec code / -8 unexpected reply.
 fn dh_setu_create_surface(path, w, h, flags): i64 {
-    var fd = dh_setu_connect(path);
+    var fd = setu_connect(path);
     if (fd < 0) { return fd; }
-    var sr = dh_setu_send(fd, setu_create_surface(w, h, flags));
+    var sr = setu_send(fd, setu_create_surface(w, h, flags));
     if (sr < 0) { syscall(SYS_CLOSE, fd); return sr; }
     var reply = setu_msg_new();
-    var rr = dh_setu_recv(fd, reply);
+    var rr = setu_recv(fd, reply);
     syscall(SYS_CLOSE, fd);
     if (rr < 0) { return rr; }
     if (setu_msg_kind(reply) != SETU_SURFACE_CREATED) { return 0 - 8; }
     return setu_msg_arg(reply, 0);
 }
 
-# Bite 6: full pixel round-trip over setu. Create a surface, ATTACH a w*h BGRA
-# test buffer INLINE (the bytes follow the ATTACH frame on the stream), COMMIT.
-# Returns the checksum (sum of the buffer's bytes) the client SENT (> 0) so a
-# caller can compare it against the server's sum of the received bytes. Negative
-# on error (-20 create send, -6 recv, -8 unexpected reply, -21 attach send,
-# -22 short pixel write, -23 commit send). Closes the fd.
+# One-shot present of a deterministic w*h BGRA TEST buffer; returns the byte
+# checksum the client SENT (> 0) so a caller can compare it against the server's
+# received-byte sum. Negative on error. Uses setu's persistent client for the
+# CREATE→ATTACH+payload→COMMIT round-trip.
 fn dh_setu_send_buffer(path, w, h): i64 {
-    var fd = dh_setu_connect(path);
-    if (fd < 0) { return fd; }
-
-    # CREATE_SURFACE -> SURFACE_CREATED(id)
-    if (dh_setu_send(fd, setu_create_surface(w, h, 0)) < 0) { syscall(SYS_CLOSE, fd); return 0 - 20; }
-    var reply = setu_msg_new();
-    if (dh_setu_recv(fd, reply) < 0) { syscall(SYS_CLOSE, fd); return 0 - 6; }
-    if (setu_msg_kind(reply) != SETU_SURFACE_CREATED) { syscall(SYS_CLOSE, fd); return 0 - 8; }
-    var id = setu_msg_arg(reply, 0);
-
-    # Build a deterministic BGRA test buffer + its byte checksum.
     var stride = w * 4;
     var nbytes = h * stride;
     var pix = alloc(nbytes);
@@ -115,65 +60,21 @@ fn dh_setu_send_buffer(path, w, h): i64 {
         sum = sum + b;
         i = i + 1;
     }
-
-    # ATTACH(id, w, h, stride, fmt=1) + inline pixels + COMMIT(id)
-    if (dh_setu_send(fd, setu_attach(id, w, h, stride, 1)) < 0) { syscall(SYS_CLOSE, fd); return 0 - 21; }
-    if (syscall(SYS_WRITE, fd, pix, nbytes) != nbytes) { syscall(SYS_CLOSE, fd); return 0 - 22; }
-    if (dh_setu_send(fd, setu_commit(id)) < 0) { syscall(SYS_CLOSE, fd); return 0 - 23; }
-
-    syscall(SYS_CLOSE, fd);
+    var c = setu_client_connect(path);
+    if (c == 0) { return 0 - 20; }
+    var rc = setu_client_present(c, pix, w, h);
+    setu_client_close(c);
+    if (rc < 0) { return rc; }
     return sum;
 }
 
-# Bite 8: send an already-rendered w*h BGRA buffer `pix` over setu (CREATE →
-# ATTACH+inline payload → COMMIT). Unlike dh_setu_send_buffer this takes a
-# caller-supplied buffer — e.g. dh_surface_render's SdSurface pixels — so a real
-# widget tree can be presented. Returns 0 on success or a negative code
-# (-20 create · -6 recv · -8 unexpected reply · -21 attach · -22 short pixel
-# write · -23 commit). Closes the fd.
+# One-shot present of an already-rendered w*h BGRA buffer `pix` (e.g. a widget
+# surface's pixels). -> 0 on success or a negative code. Uses setu's client.
 fn dh_setu_send_pixels(path, pix, w, h): i64 {
-    var fd = dh_setu_connect(path);
-    if (fd < 0) { return fd; }
-    if (dh_setu_send(fd, setu_create_surface(w, h, 0)) < 0) { syscall(SYS_CLOSE, fd); return 0 - 20; }
-    var reply = setu_msg_new();
-    if (dh_setu_recv(fd, reply) < 0) { syscall(SYS_CLOSE, fd); return 0 - 6; }
-    if (setu_msg_kind(reply) != SETU_SURFACE_CREATED) { syscall(SYS_CLOSE, fd); return 0 - 8; }
-    var id = setu_msg_arg(reply, 0);
-    var stride = w * 4;
-    var nbytes = h * stride;
-    if (dh_setu_send(fd, setu_attach(id, w, h, stride, 1)) < 0) { syscall(SYS_CLOSE, fd); return 0 - 21; }
-    if (syscall(SYS_WRITE, fd, pix, nbytes) != nbytes) { syscall(SYS_CLOSE, fd); return 0 - 22; }
-    if (dh_setu_send(fd, setu_commit(id)) < 0) { syscall(SYS_CLOSE, fd); return 0 - 23; }
-    syscall(SYS_CLOSE, fd);
+    var c = setu_client_connect(path);
+    if (c == 0) { return 0 - 20; }
+    var rc = setu_client_present(c, pix, w, h);
+    setu_client_close(c);
+    if (rc < 0) { return rc; }
     return 0;
-}
-
-# Read EXACTLY `n` bytes from `fd` into `buf`, looping over short reads. Returns
-# `n` (>= 0) or -6 on EOF/error. Needed to frame a STREAM of messages (the input
-# return-path) — dh_setu_recv bulk-reads one frame and would drop trailing ones.
-fn dh_setu_read_exact(fd, buf, n): i64 {
-    var got = 0;
-    while (got < n) {
-        var r = syscall(SYS_READ, fd, buf + got, n - got);
-        if (r <= 0) { return 0 - 6; }
-        got = got + r;
-    }
-    return got;
-}
-
-# Read ONE full setu frame from `fd` into `msg_out` using length-from-header
-# framing (kind + argc header → (2+argc)*8 total). Returns the frame length
-# (> 0), -6 on EOF / short read / bad argc, or a negated SetuErr. Use this (not
-# dh_setu_recv) when reading a continuous stream of frames.
-fn dh_setu_read_msg(fd, msg_out): i64 {
-    var buf = alloc(128);
-    if (dh_setu_read_exact(fd, buf, 16) < 0) { return 0 - 6; }
-    var argc = setu_get_i64(buf, 8);
-    if (argc < 0) { return 0 - 6; }
-    if (argc > 8) { return 0 - 6; }               # setu max argc is 5
-    var total = (2 + argc) * 8;
-    if (total > 16) {
-        if (dh_setu_read_exact(fd, buf + 16, total - 16) < 0) { return 0 - 6; }
-    }
-    return setu_decode(buf, total, msg_out);
 }

@@ -68,13 +68,13 @@ path = "../rekha"
 tag = "0.3.0"
 modules = ["dist/rekha.cyr"]
 
-# Display-protocol contract: setu (सेतु — bridge). The wire between this client
-# and the aethersafha compositor — message types + codec (surface lifecycle,
-# buffer commit, input). dhancha's transport-fd `dh_run` loop + `dh_surface_present`
-# will speak setu; the codec lives here, the socket/memfd transport is dhancha's.
-# All fns `setu_*` (no collision); stdlib needs are a subset of the set above.
+# Display-protocol contract + reference CLIENT: setu (सेतु — bridge). The wire
+# between this client and the aethersafha compositor — message types, codec, AND
+# (since setu 0.2.0) the reference client transport (`setu_connect` /
+# `setu_client_*`). dhancha's `DhClient` + `dh_setu_*` now DELEGATE to setu's
+# client — one shared transport implementation, no duplication. All fns `setu_*`
+# (no collision); stdlib needs are a subset of the set above.
 [deps.setu]
 git = "https://github.com/MacCracken/setu.git"
-path = "../setu"
-tag = "0.1.0"
+tag = "0.2.0"
 modules = ["dist/setu.cyr"]

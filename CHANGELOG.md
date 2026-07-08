@@ -5,7 +5,33 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.6.0] - 2026-07-08 — native display protocol (setu client binding)
+
+### Added
+
+- **The setu client binding — dhancha speaks the native display protocol.** The
+  full client side of the sovereign dhancha ↔ aethersafha wire (`setu`), built
+  incrementally and proven end-to-end on Linux against the real compositor
+  (keyboard + pointer, zero Wayland):
+  - **`src/setu_client.cyr`** — the setu transport: `dh_setu_connect` (AF_UNIX),
+    `dh_setu_send` (encode + write), `dh_setu_recv` / `dh_setu_read_msg`
+    (length-from-header framing for a message *stream*), `dh_setu_read_exact`,
+    plus the lifecycle + present helpers (`dh_setu_create_surface`,
+    `dh_setu_send_buffer`, `dh_setu_send_pixels`).
+  - **`src/setu_input.cyr`** — the "compositor-fd input source": maps setu
+    `INPUT_KEY` / `POINTER_MOVE` / `POINTER_BTN` / `FOCUS` frames 1:1 into
+    `DhEvent`s (`dh_setu_map_input` / `dh_setu_read_event`).
+  - **`src/dh_client.cyr`** — the app-facing **`DhClient`** binding
+    (`dh_client_connect` / `dh_client_present` / `dh_client_next_event` /
+    `dh_client_close`): connect once, present a rendered widget tree, and pump
+    input off the same connection ("each app owns its connection").
+  - Adds a dependency on the new **[`setu`](https://github.com/MacCracken/setu)
+    0.1.0** contract lib (typed messages + wire codec).
+  - Proven: a real dhancha widget tree (sadish-rasterized, rekha TrueType text)
+    rendered and presented over setu and composited by the **real** aethersafha
+    compositor, with input events flowing back as `DhEvent`s. The setu modules
+    are opt-in (included alongside the toolkit); folding them into the core
+    distribution is a follow-up packaging decision.
 
 ### Changed
 

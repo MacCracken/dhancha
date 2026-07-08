@@ -53,19 +53,18 @@ stdlib = [
 
 # Draw-path deps: sadish (2D vector fills/strokes) + rekha (glyph outlines,
 # which itself pulls sadish). The widget draw walks the tree filling
-# backgrounds/borders via sadish and text via rekha. Local path overrides for
-# cross-repo dev; git tags are the published pins. mabda (GPU) + the aethersafha
-# Wayland commit are a later bite — the CPU draw path comes first.
+# backgrounds/borders via sadish and text via rekha. Pinned to git tags (the dev
+# `path` overrides were dropped for reproducible builds; re-add
+# `path = "../sibling"` locally for cross-repo work on uncommitted siblings).
+# mabda (GPU) + the aethersafha Wayland commit are a later bite — CPU draw first.
 [deps.sadish]
 git = "https://github.com/MacCracken/sadish.git"
-path = "../sadish"
-tag = "0.4.0"
+tag = "0.4.1"
 modules = ["dist/sadish.cyr"]
 
 [deps.rekha]
 git = "https://github.com/MacCracken/rekha.git"
-path = "../rekha"
-tag = "0.3.0"
+tag = "0.3.1"
 modules = ["dist/rekha.cyr"]
 
 # Display-protocol contract + reference CLIENT: setu (सेतु — bridge). The wire

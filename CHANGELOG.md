@@ -5,6 +5,19 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.2] - 2026-07-08 — draw-stack pin alignment
+
+Dep-hygiene release — no code change. Aligns the draw-stack deps with the
+toolchain-alignment cuts and drops their dev path-overrides.
+
+### Changed
+
+- **`[deps.sadish]` → tag `0.4.1`, `[deps.rekha]` → tag `0.3.1`** (both bumped to
+  the toolchain-aligned 6.4.25 cuts), and the dev `path = "../sibling"` overrides
+  dropped — tag-only, reproducible, matching the `[deps.setu]` cleanup in 0.6.1.
+  Push order: sadish → rekha → dhancha. dhancha's own cyrius pin was already
+  `6.4.25`.
+
 ## [0.6.1] - 2026-07-08 — setu client dedup (delegate to setu's promoted client)
 
 ### Changed

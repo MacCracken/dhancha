@@ -57,3 +57,31 @@ fn dh_setu_hello(path, version, role): i64 {
     if (rc < 0) { return rc; }
     return 0;
 }
+
+# Read ONE setu frame from `fd` into `msg_out`. Returns the decoded length
+# (> 0), -6 on empty read / EOF, or a negated SetuErr from setu_decode.
+fn dh_setu_recv(fd, msg_out): i64 {
+    var cap = 256;
+    var buf = alloc(cap);
+    var n = syscall(SYS_READ, fd, buf, cap);
+    if (n <= 0) { return 0 - 6; }
+    return setu_decode(buf, n, msg_out);
+}
+
+# Bite 5: connect, send CREATE_SURFACE(w,h,flags), read the SURFACE_CREATED
+# reply, and return the compositor-assigned surface id (> 0). The compositor is
+# the source of truth for the id. Negative on failure:
+#   dh_setu_connect codes · dh_setu_send codes · -6 recv · -8 unexpected reply
+#   kind. Closes the fd either way.
+fn dh_setu_create_surface(path, w, h, flags): i64 {
+    var fd = dh_setu_connect(path);
+    if (fd < 0) { return fd; }
+    var sr = dh_setu_send(fd, setu_create_surface(w, h, flags));
+    if (sr < 0) { syscall(SYS_CLOSE, fd); return sr; }
+    var reply = setu_msg_new();
+    var rr = dh_setu_recv(fd, reply);
+    syscall(SYS_CLOSE, fd);
+    if (rr < 0) { return rr; }
+    if (setu_msg_kind(reply) != SETU_SURFACE_CREATED) { return 0 - 8; }
+    return setu_msg_arg(reply, 0);
+}

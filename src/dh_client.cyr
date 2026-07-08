@@ -1,0 +1,70 @@
+# dhancha — DhClient: the app-facing setu binding ("each app owns its
+# connection"). An app connects once, presents its rendered surfaces, and pumps
+# input off the same connection — the real path that dh_surface_present and
+# dh_run's transport loop delegate to. Bridges the toolkit (dh_surface_render) +
+# setu_client (transport) + setu_input (the DhEvent adapter). Include alongside
+# src/lib.cyr + src/setu_client.cyr + src/setu_input.cyr.
+
+enum DhClientOff {
+    DH_C_FD  = 0;    # connected setu fd
+    DH_C_SID = 8;    # compositor-assigned surface id (0 until first present)
+    DH_C_SZ  = 16;
+}
+
+# Connect to the compositor's setu socket at `path`. Returns a *DhClient, or 0 on
+# failure.
+fn dh_client_connect(path): i64 {
+    var fd = dh_setu_connect(path);
+    if (fd < 0) { return 0; }
+    var c = alloc(DH_C_SZ);
+    store64(c + DH_C_FD, fd);
+    store64(c + DH_C_SID, 0);
+    return c;
+}
+
+fn dh_client_fd(c): i64  { return load64(c + DH_C_FD); }
+fn dh_client_sid(c): i64 { return load64(c + DH_C_SID); }
+
+# Render `surf` (via `font`, may be 0) and present it over the client's
+# connection. On the first present it creates the surface once
+# (CREATE_SURFACE → SURFACE_CREATED, storing the id); every present sends
+# ATTACH + the pixels + COMMIT. Returns 0 or a negative code (-40 render,
+# -6 recv, -8 unexpected reply, -41 create send, -42 attach, -43 pixel write,
+# -44 commit).
+fn dh_client_present(c, surf, font): i64 {
+    var fd = dh_client_fd(c);
+    var sds = dh_surface_render(surf, font);
+    if (sds == 0) { return 0 - 40; }
+    var w = sd_surface_width(sds);
+    var h = sd_surface_height(sds);
+    var pix = sd_surface_pixels(sds);
+
+    var id = dh_client_sid(c);
+    if (id == 0) {
+        if (dh_setu_send(fd, setu_create_surface(w, h, 0)) < 0) { return 0 - 41; }
+        var reply = setu_msg_new();
+        if (dh_setu_read_msg(fd, reply) < 0) { return 0 - 6; }
+        if (setu_msg_kind(reply) != SETU_SURFACE_CREATED) { return 0 - 8; }
+        id = setu_msg_arg(reply, 0);
+        store64(c + DH_C_SID, id);
+    }
+
+    var stride = w * 4;
+    var nbytes = h * stride;
+    if (dh_setu_send(fd, setu_attach(id, w, h, stride, 1)) < 0) { return 0 - 42; }
+    if (syscall(SYS_WRITE, fd, pix, nbytes) != nbytes) { return 0 - 43; }
+    if (dh_setu_send(fd, setu_commit(id)) < 0) { return 0 - 44; }
+    return 0;
+}
+
+# Read the next input event off the client's connection as a DhEvent (*DhEvent,
+# > 0), 0 on a non-input frame, or -6 on EOF. The seam dh_run's compositor-fd
+# loop pumps.
+fn dh_client_next_event(c): i64 {
+    return dh_setu_read_event(dh_client_fd(c));
+}
+
+fn dh_client_close(c): i64 {
+    syscall(SYS_CLOSE, dh_client_fd(c));
+    return 0;
+}

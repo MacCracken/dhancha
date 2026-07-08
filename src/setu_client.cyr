@@ -1,0 +1,59 @@
+# dhancha — setu display-protocol client (connect side).
+#
+# Bite 3 of the native display protocol (agnosticos native-display-protocol.md
+# §2): the client half of the setu seam. Connect to the compositor's Unix
+# socket, encode a setu message, and write the frame. ISOLATED — not wired into
+# `dh_run` / `dh_surface_present` yet (later bites); a probe drives it standalone.
+# Mirrors the sovereign AF_UNIX pattern (prior-art: aethersafha setu_server,
+# bote transport_unix). All fns `dh_setu_*`. The codec is setu's
+# (`setu_encode`, [deps.setu]); the transport is dhancha's.
+
+var DH_SETU_AF_UNIX     = 1;   # AF_UNIX
+var DH_SETU_SOCK_STREAM = 1;   # SOCK_STREAM
+
+# Build a sockaddr_un (110 bytes) at `addr_buf` for `path` (cstr). Returns the
+# struct length to pass to connect() (sun_family + path + NUL).
+fn dh_setu_sockaddr(addr_buf, path): i64 {
+    memset(addr_buf, 0, 110);
+    store16(addr_buf, DH_SETU_AF_UNIX);
+    var plen = strlen(path);
+    if (plen > 107) { plen = 107; }
+    memcpy(addr_buf + 2, path, plen);
+    store8(addr_buf + 2 + plen, 0);
+    return 2 + plen + 1;
+}
+
+# Connect to the compositor's setu socket at `path`. Returns the connected fd
+# (>= 0) or a negative step code (-2 socket, -3 connect).
+fn dh_setu_connect(path): i64 {
+    var fd = syscall(SYS_SOCKET, DH_SETU_AF_UNIX, DH_SETU_SOCK_STREAM, 0);
+    if (fd < 0) { return 0 - 2; }
+    var addr = alloc(110);
+    var alen = dh_setu_sockaddr(addr, path);
+    if (syscall(SYS_CONNECT, fd, addr, alen) < 0) { syscall(SYS_CLOSE, fd); return 0 - 3; }
+    return fd;
+}
+
+# Encode `msg` (a setu message) and write the whole frame to `fd`. Returns the
+# bytes written (> 0), a negated SetuErr on an encode failure, or -7 on a short
+# write. `buf`/`cap` are internal — the widest setu frame is 56 bytes.
+fn dh_setu_send(fd, msg): i64 {
+    var cap = 128;
+    var buf = alloc(cap);
+    var enc = setu_encode(msg, buf, cap);
+    if (enc < 0) { return enc; }
+    var w = syscall(SYS_WRITE, fd, buf, enc);
+    if (w != enc) { return 0 - 7; }
+    return w;
+}
+
+# Convenience: connect, send a HELLO(version, role), close. Returns 0 on
+# success or the first negative step/codec code.
+fn dh_setu_hello(path, version, role): i64 {
+    var fd = dh_setu_connect(path);
+    if (fd < 0) { return fd; }
+    var rc = dh_setu_send(fd, setu_hello(version, role));
+    syscall(SYS_CLOSE, fd);
+    if (rc < 0) { return rc; }
+    return 0;
+}

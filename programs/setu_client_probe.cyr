@@ -1,0 +1,30 @@
+# programs/setu_client_probe.cyr — bite-3 runtime proof of the dhancha setu
+# client, ISOLATED from the toolkit (builds none of the widget/event path).
+#
+# Connects to the compositor's setu socket and sends one HELLO frame. Pair it
+# with aethersafha's build/setu_probe (the listener): run the listener, then run
+# this, and the listener decodes "HELLO argc=2" off the wire — a real
+# dhancha -> aethersafha handshake with no stand-in. Throwaway proof harness.
+
+include "src/setu_client.cyr"
+
+fn main(): i64 {
+    alloc_init();
+    var path = "/tmp/aethersafha-setu.sock";
+    var rc = dh_setu_hello(path, 7, 3);   # HELLO(version=7, role=3)
+    if (rc == 0) {
+        var ok = "setu_client_probe: sent HELLO to compositor\n";
+        syscall(SYS_WRITE, 1, ok, strlen(ok));
+        return 0;
+    }
+    var e = "setu_client_probe: send failed\n";
+    syscall(SYS_WRITE, 2, e, strlen(e));
+    return 1;
+}
+
+fn _entry(): i64 {
+    var r = main();
+    syscall(SYS_EXIT, r);
+    return 0;
+}
+_entry();

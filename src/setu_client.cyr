@@ -124,3 +124,26 @@ fn dh_setu_send_buffer(path, w, h): i64 {
     syscall(SYS_CLOSE, fd);
     return sum;
 }
+
+# Bite 8: send an already-rendered w*h BGRA buffer `pix` over setu (CREATE →
+# ATTACH+inline payload → COMMIT). Unlike dh_setu_send_buffer this takes a
+# caller-supplied buffer — e.g. dh_surface_render's SdSurface pixels — so a real
+# widget tree can be presented. Returns 0 on success or a negative code
+# (-20 create · -6 recv · -8 unexpected reply · -21 attach · -22 short pixel
+# write · -23 commit). Closes the fd.
+fn dh_setu_send_pixels(path, pix, w, h): i64 {
+    var fd = dh_setu_connect(path);
+    if (fd < 0) { return fd; }
+    if (dh_setu_send(fd, setu_create_surface(w, h, 0)) < 0) { syscall(SYS_CLOSE, fd); return 0 - 20; }
+    var reply = setu_msg_new();
+    if (dh_setu_recv(fd, reply) < 0) { syscall(SYS_CLOSE, fd); return 0 - 6; }
+    if (setu_msg_kind(reply) != SETU_SURFACE_CREATED) { syscall(SYS_CLOSE, fd); return 0 - 8; }
+    var id = setu_msg_arg(reply, 0);
+    var stride = w * 4;
+    var nbytes = h * stride;
+    if (dh_setu_send(fd, setu_attach(id, w, h, stride, 1)) < 0) { syscall(SYS_CLOSE, fd); return 0 - 21; }
+    if (syscall(SYS_WRITE, fd, pix, nbytes) != nbytes) { syscall(SYS_CLOSE, fd); return 0 - 22; }
+    if (dh_setu_send(fd, setu_commit(id)) < 0) { syscall(SYS_CLOSE, fd); return 0 - 23; }
+    syscall(SYS_CLOSE, fd);
+    return 0;
+}

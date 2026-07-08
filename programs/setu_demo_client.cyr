@@ -1,0 +1,61 @@
+# programs/setu_demo_client.cyr — bite-8 visible demo (client side). Builds a
+# real dhancha widget tree, lays it out, renders it to a sadish SdSurface (font 0
+# → colored boxes, no font file), and sends those pixels over setu. Pair with
+# aethersafha's build/setu_demo_probe, which blits + dumps the framebuffer to a
+# PPM you can open. The design's `demo.cyr` live gate, minus text. Throwaway.
+
+include "src/lib.cyr"          # the dhancha toolkit chain: widget / layout / surface (+ sadish/rekha deps)
+include "src/setu_client.cyr"  # the setu client transport (added on top)
+
+fn main(): i64 {
+    alloc_init();
+    var path = "/tmp/aethersafha-setu.sock";
+    var W = 320;
+    var H = 200;
+
+    # A window (vertical flex) with two colored panels — padding + gap so the
+    # flexbox layout is visible.
+    var win = dh_widget_new(WINDOW);
+    dh_widget_set_layout(win, BOX_V);
+    dh_widget_set_bg(win, sd_rgb(60, 60, 80));
+    dh_widget_set_padding(win, 16);
+    dh_widget_set_gap(win, 12);
+
+    var top = dh_widget_new(LABEL);
+    dh_widget_set_bg(top, sd_rgb(200, 90, 90));
+    dh_widget_set_pref(top, 288, 70);        # 288 = W - 2*padding
+
+    var btn = dh_widget_new(BUTTON);
+    dh_widget_set_bg(btn, sd_rgb(90, 160, 220));
+    dh_widget_set_pref(btn, 288, 44);
+
+    dh_widget_add_child(win, top);
+    dh_widget_add_child(win, btn);
+
+    var surf = dh_surface_new(W, H);
+    dh_surface_set_root(surf, win);
+    dh_layout_apply(win, W, H);
+    var sds = dh_surface_render(surf, 0);    # font 0 → colored boxes, no text
+    if (sds == 0) {
+        var e = "setu_demo_client: render failed\n";
+        syscall(SYS_WRITE, 2, e, strlen(e));
+        return 1;
+    }
+
+    var rc = dh_setu_send_pixels(path, sd_surface_pixels(sds), sd_surface_width(sds), sd_surface_height(sds));
+    if (rc < 0) {
+        var e2 = "setu_demo_client: send failed\n";
+        syscall(SYS_WRITE, 2, e2, strlen(e2));
+        return 1;
+    }
+    var ok = "setu_demo_client: rendered + sent a 320x200 widget tree\n";
+    syscall(SYS_WRITE, 1, ok, strlen(ok));
+    return 0;
+}
+
+fn _entry(): i64 {
+    var r = main();
+    syscall(SYS_EXIT, r);
+    return 0;
+}
+_entry();

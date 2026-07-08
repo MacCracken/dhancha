@@ -23,10 +23,12 @@ fn main(): i64 {
 
     var top = dh_widget_new(LABEL);
     dh_widget_set_bg(top, sd_rgb(200, 90, 90));
+    dh_widget_set_text(top, "Files");
     dh_widget_set_pref(top, 288, 70);        # 288 = W - 2*padding
 
     var btn = dh_widget_new(BUTTON);
     dh_widget_set_bg(btn, sd_rgb(90, 160, 220));
+    dh_widget_set_text(btn, "Open");
     dh_widget_set_pref(btn, 288, 44);
 
     dh_widget_add_child(win, top);
@@ -35,7 +37,17 @@ fn main(): i64 {
     var surf = dh_surface_new(W, H);
     dh_surface_set_root(surf, win);
     dh_layout_apply(win, W, H);
-    var sds = dh_surface_render(surf, 0);    # font 0 → colored boxes, no text
+
+    # Load a TrueType font so LABEL/BUTTON text renders (rekha handles the
+    # format-4 cmap of Liberation Sans). font 0 (missing/unparseable) gracefully
+    # falls back to no-text colored boxes.
+    var fontpath = "/usr/share/fonts/liberation/LiberationSans-Regular.ttf";
+    var fbuf = alloc(1048576);                       # 1 MB — Liberation Sans is ~350 KB
+    var flen = file_read_all(fontpath, fbuf, 1048576);
+    var font = 0;
+    if (flen > 0) { font = rekha_font_open(fbuf, flen); }
+
+    var sds = dh_surface_render(surf, font);
     if (sds == 0) {
         var e = "setu_demo_client: render failed\n";
         syscall(SYS_WRITE, 2, e, strlen(e));

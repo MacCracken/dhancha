@@ -4,13 +4,13 @@
 #
 # Provides: widget tree, box/flex layout, an event loop, and INPUT
 # DISPATCH (keyboard/pointer/focus/drag-drop). Apps build UIs here
-# instead of hand-rolling raw GPU + raw Wayland the way puka (the first
+# instead of hand-rolling raw GPU + a raw compositor connection the way puka (the first
 # windowed program) does today — dhancha is the spiritual extraction of
 # puka's windowing code. It is the CLIENT-side counterpart to aethersafha
 # (the compositor/server), analogous to how cmdit is the arg/CLI lib for
 # terminal apps. Drawing (v0.2+) routes through sadish (2D vector) +
-# rekha (fonts) + mabda (GPU); the composited output is a Wayland client
-# surface the aethersafha compositor draws to screen.
+# rekha (fonts) + mabda (GPU); the output is a client surface the aethersafha
+# compositor draws to screen over the native display protocol.
 #
 # Stdlib includes live ONLY in this file — domain modules are flat,
 # which is what makes `cyrius distlib` (strip-include concatenation)

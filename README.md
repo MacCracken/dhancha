@@ -5,7 +5,7 @@ Version: 0.5.0
 **dhancha** (ढाँचा — Hindi/Sanskrit: *framework / structure / scaffold*)
 is a pure-Cyrius **client-side widget toolkit / desktop app framework**
 for AGNOS — the Qt/GTK-equivalent layer. Desktop GUI apps build their
-UIs on dhancha instead of hand-rolling raw GPU + raw Wayland (which
+UIs on dhancha instead of hand-rolling raw GPU + a raw compositor connection (which
 `puka`, the first windowed program, does today). dhancha is the
 spiritual extraction of puka's windowing code.
 
@@ -19,8 +19,8 @@ It owns:
 
 It is the **CLIENT-side counterpart to `aethersafha`** (the
 compositor/server) — analogous to how `cmdit` is the arg/CLI lib for
-terminal apps. dhancha produces Wayland client surfaces that the
-aethersafha compositor composites onto the screen.
+terminal apps. dhancha produces client surfaces that the aethersafha
+compositor composites onto the screen over the native display protocol.
 
 ## Scope
 
@@ -63,10 +63,11 @@ aethersafha compositor composites onto the screen.
   containers: flex grow/shrink, padding, gap, and cross-axis alignment, plus
   intrinsic measure (`dh_measure` / `dh_layout_fit`) that sizes a container to
   its content. RUN-tested (`layout_test`).
-- **v0.6+ — next.** The compositor-fd input source (decode `wl_pointer` /
-  `wl_keyboard` wire bytes into events + block on the Wayland socket), real
-  hmtx text advances, and the present path (mabda GPU upload + the aethersafha
-  Wayland commit).
+- **v0.6+ — next.** The compositor-fd input source (decode the native display
+  protocol's input wire bytes into events + block on its transport), real hmtx
+  text advances, and the present path (CPU buffer submit over the native
+  protocol; mabda GPU upload later). Wayland is refused — see
+  [`docs/development/sovereign-desktop.md`](docs/development/sovereign-desktop.md).
 
 ## Place in the stack
 
@@ -76,7 +77,7 @@ aethersafha compositor composites onto the screen.
      dhancha            ← client-side widget toolkit (this repo)
         │  draws via
    sadish · rekha · mabda   ← 2D vector · fonts · GPU  (DEFERRED cross-deps)
-        │  presents a Wayland client surface to
+        │  presents a client surface (native protocol) to
    aethersafha         ← compositor / server (composites to screen)
 ```
 
@@ -94,12 +95,12 @@ scaffold. As the draw/present code lands (v0.2), add to `cyrius.cyml`:
 
 - **Desktop GUI apps** — build their UIs on dhancha's widget tree,
   layout, event loop, and input dispatch instead of hand-rolling raw GPU
-  + raw Wayland.
+  + a raw compositor connection.
 - **puka** — the first windowed program; its windowing code is the
   spiritual origin of dhancha, and it is the reference consumer as the
   toolkit fills in.
-- **aethersafha** — the compositor on the other side of the Wayland
-  wire: dhancha emits the client surfaces it composites (dhancha is the
+- **aethersafha** — the compositor on the other side of the native display
+  protocol: dhancha emits the client surfaces it composites (dhancha is the
   client-side counterpart to aethersafha's server side).
 
 ## Dependencies
@@ -111,8 +112,9 @@ scaffold. As the draw/present code lands (v0.2), add to `cyrius.cyml`:
 - **sadish** (0.4.0) + **rekha** (0.3.0) — the draw path: sadish fills/strokes
   widget backgrounds/borders, rekha rasterizes text (via sadish). Wired as
   `[deps.*]` (local `../` path overrides for dev; git tags as published pins).
-- **mabda** (GPU) — still deferred; the present path (GPU upload + Wayland
-  commit) is a later bite. The CPU draw is complete.
+- **mabda** (GPU) — still deferred; the present path (CPU buffer submit over
+  the native protocol; GPU upload later) is a later bite. The CPU draw is
+  complete.
 
 The toolchain pin is `cyrius = "6.4.7"`.
 

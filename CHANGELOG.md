@@ -5,6 +5,19 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **The v0.6+ compositor seam is the native display protocol — Wayland refused.**
+  The remaining client stubs (`dh_surface_present`, the `dh_run` input source)
+  bind to aethersafha's **native, first-principles display protocol**, not a
+  Wayland client. The "Wayland socket / commit" framing in the deferred lists of
+  earlier releases below is superseded; the direction lives in
+  [`docs/development/sovereign-desktop.md`](docs/development/sovereign-desktop.md)
+  (and the ecosystem pivot in `agnosticos/docs/design-patterns.md`). Source
+  comments swept to match; no code change.
+
 ## [0.5.0] - 2026-07-06
 
 The layout engine — `BOX_V` / `BOX_H` become real flex containers, plus

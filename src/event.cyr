@@ -2,20 +2,20 @@
 # event.cyr — this module OWNS the input-dispatch role.
 #
 # Input (keyboard / pointer) arrives from the aethersafha compositor over
-# the Wayland client connection as DhEvents. dh_dispatch resolves a
+# the native display-protocol connection as DhEvents. dh_dispatch resolves a
 # target (the focused widget for keys, the widget under the pointer for
 # clicks) and BUBBLES the event up the parent chain, invoking each node's
 # handler until one CONSUMES it. dh_run pumps a DhQueue of events and
 # dispatches them until the queue drains or a handler calls dh_quit.
 #
-# Wire model (per Wayland wl_pointer / wl_keyboard): a pointer BUTTON
+# Wire model (the compositor input convention): a pointer BUTTON
 # event carries (button, state) but NOT coordinates — the compositor
 # tracks position from MOTION events. So dhancha keeps the current
 # pointer position (updated on POINTER_MOVE) and hit-tests button/drag
 # events against it, not against the button event's payload.
 #
-# The compositor-fd source (decode wl_pointer / wl_keyboard wire bytes
-# into DhEvents and pump the socket) is a later bite (see CHANGELOG); the
+# The compositor-fd source (decode the native protocol's input wire bytes
+# into DhEvents and pump the transport) is a later bite (see CHANGELOG); the
 # DhQueue is the seam it will feed. Until then a caller (or a test) posts
 # DhEvents into the queue directly, keeping the whole dispatch path usable.
 
@@ -84,7 +84,7 @@ enum DhEventField {
 var _dh_focus = 0;
 
 # Last known pointer position (set by POINTER_MOVE; button/drag events
-# hit-test against this, matching the Wayland wire model).
+# hit-test against this, matching the compositor wire model).
 var _dh_ptr_x = 0;
 var _dh_ptr_y = 0;
 
@@ -476,7 +476,7 @@ fn dh_dispatch(root, ev): i64 {
 # A DhQueue is a fixed-capacity ring of DhEvent pointers. The future
 # compositor-fd translator pushes wire events here; dh_run pops +
 # dispatches. A ring (not a growable vec) so an input flood DROPS the
-# overflow rather than growing without bound (puka's wl_kq discipline).
+# overflow rather than growing without bound (puka's kq-ring discipline).
 #
 # DhQueue struct layout (32 bytes):
 #   +0:  head   — index of the next event to pop
@@ -555,7 +555,7 @@ fn dh_quit(): i64 { _dh_running = 0; return DHANCHA_OK; }
 # null events, so the ring never holds a 0 slot, but keying off emptiness
 # is the self-evidently-correct condition regardless.
 #
-# The compositor-connected loop (block on the Wayland fd, decode wire
+# The compositor-connected loop (block on the native protocol fd, decode wire
 # events into DhEvents, run layout + present when dirty) replaces the
 # empty-check branch with an fd wait; the dispatch core is the same.
 fn dh_run(root, q): i64 {

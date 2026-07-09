@@ -71,9 +71,10 @@ modules = ["dist/rekha.cyr"]
 # between this client and the aethersafha compositor — message types, codec, AND
 # (since setu 0.2.0) the reference client transport (`setu_connect` /
 # `setu_client_*`). dhancha's `DhClient` + `dh_setu_*` now DELEGATE to setu's
-# client — one shared transport implementation, no duplication. All fns `setu_*`
-# (no collision); stdlib needs are a subset of the set above.
+# client — one shared transport implementation, no duplication. Pinned to 0.3.0
+# (the CROSS-PLATFORM TCP transport — item 3b; setu_cl_sockaddr dropped). All fns
+# `setu_*` (no collision); stdlib needs are a subset of the set above.
 [deps.setu]
 git = "https://github.com/MacCracken/setu.git"
-tag = "0.2.0"
+tag = "0.3.0"
 modules = ["dist/setu.cyr"]

@@ -5,6 +5,26 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.3] - 2026-07-08 — adapt to setu 0.3.0 (cross-platform TCP transport)
+
+setu 0.3.0 replaced its Linux-only AF_UNIX client with a cross-platform **TCP**
+transport (item 3b), dropping the `sockaddr_un` builder. dhancha's thin client
+layer adapts — one dead forwarder removed, the pin bumped. No behavior change for
+dhancha's own client API (`dh_setu_connect` / `dh_setu_*` / `setu_client_*` all
+forward unchanged).
+
+### Changed
+
+- **`[deps.setu]` → 0.3.0** — the shared reference client transport is now TCP
+  over loopback:7700 (`net.cyr`), cross-platform on Linux and agnos.
+
+### Removed
+
+- **`dh_setu_sockaddr`** (`src/setu_client.cyr`) — a forwarder to setu's
+  `setu_cl_sockaddr`, which no longer exists under the TCP transport (there is no
+  socket path to marshal; the address is the implicit loopback endpoint). It had
+  no callers.
+
 ## [0.6.2] - 2026-07-08 — draw-stack pin alignment
 
 Dep-hygiene release — no code change. Aligns the draw-stack deps with the

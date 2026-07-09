@@ -2,15 +2,18 @@
 #
 # setu (>= 0.2.0) now OWNS the client transport IMPLEMENTATION (the framing
 # primitives `setu_connect` / `setu_send` / `setu_recv` / `setu_read_exact` /
-# `setu_read_msg` / `setu_cl_sockaddr`, and the persistent `setu_client_*`). The
-# client was promoted INTO setu so dhancha + puka share ONE implementation
-# (agnosticos native-display-protocol.md). This file no longer re-implements any
-# transport — it just keeps the `dh_setu_*` names dhancha's probes use as thin
-# forwarders + one-shot (connect → do → close) convenience wrappers over setu.
-# The codec + transport are setu's; the toolkit binding is `dh_client.cyr`.
+# `setu_read_msg`, and the persistent `setu_client_*`). The client was promoted
+# INTO setu so dhancha + puka share ONE implementation (agnosticos
+# native-display-protocol.md). Since setu 0.3.0 the transport is CROSS-PLATFORM
+# TCP over loopback:7700 (Linux BSD sockets + agnos kernel TCP) — the AF_UNIX
+# `sockaddr_un` builder is gone, so the old `dh_setu_sockaddr` forwarder was
+# dropped (the address is now the implicit loopback endpoint). This file no
+# longer re-implements any transport — it just keeps the `dh_setu_*` names
+# dhancha's probes use as thin forwarders + one-shot (connect → do → close)
+# convenience wrappers over setu. The codec + transport are setu's; the toolkit
+# binding is `dh_client.cyr`.
 
 # --- framing primitives: forwarders to setu -------------------------------
-fn dh_setu_sockaddr(addr_buf, path): i64 { return setu_cl_sockaddr(addr_buf, path); }
 fn dh_setu_connect(path): i64            { return setu_connect(path); }
 fn dh_setu_send(fd, msg): i64            { return setu_send(fd, msg); }
 fn dh_setu_recv(fd, msg_out): i64        { return setu_recv(fd, msg_out); }

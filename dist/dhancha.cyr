@@ -1368,8 +1368,8 @@ fn dh_draw_text(sds, font, text, x, y, h): i64 {
                     if ((kb & (1 << (7 - kcol))) != 0) {
                         var px = kx + kcol; var py = ky + kr;
                         if (px >= 0) { if (px < sw) { if (py >= 0) { if (py < sh2) {
-                            store32(pix + (py * sw + px) * 4, 0x00FFFFFF);   # BGRA white
-                        } } } }
+                                        store32(pix + (py * sw + px) * 4, 0x00FFFFFF);   # BGRA white
+                                    } } } }
                     }
                     kcol = kcol + 1;
                 }

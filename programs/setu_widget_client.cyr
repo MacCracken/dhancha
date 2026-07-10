@@ -15,13 +15,14 @@
 # Run: needs a live compositor listening on setu loopback:7700 (aethersafha).
 
 include "src/lib.cyr"
+include "programs/blockfont.cyr"   # tiny hand-authored blocky font (real text, no asset files)
 
 fn wc_say(s): i64 { return syscall(SYS_WRITE, 1, s, strlen(s)); }
 
 # Build the widget tree for the given interaction state and render it into a fresh
 # sadish surface sized w×h. `focused` brightens the title bar; `keyed` lights the
 # first button white. Returns the SdSurface whose BGRA buffer we hand to setu.
-fn wc_render(w, h, focused, keyed): i64 {
+fn wc_render(w, h, focused, keyed, font): i64 {
     var title_col = sd_rgb(60, 70, 90);                    # dim title (unfocused)
     if (focused != 0) { title_col = sd_rgb(70, 130, 220); }   # bright blue title (focused)
     var btn_col = sd_rgb(40, 120, 60);                     # green primary button
@@ -30,9 +31,12 @@ fn wc_render(w, h, focused, keyed): i64 {
     var root = dh_widget_new(WINDOW);
     dh_widget_set_layout(root, BOX_V);                     # stack children top→bottom
     dh_widget_set_bg(root, sd_rgb(30, 30, 38));            # window backdrop
-    var title = dh_widget_new(BOX);
+    # title bar: a LABEL renders its bg AND its text — "FILE" drawn by rekha in white.
+    var title = dh_widget_new(LABEL);
     dh_widget_set_bg(title, title_col);
-    dh_widget_set_pref(title, 0, 28);
+    dh_widget_set_pref(title, 0, 36);
+    var ttl = "FILE";
+    dh_widget_set_text(title, ttl);
     var b1 = dh_widget_new(BUTTON);
     dh_widget_set_bg(b1, btn_col);
     dh_widget_set_pref(b1, 0, 44);
@@ -46,7 +50,7 @@ fn wc_render(w, h, focused, keyed): i64 {
     var surf = dh_surface_new(w, h);
     dh_surface_set_root(surf, root);
     dh_layout_apply(root, w, h);
-    return dh_surface_render(surf, 0);                     # font 0 = boxes/borders only for v1
+    return dh_surface_render(surf, font);                  # rekha draws the title text with `font`
 }
 
 fn main(): i64 {
@@ -54,6 +58,11 @@ fn main(): i64 {
     var w = 320;
     var h = 192;
     var nbytes = w * h * 4;
+
+    # Bake the blocky font ONCE (covers F I L E for the title bar). rekha renders it.
+    var fch = alloc(4 * 8);
+    store64(fch + 0, 0x46); store64(fch + 8, 0x49); store64(fch + 16, 0x4C); store64(fch + 24, 0x45);   # F I L E
+    var font = bf_build_font(fch, 4);
 
     var path = "/tmp/aethersafha-setu.sock";              # advisory; transport is loopback:7700
     var c = setu_client_connect(path);
@@ -65,7 +74,7 @@ fn main(): i64 {
 
     # Render the initial UI (unfocused, idle) straight into the shared buffer, then
     # establish the surface bound to it (CREATE_SURFACE → SURFACE_CREATED → ATTACH-by-buf → COMMIT).
-    var sds = wc_render(w, h, 0, 0);
+    var sds = wc_render(w, h, 0, 0, font);
     setu_buf_write(buf_id, sd_surface_pixels(sds), nbytes);
     if (setu_send(fd, setu_create_surface(w, h, 0)) < 0) { return 1; }
     var reply = setu_msg_new();
@@ -91,7 +100,7 @@ fn main(): i64 {
             var k = setu_msg_kind(inmsg);
             if (k == SETU_INPUT_KEY)   { keyed = 1; }
             if (k == SETU_INPUT_FOCUS) { focused = setu_msg_arg(inmsg, 1); }
-            var s2 = wc_render(w, h, focused, keyed);       # re-lay-out + re-draw the widgets
+            var s2 = wc_render(w, h, focused, keyed, font);       # re-lay-out + re-draw the widgets
             setu_buf_write(buf_id, sd_surface_pixels(s2), nbytes);
         }
         sys_sched_yield();

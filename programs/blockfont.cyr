@@ -10,13 +10,19 @@
 # colliding with any consumer's other deps. Author more letters in bf_letter().
 
 fn bf_put_u16(buf, off, v): i64 { store8(buf + off, (v >> 8) & 0xFF); store8(buf + off + 1, v & 0xFF); return 0; }
-fn bf_put_u32(buf, off, v): i64 { bf_put_u16(buf, off, (v >> 16) & 0xFFFF); bf_put_u16(buf, off + 2, v & 0xFFFF); return 0; }
+fn bf_put_u32(buf, off, v): i64 {
+    bf_put_u16(buf, off, (v >> 16) & 0xFFFF); bf_put_u16(buf, off + 2, v & 0xFFFF); return 0;
+}
 fn bf_put_i16(buf, off, v): i64 { return bf_put_u16(buf, off, v & 0xFFFF); }
 
-fn bf_pt(cx, cy, pn, x, y): i64 { var i = load64(pn); store64(cx + i * 8, x); store64(cy + i * 8, y); store64(pn, i + 1); return 0; }
+fn bf_pt(cx, cy, pn, x, y): i64 {
+    var i = load64(pn); store64(cx + i * 8, x); store64(cy + i * 8, y); store64(pn, i + 1); return 0;
+}
 
 # Close the current contour: record its last point index (n-1) and bump the count.
-fn bf_endc(ends, ncptr, n): i64 { var c = load64(ncptr); store64(ends + c * 8, n - 1); store64(ncptr, c + 1); return 0; }
+fn bf_endc(ends, ncptr, n): i64 {
+    var c = load64(ncptr); store64(ends + c * 8, n - 1); store64(ncptr, c + 1); return 0;
+}
 
 # Multi-contour glyph at goff: n total on-curve points (glyph space, y-up), nc contours
 # whose last-point indices are ends[0..nc). Fill = NONZERO, so a hole must wind opposite
@@ -54,83 +60,97 @@ fn bf_letter(ch, cx, cy, ends, ncptr): i64 {
     var n = 0; var pn = &n;
     store64(ncptr, 0);
     if (ch == 0x49) {                       # 'I'
-        bf_pt(cx, cy, pn, 200, 0); bf_pt(cx, cy, pn, 340, 0); bf_pt(cx, cy, pn, 340, 700); bf_pt(cx, cy, pn, 200, 700);
+        bf_pt(cx, cy, pn, 200, 0); bf_pt(cx, cy, pn, 340, 0); bf_pt(cx, cy, pn, 340, 700);
+        bf_pt(cx, cy, pn, 200, 700);
         bf_endc(ends, ncptr, n);
     }
     if (ch == 0x54) {                       # 'T'
-        bf_pt(cx, cy, pn, 120, 570); bf_pt(cx, cy, pn, 120, 700); bf_pt(cx, cy, pn, 600, 700); bf_pt(cx, cy, pn, 600, 570);
-        bf_pt(cx, cy, pn, 430, 570); bf_pt(cx, cy, pn, 430, 0);   bf_pt(cx, cy, pn, 290, 0);   bf_pt(cx, cy, pn, 290, 570);
+        bf_pt(cx, cy, pn, 120, 570); bf_pt(cx, cy, pn, 120, 700); bf_pt(cx, cy, pn, 600, 700);
+        bf_pt(cx, cy, pn, 600, 570); bf_pt(cx, cy, pn, 430, 570); bf_pt(cx, cy, pn, 430, 0);
+        bf_pt(cx, cy, pn, 290, 0); bf_pt(cx, cy, pn, 290, 570);
         bf_endc(ends, ncptr, n);
     }
     if (ch == 0x4C) {                       # 'L'
-        bf_pt(cx, cy, pn, 170, 0); bf_pt(cx, cy, pn, 560, 0); bf_pt(cx, cy, pn, 560, 130); bf_pt(cx, cy, pn, 300, 130);
-        bf_pt(cx, cy, pn, 300, 700); bf_pt(cx, cy, pn, 170, 700);
+        bf_pt(cx, cy, pn, 170, 0); bf_pt(cx, cy, pn, 560, 0); bf_pt(cx, cy, pn, 560, 130);
+        bf_pt(cx, cy, pn, 300, 130); bf_pt(cx, cy, pn, 300, 700); bf_pt(cx, cy, pn, 170, 700);
         bf_endc(ends, ncptr, n);
     }
     if (ch == 0x45) {                       # 'E'
-        bf_pt(cx, cy, pn, 170, 0); bf_pt(cx, cy, pn, 560, 0); bf_pt(cx, cy, pn, 560, 130); bf_pt(cx, cy, pn, 300, 130);
-        bf_pt(cx, cy, pn, 300, 290); bf_pt(cx, cy, pn, 520, 290); bf_pt(cx, cy, pn, 520, 420); bf_pt(cx, cy, pn, 300, 420);
-        bf_pt(cx, cy, pn, 300, 570); bf_pt(cx, cy, pn, 560, 570); bf_pt(cx, cy, pn, 560, 700); bf_pt(cx, cy, pn, 170, 700);
+        bf_pt(cx, cy, pn, 170, 0); bf_pt(cx, cy, pn, 560, 0); bf_pt(cx, cy, pn, 560, 130);
+        bf_pt(cx, cy, pn, 300, 130); bf_pt(cx, cy, pn, 300, 290); bf_pt(cx, cy, pn, 520, 290);
+        bf_pt(cx, cy, pn, 520, 420); bf_pt(cx, cy, pn, 300, 420); bf_pt(cx, cy, pn, 300, 570);
+        bf_pt(cx, cy, pn, 560, 570); bf_pt(cx, cy, pn, 560, 700); bf_pt(cx, cy, pn, 170, 700);
         bf_endc(ends, ncptr, n);
     }
     if (ch == 0x46) {                       # 'F'
-        bf_pt(cx, cy, pn, 170, 0); bf_pt(cx, cy, pn, 300, 0); bf_pt(cx, cy, pn, 300, 290); bf_pt(cx, cy, pn, 520, 290);
-        bf_pt(cx, cy, pn, 520, 420); bf_pt(cx, cy, pn, 300, 420); bf_pt(cx, cy, pn, 300, 570); bf_pt(cx, cy, pn, 560, 570);
-        bf_pt(cx, cy, pn, 560, 700); bf_pt(cx, cy, pn, 170, 700);
+        bf_pt(cx, cy, pn, 170, 0); bf_pt(cx, cy, pn, 300, 0); bf_pt(cx, cy, pn, 300, 290);
+        bf_pt(cx, cy, pn, 520, 290); bf_pt(cx, cy, pn, 520, 420); bf_pt(cx, cy, pn, 300, 420);
+        bf_pt(cx, cy, pn, 300, 570); bf_pt(cx, cy, pn, 560, 570); bf_pt(cx, cy, pn, 560, 700);
+        bf_pt(cx, cy, pn, 170, 700);
         bf_endc(ends, ncptr, n);
     }
     if (ch == 0x48) {                       # 'H'
-        bf_pt(cx, cy, pn, 170, 0); bf_pt(cx, cy, pn, 300, 0); bf_pt(cx, cy, pn, 300, 290); bf_pt(cx, cy, pn, 430, 290);
-        bf_pt(cx, cy, pn, 430, 0); bf_pt(cx, cy, pn, 560, 0); bf_pt(cx, cy, pn, 560, 700); bf_pt(cx, cy, pn, 430, 700);
-        bf_pt(cx, cy, pn, 430, 420); bf_pt(cx, cy, pn, 300, 420); bf_pt(cx, cy, pn, 300, 700); bf_pt(cx, cy, pn, 170, 700);
+        bf_pt(cx, cy, pn, 170, 0); bf_pt(cx, cy, pn, 300, 0); bf_pt(cx, cy, pn, 300, 290);
+        bf_pt(cx, cy, pn, 430, 290); bf_pt(cx, cy, pn, 430, 0); bf_pt(cx, cy, pn, 560, 0);
+        bf_pt(cx, cy, pn, 560, 700); bf_pt(cx, cy, pn, 430, 700); bf_pt(cx, cy, pn, 430, 420);
+        bf_pt(cx, cy, pn, 300, 420); bf_pt(cx, cy, pn, 300, 700); bf_pt(cx, cy, pn, 170, 700);
         bf_endc(ends, ncptr, n);
     }
     if (ch == 0x41) {                       # 'A' — outer triangle (CCW) + inner rect hole (CW) = crossbar A
         bf_pt(cx, cy, pn, 350, 700); bf_pt(cx, cy, pn, 120, 0); bf_pt(cx, cy, pn, 580, 0);
         bf_endc(ends, ncptr, n);
-        bf_pt(cx, cy, pn, 275, 200); bf_pt(cx, cy, pn, 275, 500); bf_pt(cx, cy, pn, 425, 500); bf_pt(cx, cy, pn, 425, 200);
+        bf_pt(cx, cy, pn, 275, 200); bf_pt(cx, cy, pn, 275, 500); bf_pt(cx, cy, pn, 425, 500);
+        bf_pt(cx, cy, pn, 425, 200);
         bf_endc(ends, ncptr, n);
     }
     if (ch == 0x56) {                       # 'V' — chevron
-        bf_pt(cx, cy, pn, 120, 700); bf_pt(cx, cy, pn, 270, 700); bf_pt(cx, cy, pn, 360, 220); bf_pt(cx, cy, pn, 450, 700);
-        bf_pt(cx, cy, pn, 600, 700); bf_pt(cx, cy, pn, 400, 0); bf_pt(cx, cy, pn, 320, 0);
+        bf_pt(cx, cy, pn, 120, 700); bf_pt(cx, cy, pn, 270, 700); bf_pt(cx, cy, pn, 360, 220);
+        bf_pt(cx, cy, pn, 450, 700); bf_pt(cx, cy, pn, 600, 700); bf_pt(cx, cy, pn, 400, 0);
+        bf_pt(cx, cy, pn, 320, 0);
         bf_endc(ends, ncptr, n);
     }
     if (ch == 0x53) {                       # 'S' — rectilinear zig
-        bf_pt(cx, cy, pn, 170, 700); bf_pt(cx, cy, pn, 560, 700); bf_pt(cx, cy, pn, 560, 570); bf_pt(cx, cy, pn, 300, 570);
-        bf_pt(cx, cy, pn, 300, 410); bf_pt(cx, cy, pn, 560, 410); bf_pt(cx, cy, pn, 560, 0); bf_pt(cx, cy, pn, 170, 0);
-        bf_pt(cx, cy, pn, 170, 130); bf_pt(cx, cy, pn, 430, 130); bf_pt(cx, cy, pn, 430, 290); bf_pt(cx, cy, pn, 170, 290);
+        bf_pt(cx, cy, pn, 170, 700); bf_pt(cx, cy, pn, 560, 700); bf_pt(cx, cy, pn, 560, 570);
+        bf_pt(cx, cy, pn, 300, 570); bf_pt(cx, cy, pn, 300, 410); bf_pt(cx, cy, pn, 560, 410);
+        bf_pt(cx, cy, pn, 560, 0); bf_pt(cx, cy, pn, 170, 0); bf_pt(cx, cy, pn, 170, 130);
+        bf_pt(cx, cy, pn, 430, 130); bf_pt(cx, cy, pn, 430, 290); bf_pt(cx, cy, pn, 170, 290);
         bf_endc(ends, ncptr, n);
     }
     if (ch == 0x43) {                       # 'C' — open bracket
-        bf_pt(cx, cy, pn, 560, 570); bf_pt(cx, cy, pn, 560, 700); bf_pt(cx, cy, pn, 170, 700); bf_pt(cx, cy, pn, 170, 0);
-        bf_pt(cx, cy, pn, 560, 0); bf_pt(cx, cy, pn, 560, 130); bf_pt(cx, cy, pn, 300, 130); bf_pt(cx, cy, pn, 300, 570);
+        bf_pt(cx, cy, pn, 560, 570); bf_pt(cx, cy, pn, 560, 700); bf_pt(cx, cy, pn, 170, 700);
+        bf_pt(cx, cy, pn, 170, 0); bf_pt(cx, cy, pn, 560, 0); bf_pt(cx, cy, pn, 560, 130);
+        bf_pt(cx, cy, pn, 300, 130); bf_pt(cx, cy, pn, 300, 570);
         bf_endc(ends, ncptr, n);
     }
     if (ch == 0x55) {                       # 'U'
-        bf_pt(cx, cy, pn, 170, 700); bf_pt(cx, cy, pn, 300, 700); bf_pt(cx, cy, pn, 300, 130); bf_pt(cx, cy, pn, 430, 130);
-        bf_pt(cx, cy, pn, 430, 700); bf_pt(cx, cy, pn, 560, 700); bf_pt(cx, cy, pn, 560, 0); bf_pt(cx, cy, pn, 170, 0);
+        bf_pt(cx, cy, pn, 170, 700); bf_pt(cx, cy, pn, 300, 700); bf_pt(cx, cy, pn, 300, 130);
+        bf_pt(cx, cy, pn, 430, 130); bf_pt(cx, cy, pn, 430, 700); bf_pt(cx, cy, pn, 560, 700);
+        bf_pt(cx, cy, pn, 560, 0); bf_pt(cx, cy, pn, 170, 0);
         bf_endc(ends, ncptr, n);
     }
     if (ch == 0x4E) {                       # 'N' — verticals + diagonal
-        bf_pt(cx, cy, pn, 170, 0); bf_pt(cx, cy, pn, 170, 700); bf_pt(cx, cy, pn, 300, 700); bf_pt(cx, cy, pn, 490, 250);
-        bf_pt(cx, cy, pn, 490, 700); bf_pt(cx, cy, pn, 610, 700); bf_pt(cx, cy, pn, 610, 0); bf_pt(cx, cy, pn, 490, 0);
-        bf_pt(cx, cy, pn, 300, 450); bf_pt(cx, cy, pn, 300, 0);
+        bf_pt(cx, cy, pn, 170, 0); bf_pt(cx, cy, pn, 170, 700); bf_pt(cx, cy, pn, 300, 700);
+        bf_pt(cx, cy, pn, 490, 250); bf_pt(cx, cy, pn, 490, 700); bf_pt(cx, cy, pn, 610, 700);
+        bf_pt(cx, cy, pn, 610, 0); bf_pt(cx, cy, pn, 490, 0); bf_pt(cx, cy, pn, 300, 450);
+        bf_pt(cx, cy, pn, 300, 0);
         bf_endc(ends, ncptr, n);
     }
     if (ch == 0x4F) {                       # 'O' — outer octagon (CCW) + inner hole (CW)
-        bf_pt(cx, cy, pn, 150, 220); bf_pt(cx, cy, pn, 150, 480); bf_pt(cx, cy, pn, 290, 700); bf_pt(cx, cy, pn, 420, 700);
-        bf_pt(cx, cy, pn, 560, 480); bf_pt(cx, cy, pn, 560, 220); bf_pt(cx, cy, pn, 420, 0); bf_pt(cx, cy, pn, 290, 0);
+        bf_pt(cx, cy, pn, 150, 220); bf_pt(cx, cy, pn, 150, 480); bf_pt(cx, cy, pn, 290, 700);
+        bf_pt(cx, cy, pn, 420, 700); bf_pt(cx, cy, pn, 560, 480); bf_pt(cx, cy, pn, 560, 220);
+        bf_pt(cx, cy, pn, 420, 0); bf_pt(cx, cy, pn, 290, 0);
         bf_endc(ends, ncptr, n);
-        bf_pt(cx, cy, pn, 290, 250); bf_pt(cx, cy, pn, 420, 250); bf_pt(cx, cy, pn, 420, 450); bf_pt(cx, cy, pn, 290, 450);
+        bf_pt(cx, cy, pn, 290, 250); bf_pt(cx, cy, pn, 420, 250); bf_pt(cx, cy, pn, 420, 450);
+        bf_pt(cx, cy, pn, 290, 450);
         bf_endc(ends, ncptr, n);
     }
     if (ch == 0x50) {                       # 'P' — stem + bowl (CCW) + bowl hole (CW)
-        bf_pt(cx, cy, pn, 170, 0); bf_pt(cx, cy, pn, 300, 0); bf_pt(cx, cy, pn, 300, 290); bf_pt(cx, cy, pn, 450, 290);
-        bf_pt(cx, cy, pn, 560, 380); bf_pt(cx, cy, pn, 560, 610); bf_pt(cx, cy, pn, 450, 700); bf_pt(cx, cy, pn, 170, 700);
+        bf_pt(cx, cy, pn, 170, 0); bf_pt(cx, cy, pn, 300, 0); bf_pt(cx, cy, pn, 300, 290);
+        bf_pt(cx, cy, pn, 450, 290); bf_pt(cx, cy, pn, 560, 380); bf_pt(cx, cy, pn, 560, 610);
+        bf_pt(cx, cy, pn, 450, 700); bf_pt(cx, cy, pn, 170, 700);
         bf_endc(ends, ncptr, n);
-        bf_pt(cx, cy, pn, 300, 420); bf_pt(cx, cy, pn, 300, 570); bf_pt(cx, cy, pn, 410, 570); bf_pt(cx, cy, pn, 450, 530);
-        bf_pt(cx, cy, pn, 450, 450); bf_pt(cx, cy, pn, 410, 420);
+        bf_pt(cx, cy, pn, 300, 420); bf_pt(cx, cy, pn, 300, 570); bf_pt(cx, cy, pn, 410, 570);
+        bf_pt(cx, cy, pn, 450, 530); bf_pt(cx, cy, pn, 450, 450); bf_pt(cx, cy, pn, 410, 420);
         bf_endc(ends, ncptr, n);
     }
     return n;

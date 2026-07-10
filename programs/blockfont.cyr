@@ -72,6 +72,31 @@ fn bf_letter(ch, cx, cy): i64 {
         bf_pt(cx, cy, pn, 430, 0); bf_pt(cx, cy, pn, 560, 0); bf_pt(cx, cy, pn, 560, 700); bf_pt(cx, cy, pn, 430, 700);
         bf_pt(cx, cy, pn, 430, 420); bf_pt(cx, cy, pn, 300, 420); bf_pt(cx, cy, pn, 300, 700); bf_pt(cx, cy, pn, 170, 700);
     }
+    if (ch == 0x41) {                       # 'A' — solid triangle (no interior hole)
+        bf_pt(cx, cy, pn, 350, 700); bf_pt(cx, cy, pn, 150, 0); bf_pt(cx, cy, pn, 550, 0);
+    }
+    if (ch == 0x56) {                       # 'V' — chevron
+        bf_pt(cx, cy, pn, 120, 700); bf_pt(cx, cy, pn, 270, 700); bf_pt(cx, cy, pn, 360, 220); bf_pt(cx, cy, pn, 450, 700);
+        bf_pt(cx, cy, pn, 600, 700); bf_pt(cx, cy, pn, 400, 0); bf_pt(cx, cy, pn, 320, 0);
+    }
+    if (ch == 0x53) {                       # 'S' — rectilinear zig
+        bf_pt(cx, cy, pn, 170, 700); bf_pt(cx, cy, pn, 560, 700); bf_pt(cx, cy, pn, 560, 570); bf_pt(cx, cy, pn, 300, 570);
+        bf_pt(cx, cy, pn, 300, 410); bf_pt(cx, cy, pn, 560, 410); bf_pt(cx, cy, pn, 560, 0); bf_pt(cx, cy, pn, 170, 0);
+        bf_pt(cx, cy, pn, 170, 130); bf_pt(cx, cy, pn, 430, 130); bf_pt(cx, cy, pn, 430, 290); bf_pt(cx, cy, pn, 170, 290);
+    }
+    if (ch == 0x43) {                       # 'C' — open bracket
+        bf_pt(cx, cy, pn, 560, 570); bf_pt(cx, cy, pn, 560, 700); bf_pt(cx, cy, pn, 170, 700); bf_pt(cx, cy, pn, 170, 0);
+        bf_pt(cx, cy, pn, 560, 0); bf_pt(cx, cy, pn, 560, 130); bf_pt(cx, cy, pn, 300, 130); bf_pt(cx, cy, pn, 300, 570);
+    }
+    if (ch == 0x55) {                       # 'U'
+        bf_pt(cx, cy, pn, 170, 700); bf_pt(cx, cy, pn, 300, 700); bf_pt(cx, cy, pn, 300, 130); bf_pt(cx, cy, pn, 430, 130);
+        bf_pt(cx, cy, pn, 430, 700); bf_pt(cx, cy, pn, 560, 700); bf_pt(cx, cy, pn, 560, 0); bf_pt(cx, cy, pn, 170, 0);
+    }
+    if (ch == 0x4E) {                       # 'N' — verticals + diagonal
+        bf_pt(cx, cy, pn, 170, 0); bf_pt(cx, cy, pn, 170, 700); bf_pt(cx, cy, pn, 300, 700); bf_pt(cx, cy, pn, 490, 250);
+        bf_pt(cx, cy, pn, 490, 700); bf_pt(cx, cy, pn, 610, 700); bf_pt(cx, cy, pn, 610, 0); bf_pt(cx, cy, pn, 490, 0);
+        bf_pt(cx, cy, pn, 300, 450); bf_pt(cx, cy, pn, 300, 0);
+    }
     return n;
 }
 
@@ -95,6 +120,7 @@ fn bf_build_font(chars, nch): i64 {
         var np = bf_letter(load64(chars + gi * 8), cx, cy);
         var glen = bf_emit_glyph(buf, goff, cx, cy, np);
         goff = goff + glen;
+        if (((goff - glyf) & 1) == 1) { store8(buf + goff, 0); goff = goff + 1; }   # pad glyph to even (short loca)
         bf_put_u16(buf, loca + (gi + 2) * 2, (goff - glyf) / 2);
         gi = gi + 1;
     }

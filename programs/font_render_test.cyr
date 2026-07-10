@@ -9,7 +9,7 @@ fn main(): i64 {
     alloc_init();
     # chars available in the font (extend bf_letter to add more)
     var chars = alloc(16 * 8);
-    var s = "SAVEHLTCUNFI";           # the glyph set we author (order = gid order)
+    var s = "OPENHALTSVCUFI";           # the glyph set we author (order = gid order)
     var n = strlen(s);
     var i = 0;
     while (i < n) { store64(chars + i * 8, load8(s + i)); i = i + 1; }
@@ -22,7 +22,7 @@ fn main(): i64 {
     dh_widget_set_bg(root, sd_rgb(30, 30, 38));
     var lbl = dh_widget_new(LABEL);
     dh_widget_set_pref(lbl, 0, 48);
-    var txt = "SAVE HALT";
+    var txt = "OPEN HALT";
     dh_widget_set_text(lbl, txt);
     dh_widget_add_child(root, lbl);
 

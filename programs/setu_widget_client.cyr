@@ -40,7 +40,7 @@ fn wc_render(w, h, focused, keyed, font): i64 {
     var b1 = dh_widget_new(BUTTON);
     dh_widget_set_bg(b1, btn_col);
     dh_widget_set_pref(b1, 0, 44);
-    var b1t = "SAVE"; dh_widget_set_text(b1, b1t);         # green button label
+    var b1t = "OPEN"; dh_widget_set_text(b1, b1t);         # green button label
     var b2 = dh_widget_new(BUTTON);
     dh_widget_set_bg(b2, sd_rgb(150, 60, 60));             # secondary (red) button
     dh_widget_set_pref(b2, 0, 44);
@@ -62,7 +62,7 @@ fn main(): i64 {
     var nbytes = w * h * 4;
 
     # Bake the blocky font ONCE from the authored glyph set (title + button labels).
-    var fset = "FILESAVHTCUN";
+    var fset = "FILEOPNHATSVCU";
     var nset = strlen(fset);
     var fch = alloc(nset * 8);
     var fi = 0;

@@ -5,6 +5,37 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-07-10 — a real dhancha app on the sovereign desktop (setu 0.4.0 client + in-memory font)
+
+dhancha becomes a **client that presents a widget UI over setu and is composited on agnos** —
+the whole draw stack (widget tree → box layout → sadish 2D vector + rekha text → BGRA buffer →
+setu → aethersafha) runs on the sovereign kernel, reacting to focus and keyboard input routed
+back over the wire. Text labels are drawn from a font baked entirely in memory — no font files.
+
+### Added
+
+- **`programs/setu_widget_client.cyr`** — a real dhancha widget client: a window with a titled
+  bar + two labelled buttons (FILE / OPEN / HALT), rendered by the draw stack and presented over
+  setu's shared-buffer path (`setu_buf_*` + CREATE_SURFACE → ATTACH-by-buf → COMMIT). On agnos it
+  stays live, re-rendering the tree when the compositor forwards `SETU_INPUT_FOCUS` (title/border
+  reflects focus) or `SETU_INPUT_KEY` (a button lights up). sadish's `SdSurface` is BGRA-packed —
+  exactly setu's pixel format — so the rendered surface feeds `setu_buf_write` with no conversion.
+- **`programs/blockfont.cyr`** — a tiny hand-authored blocky **rekha font baked in memory** (an
+  SFNT with head/maxp/loca/glyf/cmap-format-4), so widgets carry real text with zero font assets
+  on disk. Single- **and multi-contour** glyphs (holes wind opposite the outer for nonzero fill),
+  covering the letters used by the demo labels. Extend `bf_letter` for a fuller alphabet.
+- **`programs/font_render_test.cyr`** — a host harness that bakes the font and dumps a rendered
+  string to a buffer for eyeballing (the fast iteration loop for authoring glyphs).
+
+### Changed
+
+- **setu dep 0.3.0 → 0.4.0** — the current shared-buffer present + `SETU_INPUT_*` input channel.
+  dhancha's own 0.3.0-era `dh_setu_*` delegation is bypassed in favour of setu's direct client API.
+- **cyrius pin 6.4.25 → 6.4.34** — setu 0.4.0's `setu_buf_*` needs the kernel `sys_shm_*` wrappers
+  introduced in cyrius 6.4.34.
+- **`src/lib.cyr` gained `result` + `net`** — the setu client transport needs cross-platform TCP
+  sockets (`tcp_socket` / `sock_*` / `INADDR_LOOPBACK`); dhancha had never networked before.
+
 ## [0.6.3] - 2026-07-08 — adapt to setu 0.3.0 (cross-platform TCP transport)
 
 setu 0.3.0 replaced its Linux-only AF_UNIX client with a cross-platform **TCP**

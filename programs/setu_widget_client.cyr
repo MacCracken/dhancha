@@ -19,14 +19,20 @@ include "programs/blockfont.cyr"   # tiny hand-authored blocky font (real text, 
 
 fn wc_say(s): i64 { return syscall(SYS_WRITE, 1, s, strlen(s)); }
 
+# Map a forwarded HID key usage to an uppercase char (the font is A..Z), space, or 0.
+fn wc_key_to_char(u): i64 {
+    if (u >= 0x04) { if (u <= 0x1D) { return 65 + (u - 0x04); } }   # HID A..Z -> 'A'..'Z'
+    if (u == 0x2C) { return 32; }                                  # space
+    return 0;                                                       # non-printable
+}
+
 # Build the widget tree for the given interaction state and render it into a fresh
-# sadish surface sized w×h. `focused` brightens the title bar; `keyed` lights the
-# first button white. Returns the SdSurface whose BGRA buffer we hand to setu.
-fn wc_render(w, h, focused, keyed, font): i64 {
+# sadish surface sized w×h. `focused` brightens the title bar; `typed` (a cstr) is
+# echoed in the text field — the real input reaction. Returns the SdSurface.
+fn wc_render(w, h, focused, font, typed): i64 {
     var title_col = sd_rgb(60, 70, 90);                    # dim title (unfocused)
     if (focused != 0) { title_col = sd_rgb(70, 130, 220); }   # bright blue title (focused)
-    var btn_col = sd_rgb(40, 120, 60);                     # green primary button
-    if (keyed != 0) { btn_col = sd_rgb(240, 240, 240); }   # lights white on a keypress
+    var btn_col = sd_rgb(40, 120, 60);                     # green primary button (label stays readable)
 
     var root = dh_widget_new(WINDOW);
     dh_widget_set_layout(root, BOX_V);                     # stack children top→bottom
@@ -37,6 +43,11 @@ fn wc_render(w, h, focused, keyed, font): i64 {
     dh_widget_set_pref(title, 0, 36);
     var ttl = "FILE";
     dh_widget_set_text(title, ttl);
+    # text-input field: a dark LABEL whose text is the accumulated keystrokes (drawn white).
+    var field = dh_widget_new(LABEL);
+    dh_widget_set_bg(field, sd_rgb(18, 18, 26));
+    dh_widget_set_pref(field, 0, 40);
+    dh_widget_set_text(field, typed);
     var b1 = dh_widget_new(BUTTON);
     dh_widget_set_bg(b1, btn_col);
     dh_widget_set_pref(b1, 0, 44);
@@ -46,6 +57,7 @@ fn wc_render(w, h, focused, keyed, font): i64 {
     dh_widget_set_pref(b2, 0, 44);
     var b2t = "HALT"; dh_widget_set_text(b2, b2t);         # red button label
     dh_widget_add_child(root, title);
+    dh_widget_add_child(root, field);
     dh_widget_add_child(root, b1);
     dh_widget_add_child(root, b2);
 
@@ -58,8 +70,11 @@ fn wc_render(w, h, focused, keyed, font): i64 {
 fn main(): i64 {
     alloc_init();
     var w = 320;
-    var h = 192;
+    var h = 230;
     var nbytes = w * h * 4;
+    var typed = alloc(64);
+    store8(typed, 0);          # text-input echo (null-terminated cstr); grows as keys arrive
+    var tlen = 0;
 
     # Bake the blocky font ONCE from the authored glyph set (title + button labels).
     var fset = "FILEOPNHATSVCU";
@@ -79,7 +94,7 @@ fn main(): i64 {
 
     # Render the initial UI (unfocused, idle) straight into the shared buffer, then
     # establish the surface bound to it (CREATE_SURFACE → SURFACE_CREATED → ATTACH-by-buf → COMMIT).
-    var sds = wc_render(w, h, 0, 0, font);
+    var sds = wc_render(w, h, 0, font, typed);
     setu_buf_write(buf_id, sd_surface_pixels(sds), nbytes);
     if (setu_send(fd, setu_create_surface(w, h, 0)) < 0) { return 1; }
     var reply = setu_msg_new();
@@ -97,15 +112,25 @@ fn main(): i64 {
     # is scheduled — same cooperative pattern present_probe uses.
     #ifdef CYRIUS_TARGET_AGNOS
     var focused = 0;
-    var keyed = 0;
     var inmsg = setu_msg_new();
     var frame = 0;
     while (frame < 2000000) {
         if (setu_poll_input(fd, inmsg) == 1) {
             var k = setu_msg_kind(inmsg);
-            if (k == SETU_INPUT_KEY)   { keyed = 1; }
+            if (k == SETU_INPUT_KEY) {
+                var u = setu_msg_arg(inmsg, 1);               # HID usage of the pressed key
+                wc_say("setu_widget_client: key received\n"); # serial marker (a reliable input gate)
+                if (u == 0x2A) {                              # backspace: delete the last char
+                    if (tlen > 0) { tlen = tlen - 1; store8(typed + tlen, 0); }
+                } else {
+                    var cc = wc_key_to_char(u);
+                    if (cc != 0) {
+                        if (tlen < 62) { store8(typed + tlen, cc); tlen = tlen + 1; store8(typed + tlen, 0); }
+                    }
+                }
+            }
             if (k == SETU_INPUT_FOCUS) { focused = setu_msg_arg(inmsg, 1); }
-            var s2 = wc_render(w, h, focused, keyed, font);       # re-lay-out + re-draw the widgets
+            var s2 = wc_render(w, h, focused, font, typed);   # re-lay-out + re-draw the widgets
             setu_buf_write(buf_id, sd_surface_pixels(s2), nbytes);
         }
         sys_sched_yield();

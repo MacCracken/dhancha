@@ -67,6 +67,14 @@ git = "https://github.com/MacCracken/rekha.git"
 tag = "0.3.1"
 modules = ["dist/rekha.cyr"]
 
+# kashi (काशि) — the AGNOS system console font (full CP437, VGA 8x16). dh_draw_text
+# BLITS these bitmap glyphs directly for its default (font=0) text — the same font
+# the compositor chrome uses. rekha stays for scalable TrueType (font != 0).
+[deps.kashi]
+git = "https://github.com/MacCracken/kashi.git"
+tag = "1.0.2"
+modules = ["src/font_data.cyr"]
+
 # Display-protocol contract + reference CLIENT: setu (सेतु — bridge). The wire
 # between this client and the aethersafha compositor — message types, codec, AND
 # (since setu 0.2.0) the reference client transport (`setu_connect` /

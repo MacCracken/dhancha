@@ -1,41 +1,35 @@
-# programs/font_render_test.cyr — HOST harness to eyeball the blockfont (programs/
-# blockfont.cyr). Bakes the font, renders a string through dhancha→rekha→sadish,
-# and dumps the BGRA surface to a file for a python→PNG look. Host only (no --agnos).
+# programs/font_render_test.cyr — HOST harness for dh_draw_text's DEFAULT text path:
+# the kashi VGA 8x16 system font (full CP437), blitted directly (font = 0). Renders a
+# few labels and dumps the BGRA surface to a file for a python→PNG eyeball. Host only.
 
 include "src/lib.cyr"
-include "programs/blockfont.cyr"
 
 fn main(): i64 {
     alloc_init();
-    # chars available in the font (extend bf_letter to add more)
-    var chars = alloc(16 * 8);
-    var s = "OPENHALTSVCUFI";           # the glyph set we author (order = gid order)
-    var n = strlen(s);
-    var i = 0;
-    while (i < n) { store64(chars + i * 8, load8(s + i)); i = i + 1; }
-    var font = bf_build_font(chars, n);
-    if (font == 0) { var fe = "font_render_test: font_open FAILED\n"; syscall(1, 1, fe, strlen(fe)); return 1; }
-
-    var w = 560; var h = 80;
+    var w = 760; var h = 150;
     var root = dh_widget_new(WINDOW);
     dh_widget_set_layout(root, BOX_V);
-    dh_widget_set_bg(root, sd_rgb(30, 30, 38));
-    var lbl = dh_widget_new(LABEL);
-    dh_widget_set_pref(lbl, 0, 48);
-    var txt = "OPEN HALT";
-    dh_widget_set_text(lbl, txt);
-    dh_widget_add_child(root, lbl);
+    dh_widget_set_bg(root, sd_rgb(28, 28, 36));
+    var l1 = dh_widget_new(LABEL); dh_widget_set_pref(l1, 0, 40);
+    var t1 = "Hello, AGNOS! crab the file manager"; dh_widget_set_text(l1, t1);
+    dh_widget_add_child(root, l1);
+    var l2 = dh_widget_new(LABEL); dh_widget_set_pref(l2, 0, 40);
+    var t2 = "src/main.cyr   README.md   0123456789"; dh_widget_set_text(l2, t2);
+    dh_widget_add_child(root, l2);
+    var l3 = dh_widget_new(LABEL); dh_widget_set_pref(l3, 0, 40);
+    var t3 = "The quick brown fox jumps over 12 dogs."; dh_widget_set_text(l3, t3);
+    dh_widget_add_child(root, l3);
 
     var surf = dh_surface_new(w, h);
     dh_surface_set_root(surf, root);
     dh_layout_apply(root, w, h);
-    var sds = dh_surface_render(surf, font);
+    var sds = dh_surface_render(surf, 0);      # font = 0 → the kashi bitmap system font
 
     var pix = sd_surface_pixels(sds);
     var path = "/tmp/claude-1000/-home-macro-Repos-agnosticos/47a0fc83-d217-4059-a644-5fc638dfee33/scratchpad/font.bin";
     var fd = syscall(2, path, 577, 420);
     if (fd >= 0) { syscall(1, fd, pix, w * h * 4); syscall(3, fd); }
-    var ok = "font_render_test: dumped 560x80 BGRA\n"; syscall(1, 1, ok, strlen(ok));
+    var ok = "font_render_test: rendered kashi text (font=0)\n"; syscall(1, 1, ok, strlen(ok));
     return 0;
 }
 

@@ -48,6 +48,7 @@ include "lib/net.cyr"
 # so it must follow sadish). surface.cyr draws the widget tree through both.
 include "lib/sadish.cyr"
 include "lib/rekha.cyr"
+include "lib/kashi_font_data.cyr"   # AGNOS system font (CP437 8x16) — dh_draw_text's default
 
 # ================================================================
 # dhancha domain modules — flat, dependency order.

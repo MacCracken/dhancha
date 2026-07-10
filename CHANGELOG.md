@@ -5,6 +5,34 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-07-10 — text renders in the kashi SYSTEM font (bitmap blit), not a hand-rolled font
+
+`dh_draw_text` now draws its default text with **kashi** — the AGNOS system console font
+(full CP437, VGA 8×16, lowercase and all) — blitted directly onto the sadish surface, the
+same font the compositor chrome uses. This replaces the interim in-app blocky font: apps
+just set text and get the system font, with no font baking. **rekha stays** for scalable
+TrueType (pass a non-zero `RekhaFont`); kashi is the default (`font = 0`).
+
+### Added
+
+- **`[deps.kashi]`** (1.0.2) — the system font's glyph data + accessors. dhancha's dist
+  *references* `kashi_glyph_row` / `kashi_font_init` (a consumer supplies them, same as
+  sadish/rekha); `src/lib.cyr` includes the module.
+
+### Changed
+
+- **`dh_draw_text(sds, font, text, x, y, h)` — `font == 0` now blits kashi** (per glyph, 16
+  rows × 8 cols → white pixels into the sadish buffer, 9 px monospace advance, glyph centred
+  in the box). `font != 0` keeps the existing rekha outline path unchanged. This is the right
+  path for bitmap text — no bitmap→SFNT→outline round-trip.
+- **`programs/setu_widget_client.cyr` migrated to `font = 0`** (kashi) and now types lowercase
+  into its text field (kashi has the full set).
+
+### Removed
+
+- **`programs/blockfont.cyr`** — the interim hand-authored in-app font (both the outline and
+  the later 5×7-bitmap versions). Superseded by kashi; no program uses it.
+
 ## [0.7.0] - 2026-07-10 — a real dhancha app on the sovereign desktop (setu 0.4.0 client + in-memory font)
 
 dhancha becomes a **client that presents a widget UI over setu and is composited on agnos** —

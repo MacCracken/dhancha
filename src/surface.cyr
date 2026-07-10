@@ -78,8 +78,40 @@ fn dh_surface_present(surf): i64 {
 # coverage canvas, then blit as white. Advance is a fixed ~0.6em (real hmtx
 # advances are a rekha v0.4 item). No-op if font is 0.
 fn dh_draw_text(sds, font, text, x, y, h): i64 {
-    if (font == 0) { return 0; }
     if (text == 0) { return 0; }
+    if (font == 0) {
+        # Bitmap path: blit the kashi VGA 8x16 SYSTEM font (full CP437, crisp +
+        # monospace, matching the compositor chrome) directly into the sadish
+        # surface. rekha (font != 0) stays for scalable TrueType when a .ttf loads.
+        kashi_font_init();
+        var sw = sd_surface_width(sds);
+        var sh2 = sd_surface_height(sds);
+        var pix = sd_surface_pixels(sds);
+        var ky = y + (h - 16) / 2;             # vertically centre the 16px glyph in the box
+        var kx = x + 3;
+        var ki = 0;
+        while (load8(text + ki) != 0) {
+            var kc = load8(text + ki);
+            var kr = 0;
+            while (kr < 16) {
+                var kb = kashi_glyph_row(0, kc, kr);   # KASHI_FONT_VGA_8X16 = 0; one row byte
+                var kcol = 0;
+                while (kcol < 8) {
+                    if ((kb & (1 << (7 - kcol))) != 0) {
+                        var px = kx + kcol; var py = ky + kr;
+                        if (px >= 0) { if (px < sw) { if (py >= 0) { if (py < sh2) {
+                            store32(pix + (py * sw + px) * 4, 0x00FFFFFF);   # BGRA white
+                        } } } }
+                    }
+                    kcol = kcol + 1;
+                }
+                kr = kr + 1;
+            }
+            kx = kx + 9;                        # 8px glyph + 1px gap (monospace)
+            ki = ki + 1;
+        }
+        return 0;
+    }
     var upem = rekha_units_per_em(font);
     if (upem <= 0) { return 0; }
     var scale = (h << 16) / upem;          # 16.16 pixels per design unit

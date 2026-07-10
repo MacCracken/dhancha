@@ -15,13 +15,13 @@
 # Run: needs a live compositor listening on setu loopback:7700 (aethersafha).
 
 include "src/lib.cyr"
-include "programs/blockfont.cyr"   # tiny hand-authored blocky font (real text, no asset files)
 
 fn wc_say(s): i64 { return syscall(SYS_WRITE, 1, s, strlen(s)); }
 
-# Map a forwarded HID key usage to an uppercase char (the font is A..Z), space, or 0.
+# Map a forwarded HID key usage to a lowercase char (the kashi system font has the
+# full CP437 set), space, or 0.
 fn wc_key_to_char(u): i64 {
-    if (u >= 0x04) { if (u <= 0x1D) { return 65 + (u - 0x04); } }   # HID A..Z -> 'A'..'Z'
+    if (u >= 0x04) { if (u <= 0x1D) { return 97 + (u - 0x04); } }   # HID A..Z -> 'a'..'z'
     if (u == 0x2C) { return 32; }                                  # space
     return 0;                                                       # non-printable
 }
@@ -76,13 +76,7 @@ fn main(): i64 {
     store8(typed, 0);          # text-input echo (null-terminated cstr); grows as keys arrive
     var tlen = 0;
 
-    # Bake the blocky font ONCE from the authored glyph set (title + button labels).
-    var fset = "FILEOPNHATSVCU";
-    var nset = strlen(fset);
-    var fch = alloc(nset * 8);
-    var fi = 0;
-    while (fi < nset) { store64(fch + fi * 8, load8(fset + fi)); fi = fi + 1; }
-    var font = bf_build_font(fch, nset);
+    # Text renders via dh_draw_text's default: the kashi CP437 system font (font = 0).
 
     var path = "/tmp/aethersafha-setu.sock";              # advisory; transport is loopback:7700
     var c = setu_client_connect(path);
@@ -94,7 +88,7 @@ fn main(): i64 {
 
     # Render the initial UI (unfocused, idle) straight into the shared buffer, then
     # establish the surface bound to it (CREATE_SURFACE → SURFACE_CREATED → ATTACH-by-buf → COMMIT).
-    var sds = wc_render(w, h, 0, font, typed);
+    var sds = wc_render(w, h, 0, 0, typed);
     setu_buf_write(buf_id, sd_surface_pixels(sds), nbytes);
     if (setu_send(fd, setu_create_surface(w, h, 0)) < 0) { return 1; }
     var reply = setu_msg_new();
@@ -130,7 +124,7 @@ fn main(): i64 {
                 }
             }
             if (k == SETU_INPUT_FOCUS) { focused = setu_msg_arg(inmsg, 1); }
-            var s2 = wc_render(w, h, focused, font, typed);   # re-lay-out + re-draw the widgets
+            var s2 = wc_render(w, h, focused, 0, typed);   # re-lay-out + re-draw the widgets
             setu_buf_write(buf_id, sd_surface_pixels(s2), nbytes);
         }
         sys_sched_yield();

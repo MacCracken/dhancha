@@ -38,6 +38,12 @@ include "lib/hashmap.cyr"
 include "lib/fnptr.cyr"
 include "lib/tagged.cyr"
 
+# net (cross-platform TCP sockets: tcp_socket / sock_* / INADDR_LOOPBACK) + its
+# result return type — the setu client transport. Needed since dhancha apps now
+# present over setu (programs/setu_widget_client.cyr). result must precede net.
+include "lib/result.cyr"
+include "lib/net.cyr"
+
 # Draw-path deps: sadish (2D vector) THEN rekha (fonts; rekha references sd_*,
 # so it must follow sadish). surface.cyr draws the widget tree through both.
 include "lib/sadish.cyr"

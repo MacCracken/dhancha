@@ -1,0 +1,106 @@
+# programs/setu_widget_client.cyr — a REAL dhancha widget client over setu.
+#
+# Builds a dhancha widget tree (window → title box → two buttons) and renders it
+# with the sovereign draw stack (sadish fills/strokes; rekha available for text),
+# then presents the resulting buffer over setu — the SAME 0.4.0 present path
+# present_probe proves, except the pixels are a real toolkit UI laid out by the
+# widget engine, not a hand-drawn test pattern. sadish's SdSurface is BGRA-packed,
+# which is exactly setu's pixel format, so the rendered buffer feeds setu directly.
+#
+# On agnos it stays live: it re-renders the tree when the compositor forwards a
+# focus change (title brightens) or a key (a button lights up) — the toolkit
+# reacting to input routed over setu. Depends on dhancha's draw stack (src/lib.cyr,
+# which builds --agnos) + setu 0.4.0's client transport (the [deps.setu] dist).
+#
+# Run: needs a live compositor listening on setu loopback:7700 (aethersafha).
+
+include "src/lib.cyr"
+
+fn wc_say(s): i64 { return syscall(SYS_WRITE, 1, s, strlen(s)); }
+
+# Build the widget tree for the given interaction state and render it into a fresh
+# sadish surface sized w×h. `focused` brightens the title bar; `keyed` lights the
+# first button white. Returns the SdSurface whose BGRA buffer we hand to setu.
+fn wc_render(w, h, focused, keyed): i64 {
+    var title_col = sd_rgb(60, 70, 90);                    # dim title (unfocused)
+    if (focused != 0) { title_col = sd_rgb(70, 130, 220); }   # bright blue title (focused)
+    var btn_col = sd_rgb(40, 120, 60);                     # green primary button
+    if (keyed != 0) { btn_col = sd_rgb(240, 240, 240); }   # lights white on a keypress
+
+    var root = dh_widget_new(WINDOW);
+    dh_widget_set_layout(root, BOX_V);                     # stack children top→bottom
+    dh_widget_set_bg(root, sd_rgb(30, 30, 38));            # window backdrop
+    var title = dh_widget_new(BOX);
+    dh_widget_set_bg(title, title_col);
+    dh_widget_set_pref(title, 0, 28);
+    var b1 = dh_widget_new(BUTTON);
+    dh_widget_set_bg(b1, btn_col);
+    dh_widget_set_pref(b1, 0, 44);
+    var b2 = dh_widget_new(BUTTON);
+    dh_widget_set_bg(b2, sd_rgb(150, 60, 60));             # secondary (red) button
+    dh_widget_set_pref(b2, 0, 44);
+    dh_widget_add_child(root, title);
+    dh_widget_add_child(root, b1);
+    dh_widget_add_child(root, b2);
+
+    var surf = dh_surface_new(w, h);
+    dh_surface_set_root(surf, root);
+    dh_layout_apply(root, w, h);
+    return dh_surface_render(surf, 0);                     # font 0 = boxes/borders only for v1
+}
+
+fn main(): i64 {
+    alloc_init();
+    var w = 320;
+    var h = 192;
+    var nbytes = w * h * 4;
+
+    var path = "/tmp/aethersafha-setu.sock";              # advisory; transport is loopback:7700
+    var c = setu_client_connect(path);
+    if (c == 0) { wc_say("setu_widget_client: setu connect failed\n"); return 1; }
+    var fd = setu_client_fd(c);
+
+    var buf_id = setu_buf_create(nbytes);
+    if (buf_id < 0) { wc_say("setu_widget_client: buf_create failed\n"); return 1; }
+
+    # Render the initial UI (unfocused, idle) straight into the shared buffer, then
+    # establish the surface bound to it (CREATE_SURFACE → SURFACE_CREATED → ATTACH-by-buf → COMMIT).
+    var sds = wc_render(w, h, 0, 0);
+    setu_buf_write(buf_id, sd_surface_pixels(sds), nbytes);
+    if (setu_send(fd, setu_create_surface(w, h, 0)) < 0) { return 1; }
+    var reply = setu_msg_new();
+    if (setu_read_msg(fd, reply) < 0) { return 1; }
+    if (setu_msg_kind(reply) != SETU_SURFACE_CREATED) { return 1; }
+    var sid = setu_msg_arg(reply, 0);
+    var stride = w * 4;
+    if (setu_send(fd, setu_attach_buf(sid, w, h, stride, 1, buf_id)) < 0) { return 1; }
+    if (setu_send(fd, setu_commit(sid)) < 0) { return 1; }
+    wc_say("setu_widget_client: dhancha widget UI presented over setu\n");
+
+    # LIVE (agnos): the toolkit reacts to input the compositor forwards. Re-render the
+    # tree only when a focus/key event arrives (the compositor re-reads the shared buffer
+    # every frame regardless), and cede the CPU each round so the single-core compositor
+    # is scheduled — same cooperative pattern present_probe uses.
+    #ifdef CYRIUS_TARGET_AGNOS
+    var focused = 0;
+    var keyed = 0;
+    var inmsg = setu_msg_new();
+    var frame = 0;
+    while (frame < 2000000) {
+        if (setu_poll_input(fd, inmsg) == 1) {
+            var k = setu_msg_kind(inmsg);
+            if (k == SETU_INPUT_KEY)   { keyed = 1; }
+            if (k == SETU_INPUT_FOCUS) { focused = setu_msg_arg(inmsg, 1); }
+            var s2 = wc_render(w, h, focused, keyed);       # re-lay-out + re-draw the widgets
+            setu_buf_write(buf_id, sd_surface_pixels(s2), nbytes);
+        }
+        sys_sched_yield();
+        frame = frame + 1;
+    }
+    #endif
+    setu_client_close(c);
+    return 0;
+}
+
+fn _entry(): i64 { var r = main(); syscall(SYS_EXIT, r); return 0; }
+_entry();

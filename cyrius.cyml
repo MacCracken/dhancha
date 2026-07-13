@@ -29,6 +29,7 @@ modules = [
     "src/widget.cyr",
     "src/layout.cyr",
     "src/event.cyr",
+    "src/theme.cyr",
     "src/surface.cyr",
 ]
 
@@ -61,6 +62,15 @@ stdlib = [
 git = "https://github.com/MacCracken/sadish.git"
 tag = "0.4.1"
 modules = ["dist/sadish.cyr"]
+
+# rupa (रूप — form / appearance) — the shared desktop theme-token core. Widgets +
+# chrome draw with the active MUDRA / SHANTA theme (dh_theme_*), the SAME source the
+# aethersafha compositor reads, so the toolkit matches the desktop. path=../rupa for
+# local work until rupa is tagged.
+[deps.rupa]
+git = "https://github.com/MacCracken/rupa.git"
+tag = "0.1.0"
+modules = ["dist/rupa.cyr"]
 
 [deps.rekha]
 git = "https://github.com/MacCracken/rekha.git"

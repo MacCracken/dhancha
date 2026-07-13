@@ -41,7 +41,7 @@ fn main(): i64 {
     check(sd_surface_pixel_at(sds, 20, 35), 13158600);   # window gray (below children)
     check(sd_surface_pixel_at(sds, 20, 7), 16711680);    # box red
     check(sd_surface_pixel_at(sds, 20, 22), 255);        # button blue interior
-    check(sd_surface_pixel_at(sds, 0, 22), 0);           # button border (left edge, black)
+    check(sd_surface_pixel_at(sds, 0, 22), dh_theme_line());   # button border (left edge, active theme's line colour)
 
     if (g_fails == 0) {
         var ok = "draw_test: PASS (bg + border render)\n";

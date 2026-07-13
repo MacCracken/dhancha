@@ -1,0 +1,21 @@
+# theme.cyr — dhancha's binding to rupa, the shared desktop theme-token core.
+#
+# Widgets + chrome draw with the active MUDRA / SHANTA theme instead of hardcoded
+# colours. Each helper packs a rupa 0xRRGGBB token (of the SINGLE active theme) into
+# a sadish colour via sd_rgb, so an app just reads them: set a widget background with
+# dh_widget_set_bg(w, dh_theme_panel()), or let dh_surface_render use the theme
+# backdrop / border / text automatically. rupa is the ONE source shared with the
+# compositor (aethersafha), so the toolkit matches the desktop chrome. Switch the
+# whole desktop's look with rupa_theme_set_active_name("shanta-dark") etc.
+
+# Pack a rupa 0xRRGGBB token into a sadish colour (0x00RRGGBB, the SdSurface format).
+fn dh_theme_col(c): i64 { return sd_rgb(rupa_color_r(c), rupa_color_g(c), rupa_color_b(c)); }
+
+fn dh_theme_bg(): i64     { return dh_theme_col(rupa_theme_bg(rupa_theme_active())); }
+fn dh_theme_panel(): i64  { return dh_theme_col(rupa_theme_panel(rupa_theme_active())); }
+fn dh_theme_widget(): i64 { return dh_theme_col(rupa_theme_widget(rupa_theme_active())); }
+fn dh_theme_line(): i64   { return dh_theme_col(rupa_theme_line(rupa_theme_active())); }
+fn dh_theme_ink(): i64    { return dh_theme_col(rupa_theme_ink(rupa_theme_active())); }
+fn dh_theme_mute(): i64   { return dh_theme_col(rupa_theme_mute(rupa_theme_active())); }
+fn dh_theme_accent(): i64 { return dh_theme_col(rupa_theme_accent(rupa_theme_active())); }
+fn dh_theme_alert(): i64  { return dh_theme_col(rupa_theme_alert(rupa_theme_active())); }

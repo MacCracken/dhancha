@@ -61,4 +61,5 @@ include "src/error.cyr"
 include "src/widget.cyr"
 include "src/layout.cyr"
 include "src/event.cyr"
+include "src/theme.cyr"       # rupa theme tokens → sadish colours (before surface, which draws with them)
 include "src/surface.cyr"

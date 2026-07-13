@@ -1,0 +1,48 @@
+# programs/theme_test.cyr — RUN test for dhancha's rupa theme integration.
+#
+# Verifies dh_theme_* pack the ACTIVE rupa theme's tokens (via sd_rgb) and that
+# switching the active theme re-colours them, so the whole toolkit follows the
+# desktop's single MUDRA / SHANTA theme. Exit code = failed checks.
+
+include "src/lib.cyr"
+
+var g_fails = 0;
+
+fn check(got, want): i64 {
+    if (got == want) { return 0; }
+    g_fails = g_fails + 1;
+    return 1;
+}
+
+fn main(): i64 {
+    alloc_init();
+
+    # Default active theme = MUDRA · Carbon (dark). dh_theme_* pack its tokens.
+    check(dh_theme_bg(), sd_rgb(0x0B, 0x0C, 0x0E));       # carbon void
+    check(dh_theme_widget(), sd_rgb(0x1B, 0x1E, 0x24));   # window/widget body
+    check(dh_theme_line(), sd_rgb(0x26, 0x2A, 0x32));     # border / hairline
+    check(dh_theme_ink(), sd_rgb(0xE7, 0xE9, 0xEF));      # primary text
+    check(dh_theme_accent(), sd_rgb(0x00, 0xE5, 0xFF));   # cyan verify seal
+
+    # Switch the whole desktop's look — the helpers re-colour.
+    rupa_theme_set_active_name("shanta-light");
+    check(dh_theme_bg(), sd_rgb(0xF2, 0xEC, 0xDD));       # rice paper
+    check(dh_theme_accent(), sd_rgb(0xC1, 0x96, 0x3A));   # warm gold
+    check(dh_theme_ink(), sd_rgb(0x2B, 0x26, 0x20));      # dark ink on paper
+
+    # Restore the default so this test leaves global state clean for others.
+    rupa_theme_set_active_name("mudra-dark");
+    check(dh_theme_bg(), sd_rgb(0x0B, 0x0C, 0x0E));
+
+    if (g_fails == 0) {
+        var ok = "theme_test: PASS (dh_theme_* track the active rupa theme)\n";
+        syscall(1, 1, ok, strlen(ok));
+    } else {
+        var bad = "theme_test: FAIL\n";
+        syscall(1, 2, bad, strlen(bad));
+    }
+    return g_fails;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

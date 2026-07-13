@@ -87,6 +87,7 @@ fn dh_draw_text(sds, font, text, x, y, h): i64 {
         var sw = sd_surface_width(sds);
         var sh2 = sd_surface_height(sds);
         var pix = sd_surface_pixels(sds);
+        var ink = dh_theme_ink();              # text in the active theme's primary-ink colour
         var ky = y + (h - 16) / 2;             # vertically centre the 16px glyph in the box
         var kx = x + 3;
         var ki = 0;
@@ -100,7 +101,7 @@ fn dh_draw_text(sds, font, text, x, y, h): i64 {
                     if ((kb & (1 << (7 - kcol))) != 0) {
                         var px = kx + kcol; var py = ky + kr;
                         if (px >= 0) { if (px < sw) { if (py >= 0) { if (py < sh2) {
-                                        store32(pix + (py * sw + px) * 4, 0x00FFFFFF);   # BGRA white
+                                        store32(pix + (py * sw + px) * 4, ink);   # theme ink (0x00RRGGBB == BGRA)
                                     } } } }
                     }
                     kcol = kcol + 1;
@@ -147,7 +148,7 @@ fn dh_draw_widget(sds, wgt, font): i64 {
         sd_fill_rect(sds, x, y, w, h, bg);
     }
     if (dh_widget_kind(wgt) == BUTTON) {
-        sd_rect(sds, x, y, w, h, sd_rgb(0, 0, 0));   # 1px black border
+        sd_rect(sds, x, y, w, h, dh_theme_line());   # 1px border in the theme's line colour
     }
     var text = dh_widget_text(wgt);
     if (text != 0) {
@@ -169,7 +170,7 @@ fn dh_surface_render(surf, font): i64 {
     var w = dh_surface_width(surf);
     var h = dh_surface_height(surf);
     var sds = sd_surface_new(w, h);
-    sd_clear(sds, sd_rgb(32, 32, 40));     # desktop-ish backdrop
+    sd_clear(sds, dh_theme_bg());          # the active rupa theme's desktop void
     var root = dh_surface_root(surf);
     if (root != 0) {
         dh_draw_widget(sds, root, font);

@@ -5,6 +5,34 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] - 2026-07-12 — widgets follow the shared desktop theme (rupa)
+
+The toolkit now draws with the sovereign desktop theme instead of hardcoded colours. A
+widget tree rendered by dhancha matches the aethersafha compositor chrome, because both
+read the same source — **rupa** (रूप, "form / appearance"), the shared theme-token core.
+Switch the whole desktop's look with `rupa_theme_set_active_name("shanta-dark")` and every
+dhancha surface re-colours to match. Two themes, each dark + light: MUDRA (the seal, the
+default) and SHANTA (stillness).
+
+### Added
+
+- **`[deps.rupa]`** (`0.1.0`) + **`src/theme.cyr`** — the `dh_theme_*` helpers, each packing
+  a rupa `0xRRGGBB` token (of the single active theme) into a sadish colour via `sd_rgb`:
+  `dh_theme_bg` / `_panel` / `_widget` / `_line` / `_ink` / `_mute` / `_accent` / `_alert`.
+  Apps set a widget background with `dh_widget_set_bg(w, dh_theme_panel())`, or just let the
+  renderer use the theme automatically.
+- **`programs/theme_test.cyr`** — a RUN test proving `dh_theme_*` track the active rupa theme
+  and re-colour when it switches (MUDRA · Carbon → SHANTA · First Light → back).
+
+### Changed
+
+- **`dh_surface_render` draws with the theme.** The desktop backdrop (was `sd_rgb(32,32,40)`)
+  → `dh_theme_bg()`; the button border (was black) → `dh_theme_line()`; and default
+  (kashi-bitmap) text (was white) → `dh_theme_ink()`. Explicit per-widget `dh_widget_set_bg`
+  colours are untouched — only the previously-hardcoded chrome now follows the theme. This
+  makes the light themes legible (dark ink on paper). `draw_test`'s border assertion updated
+  to `dh_theme_line()`; `text_test` unchanged (it checks text differs from bg).
+
 ## [0.8.0] - 2026-07-10 — text renders in the kashi SYSTEM font (bitmap blit), not a hand-rolled font
 
 `dh_draw_text` now draws its default text with **kashi** — the AGNOS system console font

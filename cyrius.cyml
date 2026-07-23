@@ -5,7 +5,7 @@ description = "dhancha (ढाँचा — framework) — pure-Cyrius client-si
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/dhancha"
 language = "cyrius"
-cyrius = "6.4.34"
+cyrius = "6.4.71"
 
 # dhancha is a library — no CLI binary. `cyrius build` targets a smoke
 # program that links the full include chain to prove lib.cyr parses clean.
@@ -94,5 +94,5 @@ modules = ["src/font_data.cyr"]
 # `setu_*` (no collision); stdlib needs are a subset of the set above.
 [deps.setu]
 git = "https://github.com/MacCracken/setu.git"
-tag = "0.4.0"
+tag = "0.6.0"
 modules = ["dist/setu.cyr"]

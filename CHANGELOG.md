@@ -5,6 +5,18 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.2] - 2026-07-23
+
+### Fixed — system-font text would have VANISHED under GPU blending
+
+`src/surface.cyr` wrote glyph pixels as `store32(..., ink)` where `ink` is a rupa theme token —
+`0x00RRGGBB`, **alpha byte zero**. Every other painter in the stack writes byte 3 = 255, so this one path
+produced glyph pixels that were transparent-by-accident.
+
+Harmless until now because nothing downstream read byte 3. Under agnos's `gpu_shader_op` **#92** op 0x01
+(premultiplied src-over, which **does** read it) every character rendered with the system font would have
+been fully transparent — **the text would simply have disappeared**. Now `ink | 0xFF000000`.
+
 ## [0.9.1] - 2026-07-23
 
 ### Changed — setu 0.6.0: client buffers are GPU-visible on agnos

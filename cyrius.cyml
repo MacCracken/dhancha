@@ -60,7 +60,7 @@ stdlib = [
 # mabda (GPU) + the aethersafha Wayland commit are a later bite — CPU draw first.
 [deps.sadish]
 git = "https://github.com/MacCracken/sadish.git"
-tag = "0.5.0"
+tag = "0.5.1"
 modules = ["dist/sadish.cyr"]
 
 # rupa (रूप — form / appearance) — the shared desktop theme-token core. Widgets +
@@ -69,12 +69,12 @@ modules = ["dist/sadish.cyr"]
 # local work until rupa is tagged.
 [deps.rupa]
 git = "https://github.com/MacCracken/rupa.git"
-tag = "0.1.1"
+tag = "0.1.2"
 modules = ["dist/rupa.cyr"]
 
 [deps.rekha]
 git = "https://github.com/MacCracken/rekha.git"
-tag = "0.3.3"
+tag = "0.3.4"
 modules = ["dist/rekha.cyr"]
 
 # kashi (काशि) — the AGNOS system console font (full CP437, VGA 8x16). dh_draw_text
@@ -82,7 +82,7 @@ modules = ["dist/rekha.cyr"]
 # the compositor chrome uses. rekha stays for scalable TrueType (font != 0).
 [deps.kashi]
 git = "https://github.com/MacCracken/kashi.git"
-tag = "1.0.3"
+tag = "1.0.4"
 modules = ["src/font_data.cyr"]
 
 # Display-protocol contract + reference CLIENT: setu (सेतु — bridge). The wire
@@ -94,5 +94,5 @@ modules = ["src/font_data.cyr"]
 # `setu_*` (no collision); stdlib needs are a subset of the set above.
 [deps.setu]
 git = "https://github.com/MacCracken/setu.git"
-tag = "0.7.0"
+tag = "0.7.2"
 modules = ["dist/setu.cyr"]

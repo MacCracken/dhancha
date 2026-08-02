@@ -5,6 +5,39 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.3] - 2026-08-02
+
+### Changed — cyrius pin 6.4.71 -> 6.5.5; sadish 0.5.1, rupa 0.1.2, rekha 0.3.4, kashi 1.0.4, setu 0.7.2
+
+Part of the whole-desktop-stack toolchain catch-up cut on this date, so the next burn runs binaries
+built by ONE compiler. ⚠ The pin was documentation, not enforcement — `cyrius build` uses the
+INSTALLED `cycc` and only warns on drift.
+
+⭐ Worth knowing for a toolkit: **6.5.0 added file-scoped `private` / per-item `public`**, the first
+real answer to this ecosystem's duplicate-`fn`-silently-shadows hazard. dhancha does not use it yet;
+it is the obvious next hardening for a library whose symbols share one flat namespace with every
+consumer's.
+
+### Fixed — ⛔ every dhancha app inherited a setu connect that could never succeed on agnos
+
+setu **0.7.2** (not 0.7.1). `dh_client_connect` forwards straight to `setu_client_connect`, so **any**
+app built on this toolkit carried the defect: setu dialled `127.0.0.1` while agnos puts `net_ip` in
+the outbound SYN's *source*, so the SYN-ACK came back on a 4-tuple the client's own conn could not
+match and `sock_connect` #47 returned -1 instantly.
+
+⚠ **A toolkit propagates a transport bug to every consumer at once**, which is why this is worth
+calling out in a cut whose headline is a toolchain refresh: pinning 0.7.1 here would have left every
+dhancha app broken on a real boot even after setu itself was fixed. Verified downstream — crab, a
+dhancha app, now composites as a live window on agnos.
+
+### Verification
+
+Host + `--agnos` builds green; **6 RUN tests** pass (`draw`, `event`, `font_render`, `layout`,
+`text`, `theme`); `distlib` regenerated.
+
+⚠ This version was **never published** (upstream stopped at 0.9.2), so the setu bump is folded into
+it rather than minted as 0.9.4 — there is no released entry to correct.
+
 ## [0.9.2] - 2026-07-23
 
 ### Fixed — system-font text would have VANISHED under GPU blending

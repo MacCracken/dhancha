@@ -5,7 +5,7 @@ description = "dhancha (ढाँचा — framework) — pure-Cyrius client-si
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/dhancha"
 language = "cyrius"
-cyrius = "6.4.71"
+cyrius = "6.5.5"
 
 # dhancha is a library — no CLI binary. `cyrius build` targets a smoke
 # program that links the full include chain to prove lib.cyr parses clean.
@@ -69,12 +69,12 @@ modules = ["dist/sadish.cyr"]
 # local work until rupa is tagged.
 [deps.rupa]
 git = "https://github.com/MacCracken/rupa.git"
-tag = "0.1.0"
+tag = "0.1.1"
 modules = ["dist/rupa.cyr"]
 
 [deps.rekha]
 git = "https://github.com/MacCracken/rekha.git"
-tag = "0.3.1"
+tag = "0.3.3"
 modules = ["dist/rekha.cyr"]
 
 # kashi (काशि) — the AGNOS system console font (full CP437, VGA 8x16). dh_draw_text
@@ -82,7 +82,7 @@ modules = ["dist/rekha.cyr"]
 # the compositor chrome uses. rekha stays for scalable TrueType (font != 0).
 [deps.kashi]
 git = "https://github.com/MacCracken/kashi.git"
-tag = "1.0.2"
+tag = "1.0.3"
 modules = ["src/font_data.cyr"]
 
 # Display-protocol contract + reference CLIENT: setu (सेतु — bridge). The wire

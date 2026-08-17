@@ -5,6 +5,41 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.6] - 2026-08-17 — per-widget motion, and every override goes through the guards
+
+### Added — a widget carries a motion ASK; rupa decides what it gets
+
+⭐ Implements the consumer half of the operator's ruling: *"compositor grants the motion, apps can
+override per-widget, but lets guard against any impossible or highly destructive behaviors."* The
+vocabulary lives in **rupa 0.1.3** (`RU_MO_INSTANT/QUICK/CALM/BUSY`); a widget stores a role plus an
+optional duration/easing override, and `dh_widget_motion_ms/_ease/_at` resolve it.
+
+⛔ **THE ASK IS STORED, NOT THE ANSWER, AND THAT IS THE ACCESSIBILITY DECISION.** Resolving at set-time
+would freeze the reduced-motion switch into every widget at the moment it was created — flipping the
+switch later would leave already-built UI still moving. Resolving on READ means every widget follows it
+immediately, which is the behaviour someone who turned it on actually needs.
+
+⛔ **NO PATH RETURNS THE RAW ASK.** There is deliberately no `dh_widget_motion_want_ms` — a convenience
+getter would be used by accident and would route around the flash-band floor and the reduced-motion
+override. `dh_widget_motion_ms` is the only door to a number a caller can animate with, and it calls
+rupa's clamp.
+
+⚠ **The easing default is `-1`, not 0.** `RU_EASE_LINEAR` IS 0, so a zeroed field would silently mean
+"this widget overrides the easing to linear" and every widget in the tree would lose its role's curve.
+
+⚠ **`dh_widget_motion_at` routes by ROLE, not by the caller's choice**: periodic roles cycle, the rest
+run once. A consumer picking `progress` for a BUSY widget would get a spinner that completes and stops,
+which reads as the work having finished.
+
+### Changed — `[deps.rupa]` 0.1.2 -> 0.1.3, and it gains a `path` override
+
+Every other dep in this stack carries `git` + `path`; rupa did not, so a local rupa change could not be
+built against until pushed — how a burn ends up testing last week's tokens. ⛔ `path` WINS over `tag`.
+
+**Verification** — `event_test` sub-test **T**: defaults, an honoured override, a 10 Hz BUSY ask floored
+out of the seizure band, a BUSY widget cycling rather than completing, and reduced-motion overriding a
+widget that asked for 400 ms.
+
 ## [0.9.5] - 2026-08-17 — two GUI basics that were quietly wrong
 
 ### Fixed — `dh_surface_present` returned DHANCHA_OK without presenting anything

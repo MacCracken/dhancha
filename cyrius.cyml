@@ -97,6 +97,8 @@ modules = ["dist/rekha.cyr"]
 # the compositor chrome uses. rekha stays for scalable TrueType (font != 0).
 [deps.kashi]
 git = "https://github.com/MacCracken/kashi.git"
+# ⚠ `path` — kashi is VENDORED (lib/kashi_font_data.cyr); every other dep in this stack carries both.
+path = "../kashi"
 tag = "1.0.4"
 modules = ["src/font_data.cyr"]
 
@@ -113,5 +115,5 @@ modules = ["src/font_data.cyr"]
 # `docs/development/planning/ipc.md` §9/§10.
 [deps.setu]
 git = "https://github.com/MacCracken/setu.git"
-tag = "0.8.5"
+tag = "0.8.6"
 modules = ["dist/setu.cyr"]

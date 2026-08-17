@@ -481,8 +481,42 @@ fn main(): i64 {
     check(g_ddrop, 1);                          # unchanged: root4 is not a drop target
     check(g_dend, 2);                           # drag still ended
 
+    # ── R) HIT-TESTING IS CLIPPED TO THE PARENT ─────────────────────────────────────────────────
+    # ⛔ Until 0.9.5 `dh_hit_test` recursed into children EVEN WHEN THE POINT WAS OUTSIDE THE PARENT, so
+    # a child laid out past its container answered clicks at coordinates where it is not drawn —
+    # `dh_surface_render` clips, input did not, and the two disagreed about where a widget was.
+    # ⚠ The existing A-Q sub-tests all passed both before and after that fix, because every one of them
+    # places children INSIDE their parent. A behaviour change that leaves the suite green is a
+    # behaviour change the suite cannot see; this is the case that separates them.
+    var rc_root = dh_widget_new(WINDOW);
+    dh_widget_set_bounds(rc_root, 0, 0, 50, 50);
+    var rc_in = dh_widget_new(BUTTON);
+    dh_widget_set_bounds(rc_in, 10, 10, 20, 20);        # wholly inside
+    var rc_out = dh_widget_new(BUTTON);
+    dh_widget_set_bounds(rc_out, 80, 80, 20, 20);       # wholly OUTSIDE the parent
+    dh_widget_add_child(rc_root, rc_in);
+    dh_widget_add_child(rc_root, rc_out);
+
+    # NON-VACUITY FIRST: the inside child must still be reachable, or "nothing is hit" passes trivially.
+    check(dh_hit_test(rc_root, 15, 15), rc_in);
+    # The point is inside rc_out's OWN bounds but outside its parent -> no hit at all.
+    check(dh_hit_test(rc_root, 90, 90), 0);
+    # ...and the parent itself still answers where it is drawn.
+    check(dh_hit_test(rc_root, 45, 45), rc_root);
+
+    # ── S) dh_surface_present REFUSES INSTEAD OF LYING ──────────────────────────────────────────
+    # ⛔ It used to return DHANCHA_OK while sending nothing to the compositor — a blank window with a
+    # success code to explain it away. It CANNOT present: the signature has no client to send on.
+    # The real entry point is dh_client_present(c, surf, font).
+    var rs = dh_surface_new(32, 32);
+    check(dh_surface_present(rs), DHANCHA_ERR_UNSUPPORTED);
+    check(dh_surface_present(0), DHANCHA_ERR_NO_SURFACE);
+    # ⚠ And it must NOT clear the dirty flag — claiming "shown" would make a later REAL present skip a
+    # surface that never reached the screen.
+    check(load64(rs + DH_S_DIRTY), 1);   # no accessor exists; read the field the way surface.cyr writes it
+
     if (g_fails == 0) {
-        var ok = "event_test: PASS (routing, hover, click+key activate, tab, capture, drag-drop)\n";
+        var ok = "event_test: PASS (routing, hover, click+key activate, tab, capture, drag-drop, clip, present-refusal)\n";
         syscall(1, 1, ok, strlen(ok));
     } else {
         var bad = "event_test: FAIL\n";

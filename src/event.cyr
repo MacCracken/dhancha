@@ -152,22 +152,35 @@ fn dh_reset_input(): i64 {
 fn dh_pointer_x(): i64 { return _dh_ptr_x; }
 fn dh_pointer_y(): i64 { return _dh_ptr_y; }
 
-# Hit-test: which widget contains point (px, py)? Depth-first, last
-# match wins (children paint over parents). Returns a DhWidget* or 0.
+# Hit-test: which widget contains point (px, py)? Depth-first, last match wins. Returns a DhWidget* or 0.
 #
-# TODO (see CHANGELOG): honor z-order + clipping + input-transparency. This
-# is a plain contains-point walk of the laid-out bounds.
+# ⭐ SIBLING ORDER IS ALREADY Z-ORDER, and that half was right: children are walked first-to-last and a
+# later match overwrites an earlier one, which matches the paint order `dh_surface_render` uses. The
+# last-painted widget is the one you see, so it must be the one you hit.
+#
+# ⛔⛔ CLIPPING WAS NOT ENFORCED, AND THAT IS AN INPUT-CORRECTNESS BUG, not a cosmetic gap.
+# The walk recursed into children EVEN WHEN THE POINT WAS OUTSIDE THE PARENT, so a child laid out
+# beyond its parent's bounds — anything scrolled, overflowing, or sized past its container — received
+# clicks at coordinates where **it is not drawn**. `dh_surface_render` clips a child to what fits;
+# input did not, so the two disagreed about where a widget was. Invisible pixels answering the mouse is
+# the worst shape of this: it looks like a dead click on the widget you CAN see.
+# ⇒ A point outside a subtree's root is outside every one of its descendants. Return immediately and
+# the whole subtree is skipped — which is both the correctness fix and a free pruning of the walk.
+# ⚠ THIS ASSUMES CHILDREN ARE CLIPPED TO PARENTS, which is what a box/flex toolkit means by containment
+# and what this repo's own TODO asked for. A future overlay/popup layer that must escape its parent
+# needs its own root, NOT a relaxation here — relaxing it brings the disagreement straight back.
 fn dh_hit_test(root, px, py): i64 {
     if (root == 0) { return 0; }
-    var hit = 0;
     var rx = dh_widget_x(root);
     var ry = dh_widget_y(root);
     var rw = dh_widget_w(root);
     var rh = dh_widget_h(root);
-    if (px >= rx) { if (py >= ry) { if (px < rx + rw) { if (py < ry + rh) {
-                    hit = root;
-                } } } }
-    # recurse; a deeper hit overrides
+    if (px < rx) { return 0; }
+    if (py < ry) { return 0; }
+    if (px >= rx + rw) { return 0; }
+    if (py >= ry + rh) { return 0; }
+    var hit = root;
+    # recurse; a deeper hit overrides, and a LATER sibling overrides an earlier one (paint order)
     var child = dh_widget_first_child(root);
     while (child != 0) {
         var ch = dh_hit_test(child, px, py);

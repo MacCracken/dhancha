@@ -5,6 +5,41 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.5] - 2026-08-17 — two GUI basics that were quietly wrong
+
+### Fixed — `dh_surface_present` returned DHANCHA_OK without presenting anything
+
+⛔⛔ **A SUCCESS CODE FOR WORK IT NEVER DID.** It validated the surface, cleared the dirty flag and
+returned `DHANCHA_OK` while sending nothing to the compositor — so an app reaching for the
+obviously-named entry point got a blank window and a success code to explain it away.
+
+⭐ **It cannot present, and that is structural, not missing code:** presenting needs a CONNECTION and
+the signature takes only a surface. The real entry point is `dh_client_present(c, surf, font)`. It now
+returns **`DHANCHA_ERR_UNSUPPORTED`** — refusing diagnosably instead of lying — and no longer clears the
+dirty flag, which had been asserting "this has been shown" of a surface that never reached a screen.
+⚠ Refused rather than deleted: `surface.cyr` is in the published dist, so an external caller may exist.
+Today it gets silence; now it gets a code it can act on.
+⚠ Nothing in this repo called it, including dhancha's own programs — which is why the lie survived.
+
+### Fixed — `dh_hit_test` ignored clipping: widgets answered clicks where they are not drawn
+
+⛔ The walk recursed into children **even when the point was outside the parent**, so a child laid out
+past its container — anything scrolled, overflowing or oversized — received input at coordinates where
+`dh_surface_render` does not draw it. Render clipped; input did not; the two disagreed about where a
+widget was. The failure looks like a dead click on the widget you CAN see.
+⇒ A point outside a subtree's root is outside every descendant, so the walk now returns immediately —
+the correctness fix and a free pruning. Sibling order was already correct (last painted wins).
+⚠ This assumes children are clipped to parents, which is what box/flex containment means. A future
+overlay/popup that must escape its parent needs its OWN root, not a relaxation here.
+
+### Verification — and why the existing suite could not see either fix
+
+⛔ **All five run-tests passed BEFORE and AFTER both changes**, because every existing sub-test places
+children inside their parent and none calls `dh_surface_present`. A behaviour change that leaves the
+suite green is one the suite cannot see. `event_test` gains sub-tests **R** (clipping, with a
+non-vacuity check that the inside child is still reachable) and **S** (present refuses, and leaves the
+surface dirty). **Mutation-tested: reverting both fixes fails event_test with 3 failures.**
+
 ## [0.9.4] - 2026-08-16 — the toolkit can reach the compositor on agnos again
 
 ### Fixed — `[deps.setu]` 0.7.4 -> **0.8.5**: dhancha had NO agnos transport at all

@@ -80,6 +80,29 @@ jobs:
           fi
           echo "dist/dhancha.cyr matches src/"
 
+      # ⛔⛔ THE STEP ABOVE RUNS `cyrius distlib`, WHICH REWRITES dist/dhancha.deps AND RE-ADDS A LINE
+      # THAT BREAKS EVERY CONSUMER. distlib emits `kashi_font_data` into the "stdlib leaves" sidecar,
+      # but kashi is VENDORED (`[deps.kashi] modules = ["src/font_data.cyr"]`), so `cyrius deps` in a
+      # consumer hunts for it in the stdlib and hard-errors:
+      #     error: dep dhancha requires 'kashi_font_data' but it is not in the cyrius stdlib
+      # crab and puka could not resolve dhancha at all until this was found (2026-08-17), and the
+      # sidecar was the LAST thing anyone looked at — three wrong diagnoses came first.
+      # ⚠ Mirror of setu's gate (ci.yml:99) for the SAME cyrius defect in the other direction: setu's
+      # sidecar under-reports 8 of 12 leaves, dhancha's over-reports a vendored module. One open issue
+      # covers both — setu docs/development/issues/2026-08-07-distlib-deps-sidecar-under-reports.md.
+      # ⇒ Generating from the DECLARED [deps] stdlib makes both directions impossible, and this gate is
+      # what stops a distlib run from silently undoing it.
+      - name: Verify deps sidecar matches the declared stdlib
+        run: |
+          sh scripts/sync-deps-sidecar.sh
+          if ! git diff --quiet dist/dhancha.deps; then
+            echo "ERROR: dist/dhancha.deps does not match [deps] stdlib in cyrius.cyml."
+            echo "Run 'cyrius distlib && sh scripts/sync-deps-sidecar.sh' and commit the result."
+            git --no-pager diff dist/dhancha.deps
+            exit 1
+          fi
+          echo "dist/dhancha.deps matches the declared stdlib ($(grep -vc '^#' dist/dhancha.deps) leaves)"
+
       - name: Build (link-check, DCE on)
         run: |
           mkdir -p build

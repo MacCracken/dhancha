@@ -104,11 +104,12 @@ fn dh_draw_text(sds, font, text, x, y, h): i64 {
                                         # ⚠ 0xFF000000 IS LOAD-BEARING (v0.9.2). `ink` is a rupa theme
                                         # token, 0x00RRGGBB — alpha byte ZERO. Every other painter in the
                                         # stack writes byte 3 = 255, so this one path produced glyph pixels
-                                        # that were transparent-by-accident. Invisible until now because
-                                        # nothing downstream read byte 3; under agnos's gpu_shader_op#92
-                                        # op 0x01 (premultiplied src-over, which DOES read it) every
-                                        # character rendered with the system font would be fully
-                                        # transparent — the text would simply VANISH.
+                                        # that were transparent-by-accident. Harmless while nothing read
+                                        # byte 3; under agnos's gpu_shader_op#92 op 0x01 (premultiplied
+                                        # src-over, which DOES read it) the shader is
+                                        # `out = src + dst*(1 - src_a)`, so alpha 0 gives `out = src + dst`
+                                        # — system-font text would render as an additive over-bright
+                                        # ghost, not vanish, which is harder to notice, not easier.
                                         store32(pix + (py * sw + px) * 4, ink | 0xFF000000);
                                     } } } }
                     }

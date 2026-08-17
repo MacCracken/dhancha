@@ -4,7 +4,22 @@
 # primitives `setu_connect` / `setu_send` / `setu_recv` / `setu_read_exact` /
 # `setu_read_msg`, and the persistent `setu_client_*`). The client was promoted
 # INTO setu so dhancha + puka share ONE implementation (agnosticos
-# native-display-protocol.md). Since setu 0.3.0 the transport is CROSS-PLATFORM
+# native-display-protocol.md).
+#
+# ⛔ THE TRANSPORT DESCRIBED BELOW IS RETIRED (2026-08-03) — as the WRONG PRIMITIVE for a local
+# display protocol (nothing to route, nothing to checksum, no window to negotiate, no business
+# owning a port), NOT because it never worked. Scope the history: BEFORE `net_src_for` (agnos
+# 1.56.34) it could not complete a compositor↔client handshake on an ordinary boot, and the only
+# test that passed in that era did so because the `AETHERSAFHA_SETU_SELFTEST` kernel hook
+# assigned `net_ip = 0x7F000001` (hook + smoke deleted; claims tracing to them are FALSE GREENS).
+# AFTER `net_src_for` it did work un-rigged: 2026-08-02, the hook-scanning harness
+# `aethersafha-clients-test.py` reached "connected: 2, presented: 2" — the real dhancha `crab`
+# and setu's `present_probe` both connected and presented (QEMU `-smp 1`; never on iron, `-smp 4`
+# fault-kills). The replacement is the agnos socket (`anu`) — agnos
+# `docs/development/planning/ipc.md` §9/§10. These forwarders are unaffected in shape; what they
+# forward TO is what changes.
+#
+# Since setu 0.3.0 the transport was (⛔ retired) cross-platform
 # TCP over loopback:7700 (Linux BSD sockets + agnos kernel TCP) — the AF_UNIX
 # `sockaddr_un` builder is gone, so the old `dh_setu_sockaddr` forwarder was
 # dropped (the address is now the implicit loopback endpoint). This file no

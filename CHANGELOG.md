@@ -5,6 +5,46 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.4] - 2026-08-16 — the toolkit can reach the compositor on agnos again
+
+### Fixed — `[deps.setu]` 0.7.4 -> **0.8.5**: dhancha had NO agnos transport at all
+
+dhancha delegates its whole client path to setu — `dh_client_connect(path)` → `setu_client_connect(path)`,
+`dh_setu_connect` → `setu_connect` — which is the right design and is why this is a dep bump rather than
+new code. It pinned **setu 0.7.4**, and puka's changelog records what that means: *"0.7.4 predates the
+channel-band cutover and has no agnos arm at all, so `setu_client_connect` returned 0 on agnos with none
+of setu's own refusal messages — a silent failure."* Before the bump dhancha's vendored setu had **zero**
+`CYRIUS_TARGET_AGNOS` arms; after it, **28**, plus the `AGNOS_CHAN` + `CH_CAPS` floor check.
+
+⛔⛔ **SCOPE, CORRECTED IN DRAFT — THIS FIXES dhancha's OWN AGNOS PROGRAMS, NOT ITS CONSUMERS.**
+The first version of this entry said the toolkit "was disconnected from the sovereign desktop" full stop.
+**That is wrong, and the measurement that corrects it is one grep:** a consumer resolves its OWN
+`[deps.setu]`, so `crab/lib/setu.cyr` is 0.8.5 with 28 agnos arms regardless of what dhancha pins — which
+is exactly why crab has been presenting on iron all along. What 0.7.4 actually broke is **this repo's own
+`programs/setu_*_probe.cyr` and demos on agnos**, i.e. the means of testing the toolkit against a real
+compositor — and it is a landmine for any future consumer that trusts dhancha's declared graph.
+⚠ Worth stating because the difference is the whole diagnosis: "the toolkit cannot reach the compositor"
+and "the toolkit's own test programs cannot" are different defects with different urgency.
+
+⚠ **HOW IT REGRESSED — a substrate moved and the library was left behind.** 0.7.0 shipped *"a real
+dhancha app on the sovereign desktop"* over setu's TCP transport (0.6.3 adapted to it). That transport
+was then retired as the wrong primitive for local display IPC and replaced by the agnos channel band
+`#97`, where the compositor mints a channel and endows an end at spawn. setu came across; dhancha did
+not, and the toolkit's silence looked exactly like "not wired up yet".
+
+⛔ **THE CONSEQUENCE WAS AN ARCHITECTURE INVERSION.** With no working client, every windowed app on
+agnos hand-rolled its own — `crab/src/main.cyr` carries 3 `CYRIUS_TARGET_AGNOS` arms and calls
+`setu_client_connect` itself, using **no** `dh_client` and **no** `dh_surface_present`. It used dhancha
+as a *drawing library only*. That is precisely what this repo's README says it exists to prevent.
+
+### Changed — cyrius pin 6.5.5 -> **6.5.21**, matching agnos and aethersafha
+
+One language version across the desktop stack. ⚠ `cycc` is already **6.5.23** locally; the pin tracks
+the burn stack rather than the newest compiler, and moving the whole stack is a separate sweep.
+
+Verified: `--agnos` build OK, and all six run-tests green — `draw_test`, `event_test`, `layout_test`,
+`text_test`, `theme_test`, `font_render_test`.
+
 ## [0.9.3] - 2026-08-02
 
 ### Changed — cyrius pin 6.4.71 -> 6.5.5; sadish 0.5.1, rupa 0.1.2, rekha 0.3.4, kashi 1.0.4, setu 0.7.2
@@ -18,7 +58,22 @@ real answer to this ecosystem's duplicate-`fn`-silently-shadows hazard. dhancha 
 it is the obvious next hardening for a library whose symbols share one flat namespace with every
 consumer's.
 
-### Fixed — ⛔ every dhancha app inherited a setu connect that could never succeed on agnos
+### Fixed — ⛔ every dhancha app inherited a setu connect that could not succeed on agnos before `net_src_for`
+
+> ⛔ **SUPERSEDED 2026-08-03 — the transport this "fix" repairs is RETIRED as the wrong primitive.**
+> TCP-on-loopback was the WRONG PRIMITIVE for a local display protocol — nothing to route, nothing to
+> checksum, no window to negotiate, no business owning a port — and bumping to setu 0.7.2 bought one
+> more accommodation (the sixth) on it. That architectural ruling, not a failure, is why it is gone.
+> The desktop transport is now the agnos socket (`anu`) — agnos
+> `docs/development/planning/ipc.md` §9/§10; do not restore a TCP dial on the strength of this entry.
+>
+> ⚠ **But do not overstate the retraction.** "Verified downstream — crab, a dhancha app, now composites
+> as a live window on agnos" was a REAL, un-rigged observation on agnos 1.56.34+ (which added
+> `net_src_for`, the kernel-side half of this fix): on 2026-08-02 the honest harness
+> `agnos/scripts/harness/aethersafha-clients-test.py` — which hard-exits if the kernel carries any
+> selftest hook — reached **`connected: 2, presented: 2`** with `crab` as one of the two clients. Scope:
+> QEMU at `-smp 1`, never shown on iron, `-smp 4` fault-kills. It does not carry forward as a *current*
+> capability claim, because the transport under it is retired — not because it did not happen.
 
 setu **0.7.2** (not 0.7.1). `dh_client_connect` forwards straight to `setu_client_connect`, so **any**
 app built on this toolkit carried the defect: setu dialled `127.0.0.1` while agnos puts `net_ip` in
@@ -40,7 +95,7 @@ it rather than minted as 0.9.4 — there is no released entry to correct.
 
 ## [0.9.2] - 2026-07-23
 
-### Fixed — system-font text would have VANISHED under GPU blending
+### Fixed — system-font text would have rendered WRONG under GPU blending
 
 `src/surface.cyr` wrote glyph pixels as `store32(..., ink)` where `ink` is a rupa theme token —
 `0x00RRGGBB`, **alpha byte zero**. Every other painter in the stack writes byte 3 = 255, so this one path
@@ -48,7 +103,12 @@ produced glyph pixels that were transparent-by-accident.
 
 Harmless until now because nothing downstream read byte 3. Under agnos's `gpu_shader_op` **#92** op 0x01
 (premultiplied src-over, which **does** read it) every character rendered with the system font would have
-been fully transparent — **the text would simply have disappeared**. Now `ink | 0xFF000000`.
+rendered wrong. Now `ink | 0xFF000000`.
+
+> ⛔ **Corrected 2026-08-02** — this entry originally said the text *"would simply have disappeared."* That
+> is wrong. The kernel shader is `out = src + dst*(1 - src_a)`, so alpha 0 gives `out = src + dst` — an
+> **additive over-bright ghost**, not a disappearance, and harder to notice than missing text. The fix
+> (`ink | 0xFF000000`) was correct and is unchanged; only the predicted symptom was wrong.
 
 ## [0.9.1] - 2026-07-23
 
@@ -132,6 +192,18 @@ the whole draw stack (widget tree → box layout → sadish 2D vector + rekha te
 setu → aethersafha) runs on the sovereign kernel, reacting to focus and keyboard input routed
 back over the wire. Text labels are drawn from a font baked entirely in memory — no font files.
 
+> ⛔ **RETRACTED 2026-08-03 — "composited on agnos" *as evidenced in this arc* is a FALSE GREEN.** Every
+> agnos run in this arc went through the `AETHERSAFHA_SETU_SELFTEST` kernel hook, which assigned
+> `net_ip = 0x7F000001` before launching the compositor; that accidental src == dst match is the only
+> reason setu's loopback TCP handshake closed here. Before `net_src_for` (agnos 1.56.34) an ordinary
+> boot could not complete it, so *this arc's* proof is rigged and withdrawn. The hook and its smoke are
+> deleted, and TCP-on-loopback is retired as the desktop transport — retired as the **wrong primitive**
+> for local display IPC, not as something that never worked: after `net_src_for`, on 2026-08-02, the
+> hook-scanning harness `aethersafha-clients-test.py` reached `connected: 2, presented: 2` with the real
+> dhancha app `crab` as one of the two clients (QEMU `-smp 1`; never on iron, `-smp 4` fault-kills). See
+> agnos `docs/development/planning/ipc.md` §9/§10. The draw stack (layout → sadish → rekha → BGRA) is
+> unaffected; this arc's transport claim is not.
+
 ### Added
 
 - **`programs/setu_widget_client.cyr`** — a real dhancha widget client: a window with a titled
@@ -157,6 +229,16 @@ back over the wire. Text labels are drawn from a font baked entirely in memory �
   sockets (`tcp_socket` / `sock_*` / `INADDR_LOOPBACK`); dhancha had never networked before.
 
 ## [0.6.3] - 2026-07-08 — adapt to setu 0.3.0 (cross-platform TCP transport)
+
+> ⛔ **RETRACTED 2026-08-03 — "cross-platform on Linux and agnos" was not yet true on agnos when this
+> was written.** The TCP transport adopted here could not complete a compositor↔client handshake on an
+> ordinary agnos boot **until `net_src_for` (agnos 1.56.34)**: before that, every outbound segment
+> claimed `net_ip` as its source, so a SYN to 127.0.0.1 was answered on a 4-tuple the client's own conn
+> could not match. It later did complete un-rigged (2026-08-02, hook-scanning harness, `connected: 2,
+> presented: 2`, QEMU `-smp 1`) — but it is RETIRED as the desktop transport anyway, because TCP is the
+> **wrong primitive** for local display IPC. The replacement is the agnos socket (`anu`) — agnos
+> `docs/development/planning/ipc.md` §9/§10. setu's Linux arm survives because Linux is a different
+> target, not an agnos fallback.
 
 setu 0.3.0 replaced its Linux-only AF_UNIX client with a cross-platform **TCP**
 transport (item 3b), dropping the `sockaddr_un` builder. dhancha's thin client

@@ -13,6 +13,17 @@
 # which builds --agnos) + setu 0.4.0's client transport (the [deps.setu] dist).
 #
 # Run: needs a live compositor listening on setu loopback:7700 (aethersafha).
+#
+# ⛔ THAT TRANSPORT IS RETIRED (2026-08-03) — as the WRONG PRIMITIVE for local display IPC, not
+# because it never worked — so this program is no longer run against agnos on it. Scope the
+# history: BEFORE `net_src_for` (agnos 1.56.34) TCP-on-loopback could not close a compositor↔client
+# handshake on an ordinary boot, and the one smoke that passed in that era did so only because the
+# `AETHERSAFHA_SETU_SELFTEST` kernel hook assigned `net_ip = 0x7F000001` (hook + smoke deleted;
+# the "on agnos it stays live" reading of the paragraph above traces to that rigging and is a FALSE
+# GREEN). AFTER `net_src_for` the path DID work un-rigged: 2026-08-02, the hook-scanning harness
+# `aethersafha-clients-test.py` reached "connected: 2, presented: 2" with the real dhancha `crab`
+# as one client (QEMU `-smp 1`; never on iron, `-smp 4` fault-kills). Replacement transport: the
+# agnos socket (`anu`) — agnos `docs/development/planning/ipc.md` §9/§10.
 
 include "src/lib.cyr"
 
@@ -78,7 +89,7 @@ fn main(): i64 {
 
     # Text renders via dh_draw_text's default: the kashi CP437 system font (font = 0).
 
-    var path = "/tmp/aethersafha-setu.sock";              # advisory; transport is loopback:7700
+    var path = "/tmp/aethersafha-setu.sock";              # advisory (always was); transport ⛔ retired
     var c = setu_client_connect(path);
     if (c == 0) { wc_say("setu_widget_client: setu connect failed\n"); return 1; }
     var fd = setu_client_fd(c);

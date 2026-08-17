@@ -5,7 +5,7 @@ description = "dhancha (ढाँचा — framework) — pure-Cyrius client-si
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/dhancha"
 language = "cyrius"
-cyrius = "6.5.5"
+cyrius = "6.5.21"
 
 # dhancha is a library — no CLI binary. `cyrius build` targets a smoke
 # program that links the full include chain to prove lib.cyr parses clean.
@@ -24,6 +24,18 @@ output = "build/dhancha-smoke"
 # reorder without re-running `cyrius distlib` and verifying the concatenated
 # bundle still compiles clean.
 [lib]
+# ⛔⛔ THE CLIENT LAYER WAS MISSING FROM THIS LIST UNTIL 0.9.4, AND THAT IS WHY NO APP USED IT.
+# The bundle shipped the widget/layout/event/draw half and NONE of the connection half, so a consumer
+# resolving `dist/dhancha.cyr` got no `dh_client_connect`, no `dh_setu_*`, no input decode — the symbols
+# simply did not exist downstream. crab was not bypassing the toolkit out of habit: `dh_client_connect`
+# was UNDEFINED in its build, so hand-rolling setu was the only option available to it.
+# ⇒ A toolkit whose README promises apps need not "hand-roll a raw compositor connection" has to SHIP
+# the connection. Measured: adding these three turned crab's build from
+# `2 reachable undefined function(s)` into a clean link.
+# ⚠ ORDER IS THE INCLUDE CHAIN, not alphabetical — `dh_client.cyr` sits last because it composes
+# `setu_client` + `setu_input` + `surface`, and its own header names that order.
+# ⚠ These reference `setu_*`, so a consumer of this bundle MUST also declare `[deps.setu]` (>= 0.8.5 for
+# the agnos channel band). That coupling is real and is the point: the client half is setu's wire.
 modules = [
     "src/error.cyr",
     "src/widget.cyr",
@@ -31,6 +43,9 @@ modules = [
     "src/event.cyr",
     "src/theme.cyr",
     "src/surface.cyr",
+    "src/setu_client.cyr",
+    "src/setu_input.cyr",
+    "src/dh_client.cyr",
 ]
 
 [deps]
@@ -92,7 +107,11 @@ modules = ["src/font_data.cyr"]
 # client — one shared transport implementation, no duplication. Pinned to 0.3.0
 # (the CROSS-PLATFORM TCP transport — item 3b; setu_cl_sockaddr dropped). All fns
 # `setu_*` (no collision); stdlib needs are a subset of the set above.
+# ⛔ That TCP transport is RETIRED (2026-08-03) as the WRONG PRIMITIVE for local display IPC —
+# not because it failed: it connected and presented un-rigged post-`net_src_for` (agnos 1.56.34)
+# on 2026-08-02 in QEMU at `-smp 1`. Replacement: the agnos socket (`anu`) — agnos
+# `docs/development/planning/ipc.md` §9/§10.
 [deps.setu]
 git = "https://github.com/MacCracken/setu.git"
-tag = "0.7.2"
+tag = "0.8.5"
 modules = ["dist/setu.cyr"]

@@ -481,7 +481,7 @@ fn main(): i64 {
     check(g_ddrop, 1);                          # unchanged: root4 is not a drop target
     check(g_dend, 2);                           # drag still ended
 
-    # ── R) HIT-TESTING IS CLIPPED TO THE PARENT ─────────────────────────────────────────────────
+    # ── R) HIT-TESTING IS CLIPPED TO THE PARENT ──
     # ⛔ Until 0.9.5 `dh_hit_test` recursed into children EVEN WHEN THE POINT WAS OUTSIDE THE PARENT, so
     # a child laid out past its container answered clicks at coordinates where it is not drawn —
     # `dh_surface_render` clips, input did not, and the two disagreed about where a widget was.
@@ -504,7 +504,7 @@ fn main(): i64 {
     # ...and the parent itself still answers where it is drawn.
     check(dh_hit_test(rc_root, 45, 45), rc_root);
 
-    # ── S) dh_surface_present REFUSES INSTEAD OF LYING ──────────────────────────────────────────
+    # ── S) dh_surface_present REFUSES INSTEAD OF LYING ──
     # ⛔ It used to return DHANCHA_OK while sending nothing to the compositor — a blank window with a
     # success code to explain it away. It CANNOT present: the signature has no client to send on.
     # The real entry point is dh_client_present(c, surf, font).
@@ -516,7 +516,7 @@ fn main(): i64 {
     check(load64(rs + DH_S_DIRTY), 1);   # no accessor exists; read the field the way surface.cyr writes it
 
     if (g_fails == 0) {
-        var ok = "event_test: PASS (routing, hover, click+key activate, tab, capture, drag-drop, clip, present-refusal)\n";
+        var ok = "event_test: PASS (routing, hover, activate, tab, capture, drag-drop, clip, refusal)\n";
         syscall(1, 1, ok, strlen(ok));
     } else {
         var bad = "event_test: FAIL\n";

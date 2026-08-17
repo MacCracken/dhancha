@@ -854,7 +854,7 @@ fn dh_pointer_y(): i64 { return _dh_ptr_y; }
 # ⇒ A point outside a subtree's root is outside every one of its descendants. Return immediately and
 # the whole subtree is skipped — which is both the correctness fix and a free pruning of the walk.
 # ⚠ THIS ASSUMES CHILDREN ARE CLIPPED TO PARENTS, which is what a box/flex toolkit means by containment
-# and what this repo's own TODO asked for. A future overlay/popup layer that must escape its parent
+# and what this repo's own deferral note asked for. A future overlay/popup layer that must escape its parent
 # needs its own root, NOT a relaxation here — relaxing it brings the disagreement straight back.
 fn dh_hit_test(root, px, py): i64 {
     if (root == 0) { return 0; }

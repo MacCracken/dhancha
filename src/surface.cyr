@@ -129,6 +129,7 @@ fn dh_draw_text(sds, font, text, x, y, h, clx, cly, clw, clh): i64 {
         # surface. rekha (font != 0) stays for scalable TrueType when a .ttf loads.
         kashi_font_init();
         var sw = sd_surface_width(sds);
+        var sstride = sd_surface_stride(sds) / 4;   # see canvas.cyr: width != stride when wrapped
         var sh2 = sd_surface_height(sds);
         var pix = sd_surface_pixels(sds);
         var ink = dh_theme_ink();              # text in the active theme's primary-ink colour
@@ -160,7 +161,7 @@ fn dh_draw_text(sds, font, text, x, y, h, clx, cly, clw, clh): i64 {
                                         # `out = src + dst*(1 - src_a)`, so alpha 0 gives `out = src + dst`
                                         # — system-font text would render as an additive over-bright
                                         # ghost, not vanish, which is harder to notice, not easier.
-                                        store32(pix + (py * sw + px) * 4, ink | 0xFF000000);
+                                        store32(pix + (py * sstride + px) * 4, ink | 0xFF000000);
                                     } } } }
                     }
                     kcol = kcol + 1;
@@ -257,12 +258,52 @@ fn dh_draw_widget(sds, wgt, font, clx, cly, clw, clh): i64 {
     if (kx1 <= kx0) { return 0; }
     if (ky1 <= ky0) { return 0; }
 
+    # ⭐ CANVAS (0.9.9) — hand the rectangle to the app. Placed after this widget's own background
+    # and BEFORE its children, so a canvas can be used as a backdrop with widgets composed on top;
+    # it is given the CHILD clip, which is its own box intersected with everything above it.
+    if (dh_widget_kind(wgt) == CANVAS) {
+        var dfn = dh_canvas_draw_fn(wgt);
+        if (dfn != 0) { fncall6(dfn, wgt, sds, kx0, ky0, kx1 - kx0, ky1 - ky0); }
+    }
+
+    # ⚠ BEFORE the rows, so a row's own background (if it has one) paints OVER the highlight rather
+    # than the highlight hiding the row. A row that wants to stay visible when selected simply keeps
+    # its background; the default — no background — lets the highlight through, which is what an app
+    # that has stopped hand-rolling its selection expects.
+    if (dh_widget_kind(wgt) == LIST) {
+        dh_draw_list_selection(sds, wgt, kx0, ky0, kx1 - kx0, ky1 - ky0);
+    }
+
     var child = dh_widget_first_child(wgt);
     while (child != 0) {
         dh_draw_widget(sds, child, font, kx0, ky0, kx1 - kx0, ky1 - ky0);
         child = dh_widget_next_sibling(child);
     }
     return 0;
+}
+
+# ⭐⭐ THE SELECTION HIGHLIGHT (0.9.8) — drawn by the TOOLKIT, not by each app.
+# ⛔ WHY THIS MOVED HERE. 0.9.7 stored `DH_W_SEL` and used it for scrolling, but nothing painted it,
+# so a consumer adopting LIST still had to set a background on the selected row itself — which is
+# exactly the hand-rolling the container was supposed to end. crab was the consumer that proved it:
+# porting its panes onto LIST deleted the truncation and the scroll arithmetic and left its
+# `if (selected) { bg = accent }` block untouched. A container that owns the selection must own how
+# the selection LOOKS, or it has only taken half the job.
+# ⚠ ACCENT WHEN FOCUSED, MUTED OTHERWISE. Two panes both showing an accented row is a display that
+# cannot answer "which one do my arrow keys drive" — the single question a two-pane file manager
+# exists to make obvious. This is the rule crab, puka and the launcher had each written separately.
+fn dh_draw_list_selection(sds, wgt, clx, cly, clw, clh): i64 {
+    var sel = dh_widget_sel(wgt);
+    if (sel < 0) { return 0; }
+    var row = dh_list_row_at(wgt, sel);
+    if (row == 0) { return 0; }
+    var col = dh_theme_line();
+    if (dh_focus_within(wgt) == 1) { col = dh_theme_accent(); }
+    var rx = dh_widget_x(row);
+    var ry = dh_widget_y(row);
+    var rw = dh_widget_w(row);
+    var rh = dh_widget_h(row);
+    return dh_fill_rect_clip(sds, rx, ry, rw, rh, col, clx, cly, clw, clh);
 }
 
 # @public — render `surf`'s widget tree into a fresh sadish SdSurface and

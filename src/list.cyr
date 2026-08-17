@@ -188,6 +188,21 @@ fn dh_list_step(lst, delta): i64 {
     return i;
 }
 
+# @public — does keyboard focus sit on `wgt` or anywhere beneath it?
+# ⚠ A LIST's selection is drawn ACCENTED when the list has focus and MUTED when it does not, which is
+# the universal convention and the thing crab, puka and the launcher each re-derived. "Or beneath" is
+# load-bearing: a list containing a focused button is still the active list, and a highlight that
+# dropped to muted the moment focus entered a row would flicker on every interaction.
+fn dh_focus_within(wgt): i64 {
+    if (wgt == 0) { return 0; }
+    var f = dh_focus_get();
+    while (f != 0) {
+        if (f == wgt) { return 1; }
+        f = dh_widget_parent(f);
+    }
+    return 0;
+}
+
 # @public — the row index at screen point (px, py), or -1 if the point misses every row.
 # ⚠ Derived from the ROWS' real bounds rather than from `(py - list_y) / row_h` arithmetic, because
 # the rows' bounds are what layout actually produced and what `dh_hit_test` will agree with. Two

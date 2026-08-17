@@ -5,6 +5,107 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.9] - 2026-08-17 — CANVAS: the slot an app paints itself
+
+### Added — the "text surface" the roadmap asked for, generalised
+
+M7-A named two containers a desktop needs: *"a file manager needs a LIST/scroll container; a terminal
+needs a text surface"*. 0.9.7 shipped the first and not the second, and puka's port is where that
+showed: **not every surface decomposes into widgets.** An 80×24 terminal is 1920 cells, each with a
+foreground, background, attributes, a wide-glyph spacer flag and a possible cursor. As widgets that
+costs more memory than the terminal's scrollback and discards the **dirty-row scanner** that makes a
+keystroke echo repaint sixteen scanlines instead of the screen.
+
+`CANVAS` is the answer every real toolkit reaches: give the app a rectangle and let it paint.
+`dh_canvas_new(draw_fn, userdata)`; the callback receives `(wgt, sds, clx, cly, clw, clh)`.
+
+⛔ **AND IT IS DELIBERATELY NARROW.** A canvas gets its box and its clip and nothing else — no access
+to siblings, no way to widen the clip it was handed. An escape hatch that can reach outside its
+rectangle is not a hatch but a hole; the whole value of putting app-drawn content in the tree is that
+layout, clipping and hit-testing keep applying to it.
+
+⚠ A canvas entirely outside its clip is **not called at all**, so an expensive renderer is skipped
+rather than asked to draw nothing.
+
+### Added — `dh_surface_wrap`: draw into memory the caller owns
+
+An SdSurface header over caller-owned pixels. Nothing is copied, nothing is freed.
+
+⭐ **This is the difference between a port and a regression.** An app with its own present buffer —
+puka gets one from `win_present_begin` — would otherwise render the tree into a dhancha-allocated
+surface and copy the whole thing across every frame. Adopting the toolkit would have made the app
+measurably slower.
+
+⚠ It uses sadish's own `SD_SURFACE_*` constants rather than hardcoded offsets, so a layout change
+there is a rebuild here and not a silent mis-write into a caller's framebuffer.
+
+### Fixed — ⛔ raw-pixel painters used WIDTH where they meant STRIDE
+
+`sd_surface_new` makes width == stride, so every painter that conflated them was accidentally correct
+— until `dh_surface_wrap` introduced surfaces where they differ. The bitmap-font blit and the RGB24
+canvas blit now use `sd_surface_stride`.
+
+⚠ **This one does not fail loudly.** A width-as-stride bug over a padded buffer shears the image
+progressively, one row of slip per scanline. It is covered by a wrap test using a 40px image in a
+64px-per-row buffer, and by a mutation.
+
+### Added — `dh_canvas_blit_rgb24`, which sets the alpha byte
+
+⛔⛔ **THE ALPHA IS THE POINT OF PUTTING THIS IN THE TOOLKIT.** An RGB24 source has no alpha, so the
+obvious pack — `(r << 16) | (g << 8) | b` — leaves byte 3 at **zero**. Harmless while nothing reads
+it; under agnos's `gpu_shader_op #92` op 0x01 (premultiplied src-over,
+`out = src + dst * (1 - src_a)`) alpha 0 collapses the blend to `out = src + dst`, and the content
+renders as an **additive over-bright ghost** rather than opaquely — much harder to notice than a black
+rectangle. puka's present path had exactly this defect. This stack has now paid that bill three times
+(kashi glyph text, the coverage-blend colour, and puka), which is why the conversion lives here.
+
+⚠ **`sd_surface_pixel_at` documents itself as returning "0x00RRGGBB (alpha dropped)"**, so no test
+written against it can ever catch a missing alpha byte. That is sadish's readback contract, not a bug
+— but it does mean the one defect that only manifests on iron is invisible to the readback every other
+test in this repo uses. `canvas_test` reads the raw 32-bit word instead.
+
+### Testing
+
+`programs/canvas_test.cyr` (37 checks). Mutation-tested: dropping the alpha byte, handing the callback
+the un-intersected clip, a blit that ignores its clip, and width-used-as-stride are each caught.
+
+## [0.9.8] - 2026-08-17 — the LIST paints its own selection
+
+### Fixed — ⛔ 0.9.7 OWNED THE SELECTION AND DREW NONE OF IT
+
+`DH_W_SEL` drove scrolling and nothing else. A consumer adopting LIST still had to set a background on
+the selected row itself — which is the hand-rolling the container was added to end. **crab found this
+the moment it ported**: its panes shed the truncation and the scroll arithmetic and kept
+`if (selected) { bg = accent }` completely untouched. A container that owns the selection must own how
+the selection LOOKS, or it has taken only half the job.
+
+`dh_draw_list_selection` now paints the selected row: **accent when the list holds focus, the muted
+line colour when it does not**.
+
+⛔ **THAT DISTINCTION IS THE POINT, NOT DECORATION.** Two panes both showing an accented row cannot
+answer *"which one do my arrow keys drive"* — the single question a two-pane file manager exists to
+make obvious. crab, puka and aethersafha's launcher had each written this rule separately.
+
+⚠ Drawn BEFORE the rows, so a row that keeps its own background paints over the highlight. That is
+deliberate — a row wanting to stay opaque when selected simply keeps its background — but it is also
+the trap for a porting consumer, and crab carries a mutation check for it.
+
+⚠ `dh_focus_within` matches the node **or any descendant**: a list containing a focused row is still
+the active list, and a highlight dropping to muted the moment focus entered a row would flicker on
+every interaction.
+
+### Added — a LIST takes keyboard focus
+
+`dh_widget_focusable` now accepts `LIST`. Arrow keys have to reach it and Tab has to be able to land on
+it; a scrollable list the keyboard cannot enter is a mouse-only control, which is the same class of
+failure as painted-but-inert seen from the input side.
+
+### Testing
+
+`list_test` grew to 65 checks. Mutation-tested: always-accent (loses the active-pane distinction),
+an unclipped selection (paints past the viewport), and a `dh_focus_within` that ignores descendants
+are each caught.
+
 ## [0.9.7] - 2026-08-17 — a scrolling list, an editable text field, and a painter that clips
 
 ### Fixed — ⛔ THE PAINTER IGNORED BOUNDS THE HIT-TEST HAS ALWAYS ENFORCED

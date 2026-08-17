@@ -62,6 +62,7 @@ include "src/widget.cyr"
 include "src/layout.cyr"
 include "src/list.cyr"        # LIST container policy — needs widget + layout state, no draw deps
 include "src/event.cyr"
+include "src/canvas.cyr"      # app-drawn CANVAS slot — needs widget state, no event deps
 include "src/textinput.cyr"   # editable TEXTINPUT buffer + caret — AFTER event.cyr, which owns DhKey
 include "src/theme.cyr"       # rupa theme tokens → sadish colours (before surface, which draws with them)
 include "src/surface.cyr"

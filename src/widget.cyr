@@ -38,6 +38,7 @@ enum DhWidgetKind {
     BUTTON    = 3;
     TEXTINPUT = 4;
     LIST      = 5;   # ⭐ 0.9.7 — a SCROLLING, SELECTABLE container. See list.cyr.
+    CANVAS    = 6;   # ⭐ 0.9.9 — APP-DRAWN content in a widget-tree slot. See canvas.cyr.
 }
 
 # Field offsets (bytes) into a DhWidget record.
@@ -82,8 +83,10 @@ enum DhWidgetField {
     DH_W_TEXT_CAP     = 216;   # buffer capacity in BYTES, including the NUL. 0 = not editable.
     DH_W_TEXT_LEN     = 224;   # bytes currently used, excluding the NUL
     DH_W_CARET        = 232;   # caret position as a BYTE offset into the buffer, 0..len
+    # ⭐ CANVAS DRAW CALLBACK (0.9.9) — `draw(wgt, sds, clx, cly, clw, clh)`, or 0.
+    DH_W_DRAW         = 240;
 }
-var DH_WIDGET_SIZE = 240;
+var DH_WIDGET_SIZE = 248;
 
 # ============================================================================================
 # ⭐⭐ MOTION — the app's half of "the compositor grants, apps override per widget"
@@ -168,6 +171,7 @@ fn dh_widget_new(kind): i64 {
     store64(wgt + DH_W_TEXT_CAP, 0);
     store64(wgt + DH_W_TEXT_LEN, 0);
     store64(wgt + DH_W_CARET, 0);
+    store64(wgt + DH_W_DRAW, 0);
     store64(wgt + DH_W_X, 0);
     store64(wgt + DH_W_Y, 0);
     store64(wgt + DH_W_W, 0);
@@ -299,6 +303,10 @@ fn dh_widget_focusable(wgt): i64 {
     var k = dh_widget_kind(wgt);
     if (k == BUTTON)    { return 1; }
     if (k == TEXTINPUT) { return 1; }
+    # ⭐ A LIST TAKES FOCUS (0.9.8). Arrow keys have to reach it, and Tab has to be able to land on
+    # it — a scrollable list the keyboard cannot enter is a mouse-only control, which is the
+    # accessibility failure that matches painted-but-inert on the input side.
+    if (k == LIST)      { return 1; }
     return 0;
 }
 

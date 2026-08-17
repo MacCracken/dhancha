@@ -154,6 +154,58 @@ fn main(): i64 {
     dh_fill_rect_clip(sds, 0, 30, 40, 10, 0x000000FF, 0, 0, 40, 10);
     check(sd_surface_pixel_at(sds, 5, 35), 0x00000000);
 
+    # ---- ⭐⭐ THE SELECTION IS PAINTED BY THE TOOLKIT (0.9.8) -------------------------------
+    # ⛔ 0.9.7 stored the selection and used it to scroll, and painted nothing — so a consumer still
+    # set a background on the selected row by hand, which is the hand-rolling LIST exists to end.
+    # ⚠ Pixel-level: "the container owns how the selection looks" is a claim about the screen.
+    var p = mk_list(4, 80);
+    var ps = sd_surface_new(60, 80);
+    dh_widget_set_bounds(p, 0, 0, 60, 80);
+    dh_layout_apply(p, 60, 80);
+    # Nothing selected -> no highlight anywhere.
+    dh_focus_set(0);
+    sd_clear(ps, 0x00000000);
+    dh_draw_widget(ps, p, 0, 0, 0, 60, 80);
+    check(sd_surface_pixel_at(ps, 30, 10), 0x00000000);
+    # Selected but NOT focused -> the muted line tint, not the accent.
+    dh_list_select(p, 1);                        # row 1 spans y 20..40
+    sd_clear(ps, 0x00000000);
+    dh_draw_widget(ps, p, 0, 0, 0, 60, 80);
+    check(sd_surface_pixel_at(ps, 30, 30), dh_theme_line());
+    check(sd_surface_pixel_at(ps, 30, 10), 0x00000000);   # ...and only that row
+    # Focused -> the accent. ⛔ Two panes both accented cannot answer "which one do my arrows drive".
+    dh_focus_set(p);
+    check(dh_focus_within(p), 1);
+    sd_clear(ps, 0x00000000);
+    dh_draw_widget(ps, p, 0, 0, 0, 60, 80);
+    check(sd_surface_pixel_at(ps, 30, 30), dh_theme_accent());
+    # Focus on a ROW still counts as the list being focused — it must not flicker to muted.
+    dh_focus_set(dh_list_row_at(p, 2));
+    check(dh_focus_within(p), 1);
+    sd_clear(ps, 0x00000000);
+    dh_draw_widget(ps, p, 0, 0, 0, 60, 80);
+    check(sd_surface_pixel_at(ps, 30, 30), dh_theme_accent());
+    # ⚠ A scrolled-away selection must not paint outside the viewport.
+    var q = mk_list(10, 60);                     # 200px content, 60px viewport
+    dh_focus_set(q);                             # ...focus THIS list, so its highlight is accented
+    dh_widget_set_bounds(q, 0, 0, 60, 60);
+    dh_list_select(q, 9);                        # the last row, far below
+    dh_list_scroll_to(q, 0);                     # ...but scrolled to the top
+    dh_layout_apply(q, 60, 60);
+    var qs = sd_surface_new(60, 200);
+    sd_clear(qs, 0x00000000);
+    dh_draw_widget(qs, q, 0, 0, 0, 60, 200);
+    check(sd_surface_pixel_at(qs, 30, 190), 0x00000000);  # row 9 is at y 180 — outside the list
+    # ...and scrolling it into view paints it.
+    dh_list_scroll_to_sel(q);
+    dh_layout_apply(q, 60, 60);
+    sd_clear(qs, 0x00000000);
+    dh_draw_widget(qs, q, 0, 0, 0, 60, 200);
+    check(sd_surface_pixel_at(qs, 30, 50), dh_theme_accent());
+
+    # ⭐ A LIST TAKES KEYBOARD FOCUS — a list Tab cannot reach is a mouse-only control.
+    check(dh_widget_focusable(p), 1);
+
     return g_fails;
 }
 

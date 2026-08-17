@@ -1,0 +1,170 @@
+# programs/canvas_test.cyr — RUN test for the CANVAS widget: the callback fires, it is handed the
+# CLIPPED rectangle, and the RGB24 blit sets the alpha byte.
+# Exit code = failed checks.
+#
+# ⚠ THE ALPHA CHECK IS THE ONE THAT MATTERS ON IRON. A blit that leaves byte 3 at zero looks correct
+# in every host-side PPM dump — the RGB is right — and renders as an additive over-bright ghost the
+# moment it reaches agnos's premultiplied `#92` op 0x01. It cannot be caught by eye off-target.
+
+include "src/lib.cyr"
+
+var g_fails = 0;
+var g_n = 0;
+
+fn check(got, want): i64 {
+    g_n = g_n + 1;
+    if (got == want) { return 0; }
+    g_fails = g_fails + 1;
+    return 1;
+}
+
+# Records what the callback was handed, so the test can assert on the CLIP rather than on pixels.
+var seen_calls = 0;
+var seen_x = 0;
+var seen_y = 0;
+var seen_w = 0;
+var seen_h = 0;
+
+# ⛔⛔ RAW pixel read, INCLUDING the alpha byte. `sd_surface_pixel_at` documents itself as returning
+# "0x00RRGGBB (alpha dropped)" — so NO test written against it can ever catch a missing alpha byte.
+# That is not a sadish bug; it is the readback contract. But it does mean the one defect that only
+# shows up on iron, as an additive over-bright ghost under `#92` op 0x01, is invisible to the readback
+# every other test in this repo uses. This helper exists so the alpha checks below are real.
+fn raw_px(sds, x, y): i64 {
+    var stride = sd_surface_width(sds);
+    return load32(sd_surface_pixels(sds) + (y * stride + x) * 4) & 0xFFFFFFFF;
+}
+
+fn probe_draw(wgt, sds, clx, cly, clw, clh): i64 {
+    seen_calls = seen_calls + 1;
+    seen_x = clx; seen_y = cly; seen_w = clw; seen_h = clh;
+    return 0;
+}
+
+# A canvas that paints its whole clip a flat colour — used to prove it cannot escape the box.
+fn fill_draw(wgt, sds, clx, cly, clw, clh): i64 {
+    sd_fill_rect(sds, clx, cly, clw, clh, 0x00FF0000);
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+
+    # ---- the callback fires, once, with the widget's own box -------------------------------
+    var c = dh_canvas_new(&probe_draw, 1234);
+    check(dh_widget_kind(c), CANVAS);
+    check(dh_widget_userdata(c), 1234);        # userdata round-trips, so no globals are needed
+    dh_widget_set_bounds(c, 10, 20, 30, 40);
+    var sds = sd_surface_new(200, 200);
+    dh_draw_widget(sds, c, 0, 0, 0, 200, 200);
+    check(seen_calls, 1);
+    check(seen_x, 10);
+    check(seen_y, 20);
+    check(seen_w, 30);
+    check(seen_h, 40);
+
+    # ---- ⛔ THE CLIP IS INTERSECTED, NOT PASSED THROUGH -------------------------------------
+    # A canvas half outside its allowed area must be told about the half it may paint, not the box
+    # it wishes it had. Without this a canvas inside a scrolled list paints over its neighbours.
+    seen_calls = 0;
+    dh_draw_widget(sds, c, 0, 0, 0, 25, 200);   # clip cuts the canvas at x = 25
+    check(seen_calls, 1);
+    check(seen_x, 10);
+    check(seen_w, 15);                          # 10..25, not 10..40
+    # Entirely outside -> the callback must NOT run at all, so an expensive renderer is skipped.
+    seen_calls = 0;
+    dh_draw_widget(sds, c, 0, 100, 100, 50, 50);
+    check(seen_calls, 0);
+    # A zero-size canvas is likewise skipped rather than called with a degenerate rect.
+    seen_calls = 0;
+    dh_widget_set_bounds(c, 10, 20, 0, 40);
+    dh_draw_widget(sds, c, 0, 0, 0, 200, 200);
+    check(seen_calls, 0);
+
+    # ---- a canvas cannot paint outside the box it was handed --------------------------------
+    var f = dh_canvas_new(&fill_draw, 0);
+    dh_widget_set_bounds(f, 20, 20, 40, 40);
+    sd_clear(sds, 0x00000000);
+    dh_draw_widget(sds, f, 0, 0, 0, 200, 200);
+    check(sd_surface_pixel_at(sds, 30, 30), 0x00FF0000);   # inside
+    check(sd_surface_pixel_at(sds, 10, 30), 0x00000000);   # left of it — untouched
+    check(sd_surface_pixel_at(sds, 70, 30), 0x00000000);   # right of it — untouched
+    # ...and nesting it inside a smaller parent narrows it further.
+    var box = dh_widget_new(BOX);
+    dh_widget_add_child(box, f);
+    dh_widget_set_bounds(box, 0, 0, 40, 200);
+    dh_widget_set_bounds(f, 20, 20, 40, 40);
+    sd_clear(sds, 0x00000000);
+    dh_draw_widget(sds, box, 0, 0, 0, 200, 200);
+    check(sd_surface_pixel_at(sds, 30, 30), 0x00FF0000);   # inside both
+    check(sd_surface_pixel_at(sds, 50, 30), 0x00000000);   # inside the canvas, OUTSIDE the parent
+
+    # ---- ⛔⛔ THE RGB24 BLIT SETS ALPHA 255 --------------------------------------------------
+    # 4x2 RGB24 source: row 0 pure red, row 1 pure green.
+    var src = alloc(4 * 2 * 3);
+    var i = 0;
+    while (i < 4) {
+        store8(src + i * 3, 255); store8(src + i * 3 + 1, 0); store8(src + i * 3 + 2, 0);
+        var o = (4 + i) * 3;
+        store8(src + o, 0); store8(src + o + 1, 255); store8(src + o + 2, 0);
+        i = i + 1;
+    }
+    var cv = dh_canvas_new(0, 0);
+    dh_widget_set_bounds(cv, 5, 5, 4, 2);
+    sd_clear(sds, 0x00000000);
+    # ⚠ READ the cleared value rather than assuming it. `sd_clear(0x00000000)` writes OPAQUE black
+    # (0xFF000000) — sadish sets the alpha byte on every write, which is the correct behaviour and
+    # the whole reason a missing alpha stands out. Hardcoding 0 here would make the "untouched"
+    # assertions test sadish's clear semantics instead of this blit's bounds.
+    var blank = raw_px(sds, 100, 100);
+    check(dh_canvas_blit_rgb24(cv, sds, src, 4, 2, 0, 0, 200, 200), 2);
+    # ⛔ The FULL word, alpha included. Comparing only the low 24 bits is exactly the check that
+    # would have passed while the desktop ghosted.
+    check(raw_px(sds, 5, 5), 0xFFFF0000);
+    check(raw_px(sds, 8, 5), 0xFFFF0000);
+    check(raw_px(sds, 5, 6), 0xFF00FF00);
+    check(raw_px(sds, 9, 5), blank);                       # one past the source width — untouched
+    check(raw_px(sds, 5, 7), blank);                       # one past its height — untouched
+
+    # A clipped blit copies only the visible part, and copies it from the RIGHT source pixels.
+    sd_clear(sds, 0x00000000);
+    dh_canvas_blit_rgb24(cv, sds, src, 4, 2, 0, 6, 200, 200);   # clip starts at y = 6
+    check(raw_px(sds, 5, 5), blank);                       # row 0 clipped away
+    check(raw_px(sds, 5, 6), 0xFF00FF00);                  # row 1 still lands, still green
+    # ⚠ NOT shifted up into row 0's place: the source row is chosen by SCREEN position, so a
+    # partially clipped canvas shows the correct slice of its content rather than the top of it.
+
+    # ---- ⭐⭐ dh_surface_wrap: the widget tree draws into a buffer the CALLER owns --------------
+    # ⛔ THE STRIDE IS THE WHOLE TEST. `sd_surface_new` makes width == stride, so every existing
+    # painter happens to be correct while using width where it means stride. A wrapped present
+    # buffer with PADDED rows is the case that separates them, and a width-as-stride bug there does
+    # not fail loudly — it shears the image progressively, one row of slip per scanline.
+    var pad_stride = 64;                       # a 40px-wide image in a 64px-per-row buffer
+    var own = alloc(pad_stride * 20 * 4);
+    var k = 0;
+    while (k < pad_stride * 20) { store32(own + k * 4, 0x11223344); k = k + 1; }
+    var wsurf = dh_surface_wrap(own, 40, 20, pad_stride);
+    check(sd_surface_width(wsurf), 40);
+    check(sd_surface_height(wsurf), 20);
+    check(sd_surface_pixels(wsurf), own);      # NOT copied — the caller's buffer IS the surface
+    check(sd_surface_stride(wsurf), pad_stride * 4);
+    # Blit the 4x2 source at (2,3) and read it back through the PADDED stride by hand.
+    var cw = dh_canvas_new(0, 0);
+    dh_widget_set_bounds(cw, 2, 3, 4, 2);
+    check(dh_canvas_blit_rgb24(cw, wsurf, src, 4, 2, 0, 0, 40, 20), 2);
+    check(load32(own + (3 * pad_stride + 2) * 4) & 0xFFFFFFFF, 0xFFFF0000);   # row 0 -> red
+    check(load32(own + (4 * pad_stride + 2) * 4) & 0xFFFFFFFF, 0xFF00FF00);   # row 1 -> green
+    # ⛔ THE SHEAR CHECK: had the blit used width (40) as the stride, row 1 would have landed 24
+    # pixels early — inside row 0's padding — and this cell would still hold the fill pattern.
+    check(load32(own + (4 * pad_stride + 2) * 4) & 0xFFFFFFFF != 0x11223344, 1);
+    check(load32(own + (3 * pad_stride + 40) * 4) & 0xFFFFFFFF, 0x11223344);  # padding untouched
+    # A wrap over a null buffer or a degenerate size refuses rather than handing back a live header.
+    check(dh_surface_wrap(0, 10, 10, 10), 0);
+    check(dh_surface_wrap(own, 0, 10, 10), 0);
+    check(dh_surface_wrap(own, 10, 0 - 1, 10), 0);
+
+    return g_fails;
+}
+
+var rc = main();
+syscall(60, rc);

@@ -1,0 +1,144 @@
+# @public — dhancha CANVAS: a widget-tree slot the APP draws into itself.
+# canvas.cyr — the escape hatch, and the reason it is a small one.
+#
+# ⭐⭐ WHY A TOOLKIT NEEDS THIS. Not every surface decomposes into widgets. puka's terminal grid is
+# 80×24 cells with per-cell foreground, background, attributes, wide-glyph spacers and a cursor,
+# repainted by a DIRTY-ROW scanner that touches only the lines that changed. Expressing that as ~1920
+# widgets would cost more memory than the terminal's entire scrollback and would throw away the damage
+# tracking that makes a keystroke echo repaint sixteen scanlines instead of the screen. The answer
+# every real toolkit reaches is the same one: give the app a rectangle and let it paint.
+#
+# ⛔ AND IT IS DELIBERATELY NARROW. A CANVAS gets its BOX and the CLIP, and nothing else — no access
+# to siblings, no way to widen the clip it was handed, no say in layout beyond the pref size every
+# widget already has. An escape hatch that can reach outside its rectangle is not a hatch, it is a
+# hole: the whole value of putting app-drawn content in the tree is that layout, clipping and
+# hit-testing keep applying to it.
+#
+# ⚠ THE CALLBACK RECEIVES THE CLIP AND MUST HONOUR IT. `dh_draw_widget` cannot clip pixels it did not
+# write, so a canvas that ignores its clip box paints over its neighbours and there is nothing the
+# toolkit can do about it. Use `dh_canvas_clip_rect` below rather than intersecting by hand.
+
+# @public — an SdSurface header pointing at pixels the CALLER owns (BGRA/XRGB8888, `stride_px`
+# pixels per row). Nothing is copied and nothing is freed; the caller's buffer IS the surface.
+#
+# ⭐⭐ WHY THIS EXISTS, AND WHY IT IS THE DIFFERENCE BETWEEN A PORT AND A REGRESSION. An app with its
+# own present buffer — puka hands one back from `win_present_begin` — would otherwise have to render
+# the widget tree into a dhancha-allocated surface and then copy the whole thing into that buffer,
+# every frame. For an 80×24 terminal at 8×16 cells that is a second full-frame copy on every
+# keystroke, so adopting the toolkit would have made the app measurably slower. Wrapping instead
+# means the widget tree draws straight into the buffer the compositor is going to read.
+#
+# ⚠ IT USES sadish's OWN `SD_SURFACE_*` OFFSETS, not hardcoded numbers. The layout is sadish's to
+# change; borrowing its published constants means a change there is a rebuild here, not a silent
+# mis-write into a caller's framebuffer.
+# ⛔ THE CALLER OWNS THE MEMORY AND ITS LIFETIME. A wrapped surface must not outlive the buffer —
+# `win_present_begin` hands back a pointer valid until commit, so wrap it per frame rather than
+# caching one across frames.
+fn dh_surface_wrap(pixels, w, h, stride_px): i64 {
+    if (pixels == 0) { return 0; }
+    if (w <= 0) { return 0; }
+    if (h <= 0) { return 0; }
+    var s = alloc(SD_SURFACE_SIZE);
+    if (s == 0) { return 0; }
+    store64(s + SD_SURFACE_WIDTH_OFFSET, w);
+    store64(s + SD_SURFACE_HEIGHT_OFFSET, h);
+    store64(s + SD_SURFACE_PIXELS_OFFSET, pixels);
+    store64(s + SD_SURFACE_STRIDE_OFFSET, stride_px * 4);
+    return s;
+}
+
+# @public — a CANVAS whose `draw(wgt, sds, clx, cly, clw, clh)` paints its contents.
+# `userdata` is handed back through `dh_widget_userdata(wgt)`; the callback gets the widget, so it
+# needs no globals of its own.
+fn dh_canvas_new(draw_fn, userdata): i64 {
+    var w = dh_widget_new(DhWidgetKind.CANVAS);
+    store64(w + DH_W_DRAW, draw_fn);
+    store64(w + DH_W_USERDATA, userdata);
+    return w;
+}
+
+fn dh_canvas_draw_fn(w): i64 { if (w == 0) { return 0; } return load64(w + DH_W_DRAW); }
+
+# @public — replace the draw callback (0 disables painting; the widget still lays out and hit-tests).
+fn dh_canvas_set_draw(w, draw_fn): i64 {
+    if (w == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    store64(w + DH_W_DRAW, draw_fn);
+    return DHANCHA_OK;
+}
+
+# @public — intersect the widget's box with the clip it was handed, writing x/y/w/h into `out`
+# (four i64 slots). -> 1 if anything is visible, 0 if the canvas is entirely clipped away.
+#
+# ⚠ THE CALLBACK'S FIRST CALL SHOULD BE THIS. Painting relative to the widget's own x/y while
+# ignoring the clip is the natural mistake — it looks right until the canvas is inside a scrolled
+# list or a window smaller than its content, at which point it paints over whatever is beside it.
+# Returning 0 for "nothing visible" also lets an expensive renderer skip its work entirely.
+fn dh_canvas_clip_rect(wgt, clx, cly, clw, clh, out): i64 {
+    if (wgt == 0) { return 0; }
+    var x0 = dh_widget_x(wgt);
+    var y0 = dh_widget_y(wgt);
+    var x1 = x0 + dh_widget_w(wgt);
+    var y1 = y0 + dh_widget_h(wgt);
+    if (x0 < clx) { x0 = clx; }
+    if (y0 < cly) { y0 = cly; }
+    if (x1 > clx + clw) { x1 = clx + clw; }
+    if (y1 > cly + clh) { y1 = cly + clh; }
+    if (x1 <= x0) { return 0; }
+    if (y1 <= y0) { return 0; }
+    store64(out, x0);
+    store64(out + 8, y0);
+    store64(out + 16, x1 - x0);
+    store64(out + 24, y1 - y0);
+    return 1;
+}
+
+# @public — blit a packed RGB24 source (`sw` × `sh`, rows contiguous) into `sds` at the canvas's
+# origin, clipped. -> rows written.
+#
+# ⛔⛔ THE ALPHA BYTE IS SET TO 255 AND THAT IS LOAD-BEARING, NOT TIDINESS. An RGB24 source has no
+# alpha, so the obvious pack — `(r << 16) | (g << 8) | b` — leaves byte 3 at ZERO. Harmless while
+# nothing reads it; under agnos's `gpu_shader_op #92` op 0x01, which is premultiplied src-over
+# (`out = src + dst * (1 - src_a)`), an alpha of 0 makes the term collapse to `out = src + dst`.
+# The content does not vanish — it renders as an ADDITIVE OVER-BRIGHT GHOST of itself composited
+# onto whatever is behind it, which is far harder to notice and to diagnose than a black rectangle.
+# ⚠ This stack has now paid that bill twice (kashi glyph text, and the coverage-blend colour), which
+# is why the conversion lives HERE rather than in each app that owns an RGB buffer.
+fn dh_canvas_blit_rgb24(wgt, sds, src, sw, sh, clx, cly, clw, clh): i64 {
+    var r4 = alloc(32);
+    if (dh_canvas_clip_rect(wgt, clx, cly, clw, clh, r4) == 0) { return 0; }
+    var dx = load64(r4);
+    var dy = load64(r4 + 8);
+    var dw = load64(r4 + 16);
+    var dh2 = load64(r4 + 24);
+    var wx = dh_widget_x(wgt);
+    var wy = dh_widget_y(wgt);
+    var dst = sd_surface_pixels(sds);
+    # ⚠ THE REAL STRIDE, not the width. They are equal for `sd_surface_new`, and they are NOT for a
+    # `dh_surface_wrap` over a present buffer whose rows are padded — where using the width would
+    # skew every row progressively and shear the image.
+    var stride = sd_surface_stride(sds) / 4;
+    var rows = 0;
+    var y = 0;
+    while (y < dh2) {
+        var syy = (dy + y) - wy;                 # source row, relative to the widget's own origin
+        if (syy >= 0) {
+            if (syy < sh) {
+                var x = 0;
+                while (x < dw) {
+                    var sxx = (dx + x) - wx;
+                    if (sxx >= 0) {
+                        if (sxx < sw) {
+                            var sp = (syy * sw + sxx) * 3;
+                            var px = (load8(src + sp) << 16) | (load8(src + sp + 1) << 8) | load8(src + sp + 2);
+                            store32(dst + ((dy + y) * stride + (dx + x)) * 4, px | 0xFF000000);
+                        }
+                    }
+                    x = x + 1;
+                }
+                rows = rows + 1;
+            }
+        }
+        y = y + 1;
+    }
+    return rows;
+}

@@ -37,6 +37,7 @@ enum DhWidgetKind {
     LABEL     = 2;
     BUTTON    = 3;
     TEXTINPUT = 4;
+    LIST      = 5;   # ⭐ 0.9.7 — a SCROLLING, SELECTABLE container. See list.cyr.
 }
 
 # Field offsets (bytes) into a DhWidget record.
@@ -70,8 +71,19 @@ enum DhWidgetField {
     DH_W_MO_ROLE      = 176;   # RupaMotion role this widget moves with (default RU_MO_QUICK)
     DH_W_MO_MS        = 184;   # requested duration override, 0 = none (take the grant)
     DH_W_MO_EASE      = 192;   # requested easing override, -1 = none
+    # ⭐ SCROLL + SELECTION (0.9.7). On ANY container, not just LIST — a scrolled BOX is the same
+    # arithmetic, and gating it on kind would mean a second code path for "a box that happens to
+    # scroll". `list.cyr` adds the policy (clamping, keep-selected-visible); these are just the state.
+    DH_W_SCROLL_Y     = 200;   # px this container's content is shifted UP by. >= 0. 0 = at the top.
+    DH_W_SEL          = 208;   # selected child index, or -1 = nothing selected
+    # ⭐ EDITABLE TEXT (0.9.7). The buffer itself is `DH_W_TEXT` — the SAME field a LABEL uses — so
+    # the existing draw path renders a TEXTINPUT's contents with no new painting code. These three
+    # are what make it editable rather than static.
+    DH_W_TEXT_CAP     = 216;   # buffer capacity in BYTES, including the NUL. 0 = not editable.
+    DH_W_TEXT_LEN     = 224;   # bytes currently used, excluding the NUL
+    DH_W_CARET        = 232;   # caret position as a BYTE offset into the buffer, 0..len
 }
-var DH_WIDGET_SIZE = 200;
+var DH_WIDGET_SIZE = 240;
 
 # ============================================================================================
 # ⭐⭐ MOTION — the app's half of "the compositor grants, apps override per widget"
@@ -148,6 +160,14 @@ fn dh_widget_new(kind): i64 {
     store64(wgt + DH_W_MO_ROLE, RupaMotion.RU_MO_QUICK);
     store64(wgt + DH_W_MO_MS, 0);
     store64(wgt + DH_W_MO_EASE, 0 - 1);
+    # ⛔ AND `DH_W_SEL` IS THE SAME TRAP AS THE EASE ABOVE: 0 is a VALID selection (the first child),
+    # so a zeroed field would mean every list in the system boots with row 0 highlighted and a
+    # `dh_list_selected` that lies about the operator having chosen anything. -1 is "nothing selected".
+    store64(wgt + DH_W_SEL, 0 - 1);
+    store64(wgt + DH_W_SCROLL_Y, 0);
+    store64(wgt + DH_W_TEXT_CAP, 0);
+    store64(wgt + DH_W_TEXT_LEN, 0);
+    store64(wgt + DH_W_CARET, 0);
     store64(wgt + DH_W_X, 0);
     store64(wgt + DH_W_Y, 0);
     store64(wgt + DH_W_W, 0);
@@ -333,6 +353,27 @@ fn dh_widget_flex(wgt): i64    { return load64(wgt + DH_W_FLEX); }
 fn dh_widget_padding(wgt): i64 { return load64(wgt + DH_W_PAD); }
 fn dh_widget_gap(wgt): i64     { return load64(wgt + DH_W_GAP); }
 fn dh_widget_align(wgt): i64   { return load64(wgt + DH_W_ALIGN); }
+
+# Is screen point (px, py) inside this widget's box? The half-open convention (x <= p < x + w) is
+# the same one `dh_hit_test` and the painter's clip use — three places agreeing that a widget owns
+# its top-left edge and not its bottom-right is what stops a 1px seam between adjacent widgets
+# from being either dead or claimed twice.
+fn dh_widget_contains(wgt, px, py): i64 {
+    if (wgt == 0) { return 0; }
+    var x = load64(wgt + DH_W_X);
+    var y = load64(wgt + DH_W_Y);
+    if (px < x) { return 0; }
+    if (py < y) { return 0; }
+    if (px >= x + load64(wgt + DH_W_W)) { return 0; }
+    if (py >= y + load64(wgt + DH_W_H)) { return 0; }
+    return 1;
+}
+
+# ⚠ RAW STATE ACCESSORS — no clamping. A caller that wants "scroll, but not past the end" wants
+# `dh_list_scroll_to` in list.cyr, which knows the content height. This pair exists because layout
+# and draw need the stored number, and a clamping getter would make them depend on the policy layer.
+fn dh_widget_scroll_y(wgt): i64 { if (wgt == 0) { return 0; } return load64(wgt + DH_W_SCROLL_Y); }
+fn dh_widget_sel(wgt): i64      { if (wgt == 0) { return 0 - 1; } return load64(wgt + DH_W_SEL); }
 
 # Flex weight: 0 = fixed (takes its pref main-axis size); > 0 = flexible
 # (grows to share the container's leftover main-axis space by weight).

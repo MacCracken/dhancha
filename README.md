@@ -63,6 +63,12 @@ compositor composites onto the screen over the native display protocol.
   containers: flex grow/shrink, padding, gap, and cross-axis alignment, plus
   intrinsic measure (`dh_measure` / `dh_layout_fit`) that sizes a container to
   its content. RUN-tested (`layout_test`).
+- **v0.9.7 — the two containers apps were hand-rolling (shipped).** `LIST` — a scrolling,
+  selectable container (`src/list.cyr`), with the scroll offset applied at **layout** time so
+  hit-testing needs no knowledge of scrolling — and an editable `TEXTINPUT` (`src/textinput.cyr`)
+  with a UTF-8 buffer and a caret that steps whole characters. The painter now **clips** to each
+  widget's box, closing a standing disagreement in which `dh_hit_test` rejected points outside a
+  widget while `dh_draw_widget` happily drew there. RUN-tested (`list_test`, `textinput_test`).
 - **v0.6+ — next.** The compositor-fd input source (decode the native display
   protocol's input wire bytes into events + block on its transport), real hmtx
   text advances, and the present path (CPU buffer submit over the native

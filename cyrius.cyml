@@ -40,7 +40,13 @@ modules = [
     "src/error.cyr",
     "src/widget.cyr",
     "src/layout.cyr",
+    "src/list.cyr",
     "src/event.cyr",
+    # ⚠ AFTER event.cyr — textinput.cyr reads `DhKey`, which event.cyr declares. The fold is a
+    # concatenation, so a module using another's enum must follow it. `cyrius distlib` reports this
+    # as an undefined-function warning on `dh_text_char_index` (surface.cyr's caret call), not as an
+    # ordering error, which is a confusing way to learn it.
+    "src/textinput.cyr",
     "src/theme.cyr",
     "src/surface.cyr",
     "src/setu_client.cyr",

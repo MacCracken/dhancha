@@ -1,0 +1,273 @@
+# programs/textinput_test.cyr — RUN test for the editable TEXTINPUT: insertion, the caret,
+# deletion, UTF-8 boundary handling, and what the key handler refuses to consume.
+# Exit code = failed checks.
+#
+# ⚠ THE UTF-8 CASES ARE NOT DECORATION. A caret stored as a byte offset that steps by one byte
+# lands INSIDE a multi-byte character, and the backspace that follows leaves a half-encoded
+# sequence in the buffer — a corruption that renders as a garbage glyph and cannot be deleted by
+# the operator, because the caret can no longer find a character boundary either side of it.
+
+include "src/lib.cyr"
+
+var g_fails = 0;
+var g_n = 0;
+
+fn check(got, want): i64 {
+    g_n = g_n + 1;
+    if (got == want) { return 0; }
+    g_fails = g_fails + 1;
+    return 1;
+}
+
+# Compare the field's buffer against a cstring.
+fn check_str(w, want): i64 {
+    var buf = dh_widget_text(w);
+    var i = 0;
+    while (load8(want + i) != 0) {
+        if (load8(buf + i) != load8(want + i)) { return check(0, 1); }
+        i = i + 1;
+    }
+    return check(load8(buf + i), 0);           # must be NUL-terminated at exactly that length
+}
+
+# An app handler that claims one key for itself — stands in for a window shortcut like Ctrl+S.
+fn eat_z(wgt, ev): i64 {
+    if (dh_event_kind(ev) == KEY) {
+        if (dh_event_a(ev) == 122) { return 1; }     # 'z' — consumed by the app
+    }
+    return 0;
+}
+
+fn type_str(w, s): i64 {
+    var i = 0;
+    while (load8(s + i) != 0) {
+        dh_text_key(w, load8(s + i));
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn main(): i64 {
+    alloc_init();
+
+    # ---- a fresh field is empty and editable ----------------------------------------------
+    var t = dh_text_new(32);
+    check(dh_text_editable(t), 1);
+    check(dh_text_len(t), 0);
+    check(dh_text_caret(t), 0);
+    check_str(t, "");
+    # ⛔ A LABEL IS NOT EDITABLE and every entry point must refuse it rather than scribble on a
+    # cstring it does not own — `dh_widget_text` on a LABEL is often a string LITERAL.
+    var lbl = dh_widget_new(LABEL);
+    check(dh_text_editable(lbl), 0);
+    check(dh_text_insert(lbl, 65), 0);
+    check(dh_text_backspace(lbl), 0);
+    check(dh_text_key(lbl, 65), 0);
+
+    # ---- typing ---------------------------------------------------------------------------
+    type_str(t, "hello");
+    check(dh_text_len(t), 5);
+    check(dh_text_caret(t), 5);
+    check_str(t, "hello");
+
+    # ---- the caret inserts where it IS, not at the end --------------------------------------
+    dh_text_home(t);
+    check(dh_text_caret(t), 0);
+    type_str(t, "say ");
+    check_str(t, "say hello");
+    check(dh_text_caret(t), 4);
+    dh_text_end(t);
+    check(dh_text_caret(t), 9);
+
+    # ---- backspace and delete are not the same key -----------------------------------------
+    dh_text_key(t, DH_KEY_BACKSPACE);
+    check_str(t, "say hell");
+    dh_text_home(t);
+    dh_text_key(t, DH_KEY_BACKSPACE);            # at the start: nothing to delete, no underflow
+    check_str(t, "say hell");
+    check(dh_text_caret(t), 0);
+    dh_text_key(t, DH_KEY_DELETE);               # deletes FORWARD from the caret
+    check_str(t, "ay hell");
+    check(dh_text_caret(t), 0);
+    dh_text_end(t);
+    dh_text_key(t, DH_KEY_DELETE);               # at the end: nothing forward, no overrun
+    check_str(t, "ay hell");
+
+    # ---- arrows move, and stop at the ends --------------------------------------------------
+    dh_text_home(t);
+    check(dh_text_key(t, DH_KEY_LEFT), 1);       # consumed even though it cannot move
+    check(dh_text_caret(t), 0);
+    dh_text_key(t, DH_KEY_RIGHT);
+    check(dh_text_caret(t), 1);
+    dh_text_end(t);
+    dh_text_key(t, DH_KEY_RIGHT);
+    check(dh_text_caret(t), 7);
+
+    # ---- ⛔ UTF-8: the caret steps CHARACTERS, never into the middle of one -----------------
+    var u = dh_text_new(32);
+    dh_text_insert(u, 0x00E9);                   # é  — 2 bytes
+    dh_text_insert(u, 0x4E2D);                   # 中 — 3 bytes
+    dh_text_insert(u, 0x1F600);                  # 😀 — 4 bytes
+    check(dh_text_len(u), 9);
+    check(dh_text_caret(u), 9);
+    # Left three times must land on 0 exactly — one character at a time, not one byte.
+    dh_text_caret_move(u, 0 - 1);
+    check(dh_text_caret(u), 5);                  # before the emoji
+    dh_text_caret_move(u, 0 - 1);
+    check(dh_text_caret(u), 2);                  # before 中
+    dh_text_caret_move(u, 0 - 1);
+    check(dh_text_caret(u), 0);
+    dh_text_caret_move(u, 0 - 1);
+    check(dh_text_caret(u), 0);                  # clamped, not negative
+    # ...and back the other way.
+    dh_text_caret_move(u, 2);
+    check(dh_text_caret(u), 5);
+    dh_text_caret_move(u, 9);
+    check(dh_text_caret(u), 9);                  # clamped at the end
+    # Backspace removes a WHOLE character (4 bytes for the emoji), never one byte of it.
+    dh_text_backspace(u);
+    check(dh_text_len(u), 5);
+    dh_text_backspace(u);
+    check(dh_text_len(u), 2);
+    dh_text_backspace(u);
+    check(dh_text_len(u), 0);
+    check(dh_text_caret(u), 0);
+    # And Delete does the same forward.
+    dh_text_insert(u, 0x4E2D);
+    dh_text_home(u);
+    check(dh_text_delete(u), 3);
+    check(dh_text_len(u), 0);
+
+    # The caret's CHARACTER index is what the painter needs, and it is not the byte offset.
+    var ci = dh_text_new(32);
+    dh_text_insert(ci, 0x00E9);
+    dh_text_insert(ci, 65);
+    check(dh_text_caret(ci), 3);                 # 2 bytes + 1
+    check(dh_text_char_index(ci, dh_text_caret(ci)), 2);   # ...but only 2 glyph cells
+
+    # ---- ⛔ a full buffer REFUSES rather than truncating a sequence -------------------------
+    var f = dh_text_new(4);                      # 3 usable bytes + NUL
+    check(dh_text_insert(f, 65), 1);
+    check(dh_text_insert(f, 66), 1);
+    check(dh_text_insert(f, 67), 1);
+    check(dh_text_insert(f, 68), 0);             # full
+    check(dh_text_len(f), 3);
+    check_str(f, "ABC");
+    # A 3-byte character into a field with 2 bytes free is refused ENTIRELY — no partial write.
+    var f2 = dh_text_new(4);
+    dh_text_insert(f2, 65);
+    check(dh_text_insert(f2, 0x4E2D), 0);
+    check(dh_text_len(f2), 1);
+    check_str(f2, "A");
+    # ⚠ And the key handler reports NOT-CONSUMED on a full buffer, so a caller can react.
+    check(dh_text_key(f, 68), 0);
+
+    # ---- refusals: surrogates and control codes never enter the buffer ----------------------
+    var r = dh_text_new(32);
+    check(dh_text_utf8_len(0xD800), 0);          # a lone surrogate is not a scalar value
+    check(dh_text_insert(r, 0xD800), 0);
+    check(dh_text_insert(r, 0x110000), 0);       # past the Unicode maximum
+    check(dh_text_key(r, 1), 0);                 # a Ctrl chord arriving as a C0 control
+    check(dh_text_key(r, 127), 0);
+    check(dh_text_key(r, DH_KEY_UP), 0);         # a named key this widget has no use for
+    check(dh_text_len(r), 0);
+    # ⛔ AND THE KEYS THAT MUST ESCAPE THE FIELD. Consuming these traps the operator inside it.
+    check(dh_text_key(r, DH_KEY_TAB), 0);
+    check(dh_text_key(r, DH_KEY_ENTER), 0);
+    check(dh_text_key(r, DH_KEY_RETURN), 0);
+    check(dh_text_len(r), 0);
+    # A space IS text, and must not be mistaken for the activation key that shares its code.
+    check(dh_text_key(r, DH_KEY_SPACE), 1);
+    check(dh_text_len(r), 1);
+
+    # ---- set / clear ------------------------------------------------------------------------
+    var s = dh_text_new(32);
+    check(dh_text_set(s, "preset"), 6);
+    check_str(s, "preset");
+    check(dh_text_caret(s), 6);
+    dh_text_clear(s);
+    check(dh_text_len(s), 0);
+    check_str(s, "");
+    # ⚠ Truncation lands on a character boundary: 中中 is 6 bytes into a 4-byte field -> one char.
+    var s2 = dh_text_new(5);                     # 4 usable bytes
+    check(dh_text_set(s2, "中中"), 3);
+    check(dh_text_len(s2), 3);
+
+    # ---- the caret is drawn ONLY on the focused field ----------------------------------------
+    # ⚠ Pixel-level, because "the caret exists" is a property of the screen, not of a field. The
+    # column is x+3 + 2*9 = 21 for a 2-character field in the 9px system-font grid.
+    var fw = dh_text_new(32);
+    dh_widget_set_bounds(fw, 0, 0, 60, 20);
+    type_str(fw, "ab");
+    var sds = sd_surface_new(60, 20);
+    sd_clear(sds, 0x00000000);
+    dh_focus_set(0);
+    dh_draw_widget(sds, fw, 0, 0, 0, 60, 20);
+    var unfocused = sd_surface_pixel_at(sds, 21, 10);
+    sd_clear(sds, 0x00000000);
+    dh_focus_set(fw);
+    dh_draw_widget(sds, fw, 0, 0, 0, 60, 20);
+    var focused = sd_surface_pixel_at(sds, 21, 10);
+    check(unfocused, 0x00000000);                # no focus -> no caret
+    check(focused != 0x00000000, 1);             # focused -> a caret stands at the column
+
+    # ---- ⭐⭐ END TO END: a key through the REAL dispatcher reaches the buffer ---------------
+    # ⛔ EVERY CHECK ABOVE CALLS `dh_text_key` DIRECTLY, and all of them would still pass if the
+    # event dispatcher never called it — which is precisely the "the machinery exists and nothing
+    # consumes it" failure this whole change is closing. This block is the only one that proves the
+    # field is wired to the keyboard.
+    var win = dh_widget_new(WINDOW);
+    var fld = dh_text_new(32);
+    dh_widget_add_child(win, fld);
+    # ⚠ A SECOND focusable widget, so Tab traversal has somewhere to go. With one focusable child
+    # the cycle returns to it and "focus moved" is vacuously false — the assertion below would be
+    # testing the arity of the window rather than the traversal.
+    var btn = dh_widget_new(BUTTON);
+    dh_widget_add_child(win, btn);
+    dh_widget_set_bounds(win, 0, 0, 100, 40);
+    dh_widget_set_bounds(fld, 0, 0, 100, 20);
+    dh_widget_set_bounds(btn, 0, 20, 100, 20);
+    dh_focus_set(fld);
+    var ev = dh_event_new(KEY);
+    store64(ev + DH_E_A, 104);                   # 'h'
+    dh_dispatch(win, ev);
+    check(dh_text_len(fld), 1);
+    check(dh_event_consumed(ev), 1);             # ...and the field claims the key
+    # ⛔ TAB NEVER REACHES THE FIELD AT ALL — `dh_dispatch` intercepts it for focus traversal
+    # before routing, and consumes it there. So the field's own "do not swallow Tab" rule is a
+    # second line of defence rather than the mechanism; what matters here is that the operator can
+    # still leave the field with the keyboard, and that no tab character lands in the buffer.
+    var before = dh_focus_get();
+    var ev2 = dh_event_new(KEY);
+    store64(ev2 + DH_E_A, DH_KEY_TAB);
+    dh_dispatch(win, ev2);
+    check(dh_text_len(fld), 1);                  # nothing typed
+    check(dh_event_consumed(ev2), 1);            # claimed by traversal, not by the field
+    check(dh_focus_get() != before, 1);          # ...and focus actually moved
+
+    # ---- ⛔ AN APP HANDLER THAT CLAIMED THE KEY BEATS THE FIELD -----------------------------
+    # The reason the edit step sits AFTER `dh_propagate` instead of before it. A window shortcut
+    # must not also type its letter into whatever field has focus: the app sees a working
+    # shortcut, the operator sees junk accumulating, and nothing connects the two.
+    var win2 = dh_widget_new(WINDOW);
+    var fld2 = dh_text_new(32);
+    dh_widget_add_child(win2, fld2);
+    dh_widget_set_bounds(win2, 0, 0, 100, 40);
+    dh_widget_set_bounds(fld2, 0, 0, 100, 20);
+    dh_widget_set_handler(fld2, &eat_z);
+    dh_focus_set(fld2);
+    var evz = dh_event_new(KEY);
+    store64(evz + DH_E_A, 122);                  # 'z' — the app's shortcut
+    dh_dispatch(win2, evz);
+    check(dh_text_len(fld2), 0);                 # NOT typed — the handler already claimed it
+    # ...while an unclaimed key on the very same field still types, so the guard is not just "off".
+    var evy = dh_event_new(KEY);
+    store64(evy + DH_E_A, 121);                  # 'y'
+    dh_dispatch(win2, evy);
+    check(dh_text_len(fld2), 1);
+
+    return g_fails;
+}
+
+var rc = main();
+syscall(60, rc);

@@ -211,6 +211,16 @@ fn dh_layout_box(wgt, x, y, w, h, vertical): i64 {
     # pass 2: place children along the main axis
     var pos = cy;
     if (vertical == 0) { pos = cx; }
+    # ⭐ SCROLL (0.9.7). The offset shifts the CONTENT, and it is applied here — at placement — rather
+    # than at draw time, so a scrolled child's `x/y` are its REAL on-screen coordinates. That is what
+    # lets hit-testing keep working with no knowledge of scrolling at all: `dh_hit_test` compares the
+    # pointer against the same bounds the painter used. A draw-time-only offset would have moved the
+    # pixels and left the clickable regions behind — painted-but-inert rows, the failure this whole
+    # container exists to avoid.
+    # ⚠ VERTICAL ONLY, deliberately. Subtracting it in a row would be a HORIZONTAL scroll wearing a
+    # field named `scroll_y` — a silent lie to anyone reading the call site. Horizontal scrolling is
+    # not implemented; when it is, it gets its own field rather than a reinterpretation of this one.
+    if (vertical == 1) { pos = pos - dh_widget_scroll_y(wgt); }
     var flex_used = 0;
     var flex_seen = 0;
     child = dh_widget_first_child(wgt);

@@ -1,0 +1,290 @@
+# @public — dhancha TEXTINPUT: an editable single-line text field.
+# textinput.cyr — the buffer, the caret, and the key semantics behind DhWidgetKind.TEXTINPUT.
+#
+# ⭐ BEFORE 0.9.7 `TEXTINPUT` WAS A KIND AND A FOCUSABILITY RULE AND NOTHING ELSE. It could be
+# built, focused, Tab-cycled to, drawn — and it could not be typed into, because there was no
+# buffer for a character to go into. A focusable field that accepts no input is the painted-but-
+# inert failure in its purest form: every affordance present, the function absent.
+#
+# ⛔ THE BUFFER IS `DH_W_TEXT` — the same field a LABEL draws from. That is deliberate and it is
+# most of the reason this file is short: the painter already knows how to render that pointer, so
+# an edited field shows its new contents with zero new drawing code, and there is exactly one
+# answer to "what does this widget say" rather than a display string and an edit string that drift.
+#
+# ⚠ UTF-8 THROUGHOUT, and the caret is a BYTE offset. Movement and deletion step over whole
+# sequences (see `dh_text__prev` / `dh_text__next`), so a caret can never land inside a character
+# and a backspace can never leave a half-encoded byte behind. A codepoint-index caret would have
+# been simpler to reason about and would have made every draw and edit an O(n) rescan.
+
+# UTF-8 continuation bytes are 0b10xxxxxx. A byte is a character START if it is anything else.
+fn dh_text__is_cont(b): i64 {
+    if ((b & 0xC0) == 0x80) { return 1; }
+    return 0;
+}
+
+# Byte offset of the character START before `at`. -> `at` unchanged when already at 0.
+fn dh_text__prev(buf, at): i64 {
+    var i = at;
+    if (i <= 0) { return 0; }
+    i = i - 1;
+    while (i > 0) {
+        if (dh_text__is_cont(load8(buf + i)) == 0) { return i; }
+        i = i - 1;
+    }
+    return 0;
+}
+
+# Byte offset of the character START after `at`. -> `len` when already at the end.
+fn dh_text__next(buf, at, len): i64 {
+    var i = at;
+    if (i >= len) { return len; }
+    i = i + 1;
+    while (i < len) {
+        if (dh_text__is_cont(load8(buf + i)) == 0) { return i; }
+        i = i + 1;
+    }
+    return len;
+}
+
+# How many bytes `cp` needs in UTF-8. -> 0 for a value that is not a legal scalar.
+# ⛔ SURROGATES (D800..DFFF) ARE REFUSED. They are not scalar values; encoding one produces CESU-8,
+# which every decoder downstream is entitled to reject — and the place it would surface is a
+# rendering glitch three components away, not here.
+fn dh_text_utf8_len(cp): i64 {
+    if (cp < 0) { return 0; }
+    if (cp < 0x80) { return 1; }
+    if (cp < 0x800) { return 2; }
+    if (cp >= 0xD800) { if (cp <= 0xDFFF) { return 0; } }
+    if (cp < 0x10000) { return 3; }
+    if (cp <= 0x10FFFF) { return 4; }
+    return 0;
+}
+
+# Encode `cp` into `buf` at `at`. -> bytes written (caller has already checked the room).
+fn dh_text__encode(buf, at, cp): i64 {
+    var n = dh_text_utf8_len(cp);
+    if (n == 1) {
+        store8(buf + at, cp);
+        return 1;
+    }
+    if (n == 2) {
+        store8(buf + at, 0xC0 | (cp >> 6));
+        store8(buf + at + 1, 0x80 | (cp & 0x3F));
+        return 2;
+    }
+    if (n == 3) {
+        store8(buf + at, 0xE0 | (cp >> 12));
+        store8(buf + at + 1, 0x80 | ((cp >> 6) & 0x3F));
+        store8(buf + at + 2, 0x80 | (cp & 0x3F));
+        return 3;
+    }
+    if (n == 4) {
+        store8(buf + at, 0xF0 | (cp >> 18));
+        store8(buf + at + 1, 0x80 | ((cp >> 12) & 0x3F));
+        store8(buf + at + 2, 0x80 | ((cp >> 6) & 0x3F));
+        store8(buf + at + 3, 0x80 | (cp & 0x3F));
+        return 4;
+    }
+    return 0;
+}
+
+# @public — a new TEXTINPUT with a `cap`-byte buffer (capacity INCLUDES the NUL terminator).
+fn dh_text_new(cap): i64 {
+    var w = dh_widget_new(DhWidgetKind.TEXTINPUT);
+    var c = cap;
+    if (c < 2) { c = 2; }                  # room for one byte and a NUL
+    var buf = alloc(c);
+    store8(buf, 0);
+    store64(w + DH_W_TEXT, buf);
+    store64(w + DH_W_TEXT_CAP, c);
+    store64(w + DH_W_TEXT_LEN, 0);
+    store64(w + DH_W_CARET, 0);
+    return w;
+}
+
+fn dh_text_len(w): i64   { if (w == 0) { return 0; } return load64(w + DH_W_TEXT_LEN); }
+fn dh_text_caret(w): i64 { if (w == 0) { return 0; } return load64(w + DH_W_CARET); }
+fn dh_text_cap(w): i64   { if (w == 0) { return 0; } return load64(w + DH_W_TEXT_CAP); }
+
+# @public — is this widget an editable field? Everything below refuses politely if not, so a caller
+# can route keys at whatever has focus without first asking what kind it is.
+fn dh_text_editable(w): i64 {
+    if (w == 0) { return 0; }
+    if (dh_widget_kind(w) != TEXTINPUT) { return 0; }
+    if (load64(w + DH_W_TEXT_CAP) <= 0) { return 0; }
+    if (load64(w + DH_W_TEXT) == 0) { return 0; }
+    return 1;
+}
+
+# @public — empty the field and reset the caret.
+fn dh_text_clear(w): i64 {
+    if (dh_text_editable(w) == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    store8(load64(w + DH_W_TEXT), 0);
+    store64(w + DH_W_TEXT_LEN, 0);
+    store64(w + DH_W_CARET, 0);
+    return DHANCHA_OK;
+}
+
+# @public — insert codepoint `cp` at the caret; the caret advances past it. -> bytes inserted, or 0.
+# ⚠ A FULL BUFFER REFUSES AND RETURNS 0 — it does not truncate the codepoint to fit. Writing 2 of a
+# 3-byte sequence would corrupt the string rather than fill it, and the caller cannot tell from a
+# byte count that it happened.
+fn dh_text_insert(w, cp): i64 {
+    if (dh_text_editable(w) == 0) { return 0; }
+    var n = dh_text_utf8_len(cp);
+    if (n == 0) { return 0; }
+    var buf = load64(w + DH_W_TEXT);
+    var len = load64(w + DH_W_TEXT_LEN);
+    var cap = load64(w + DH_W_TEXT_CAP);
+    if (len + n + 1 > cap) { return 0; }
+    var at = load64(w + DH_W_CARET);
+    # Shift the tail right by n, back to front so overlapping ranges do not eat themselves.
+    var i = len;
+    while (i >= at) {
+        store8(buf + i + n, load8(buf + i));
+        i = i - 1;
+    }
+    dh_text__encode(buf, at, cp);
+    store64(w + DH_W_TEXT_LEN, len + n);
+    store64(w + DH_W_CARET, at + n);
+    store8(buf + len + n, 0);
+    return n;
+}
+
+# @public — delete the character BEFORE the caret. -> bytes removed.
+fn dh_text_backspace(w): i64 {
+    if (dh_text_editable(w) == 0) { return 0; }
+    var at = load64(w + DH_W_CARET);
+    if (at <= 0) { return 0; }
+    var buf = load64(w + DH_W_TEXT);
+    var len = load64(w + DH_W_TEXT_LEN);
+    var from = dh_text__prev(buf, at);
+    var n = at - from;
+    var i = at;
+    while (i <= len) {
+        store8(buf + i - n, load8(buf + i));
+        i = i + 1;
+    }
+    store64(w + DH_W_TEXT_LEN, len - n);
+    store64(w + DH_W_CARET, from);
+    return n;
+}
+
+# @public — delete the character AT the caret (Delete, not Backspace). -> bytes removed.
+fn dh_text_delete(w): i64 {
+    if (dh_text_editable(w) == 0) { return 0; }
+    var buf = load64(w + DH_W_TEXT);
+    var len = load64(w + DH_W_TEXT_LEN);
+    var at = load64(w + DH_W_CARET);
+    if (at >= len) { return 0; }
+    var to = dh_text__next(buf, at, len);
+    var n = to - at;
+    var i = to;
+    while (i <= len) {
+        store8(buf + i - n, load8(buf + i));
+        i = i + 1;
+    }
+    store64(w + DH_W_TEXT_LEN, len - n);
+    return n;
+}
+
+# @public — move the caret `delta` CHARACTERS (not bytes). -> the new byte offset.
+fn dh_text_caret_move(w, delta): i64 {
+    if (dh_text_editable(w) == 0) { return 0; }
+    var buf = load64(w + DH_W_TEXT);
+    var len = load64(w + DH_W_TEXT_LEN);
+    var at = load64(w + DH_W_CARET);
+    var d = delta;
+    while (d < 0) { at = dh_text__prev(buf, at); d = d + 1; }
+    while (d > 0) { at = dh_text__next(buf, at, len); d = d - 1; }
+    store64(w + DH_W_CARET, at);
+    return at;
+}
+
+# @public — how many CHARACTERS precede byte offset `at`. The painter needs this: the caret is
+# stored as a byte offset (so edits are cheap) but must be drawn at a character column (so it sits
+# between glyphs). Using the byte offset directly would push the caret right by one cell for every
+# non-ASCII character already typed.
+fn dh_text_char_index(w, at): i64 {
+    if (dh_text_editable(w) == 0) { return 0; }
+    var buf = load64(w + DH_W_TEXT);
+    var i = 0;
+    var n = 0;
+    while (i < at) {
+        if (dh_text__is_cont(load8(buf + i)) == 0) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+fn dh_text_home(w): i64 {
+    if (dh_text_editable(w) == 0) { return 0; }
+    store64(w + DH_W_CARET, 0);
+    return 0;
+}
+fn dh_text_end(w): i64 {
+    if (dh_text_editable(w) == 0) { return 0; }
+    var len = load64(w + DH_W_TEXT_LEN);
+    store64(w + DH_W_CARET, len);
+    return len;
+}
+
+# @public — set the field's contents from a cstring, caret to the end. -> bytes stored.
+# ⚠ TRUNCATES ON A CHARACTER BOUNDARY, never mid-sequence — a source longer than the buffer yields
+# a shorter valid string rather than a same-length invalid one.
+fn dh_text_set(w, s): i64 {
+    if (dh_text_editable(w) == 0) { return 0; }
+    dh_text_clear(w);
+    if (s == 0) { return 0; }
+    var buf = load64(w + DH_W_TEXT);
+    var cap = load64(w + DH_W_TEXT_CAP);
+    var n = 0;
+    var done = 0;
+    while (done == 0) {
+        var b = load8(s + n);
+        if (b == 0) {
+            done = 1;
+        } else {
+            if (n + 1 >= cap) {
+                done = 2;                  # out of room, source continues
+            } else {
+                store8(buf + n, b);
+                n = n + 1;
+            }
+        }
+    }
+    # If the cut landed inside a multi-byte sequence, back up to that character's start.
+    if (done == 2) {
+        if (dh_text__is_cont(load8(s + n)) == 1) { n = dh_text__prev(buf, n); }
+    }
+    store8(buf + n, 0);
+    store64(w + DH_W_TEXT_LEN, n);
+    store64(w + DH_W_CARET, n);
+    return n;
+}
+
+# @public — feed one key to the focused field. -> 1 if consumed, 0 if the caller should handle it.
+#
+# ⛔ WHAT IT DOES **NOT** CONSUME IS THE IMPORTANT HALF. Tab must keep cycling focus and Enter must
+# keep reaching the app's handler; a field that swallowed them would trap the operator inside it
+# with no keyboard way out. A single-line field has no use for either, so both fall through.
+fn dh_text_key(w, sym): i64 {
+    if (dh_text_editable(w) == 0) { return 0; }
+    if (sym == DH_KEY_BACKSPACE) { dh_text_backspace(w); return 1; }
+    if (sym == DH_KEY_DELETE)    { dh_text_delete(w); return 1; }
+    if (sym == DH_KEY_LEFT)      { dh_text_caret_move(w, 0 - 1); return 1; }
+    if (sym == DH_KEY_RIGHT)     { dh_text_caret_move(w, 1); return 1; }
+    if (sym == DH_KEY_HOME)      { dh_text_home(w); return 1; }
+    if (sym == DH_KEY_END)       { dh_text_end(w); return 1; }
+    if (sym == DH_KEY_TAB)       { return 0; }    # focus movement — see the note above
+    if (sym == DH_KEY_ENTER)     { return 0; }
+    if (sym == DH_KEY_RETURN)    { return 0; }
+    # ⚠ Everything else is text only if it is PRINTABLE. C0 controls (a stray 0x01 from a Ctrl
+    # chord) would otherwise be inserted as literal bytes and render as garbage the operator cannot
+    # see to delete. Named keys sit at 0x110000+ and are rejected by the same upper bound.
+    if (sym < 32) { return 0; }
+    if (sym == 127) { return 0; }
+    if (sym > 0x10FFFF) { return 0; }
+    if (dh_text_insert(w, sym) > 0) { return 1; }
+    return 0;                                     # buffer full — not consumed, so a caller can beep
+}

@@ -1,0 +1,210 @@
+# @public — dhancha LIST: a scrolling, selectable container.
+# list.cyr — the POLICY over the scroll/selection state that widget.cyr stores.
+#
+# ⭐ WHY THIS EXISTS AS A WIDGET AND NOT AS APP CODE: every client in this stack had already
+# hand-rolled it. crab's pane, puka's buffer, aethersafha's own launcher panel — three separate
+# implementations of "rows, a highlight, an offset", each with its own off-by-one at the bottom
+# edge. A scrolling list is the second-most-common container in a desktop after a box; a toolkit
+# that does not have one is a toolkit whose users are all writing the same 60 lines.
+#
+# ⛔ THIS FILE OWNS NO PIXELS AND NO STATE. The offset and the selection live on the widget
+# (`DH_W_SCROLL_Y` / `DH_W_SEL`); layout.cyr applies the offset when it places children; surface.cyr
+# clips them. What lives here is the arithmetic that keeps those two numbers COHERENT with the
+# content — which is the part that is actually easy to get wrong.
+#
+# ⚠ ROWS MUST BE FIXED-HEIGHT (flex 0). A flex child grows to share the container's leftover space,
+# so a list of flex rows has content exactly as tall as its viewport and NOTHING EVER SCROLLS. That
+# is not a bug to fix here — it is what flex means — but it is the first thing to check when a list
+# refuses to move. `dh_list_add` sets flex 0 for you.
+
+# @public — a new LIST container. Vertical box layout; `row_h` is the height every row gets.
+fn dh_list_new(row_h): i64 {
+    var w = dh_widget_new(DhWidgetKind.LIST);
+    dh_widget_set_layout(w, DhLayout.BOX_V);
+    store64(w + DH_W_PREF_H, row_h);      # remembered as the row height for keep-visible arithmetic
+    return w;
+}
+
+# The row height this list was built with. -> 0 if it was never set (callers must handle it).
+fn dh_list_row_h(lst): i64 {
+    if (lst == 0) { return 0; }
+    return load64(lst + DH_W_PREF_H);
+}
+
+# @public — append `row` as the next item. Sets the row's height and pins its flex to 0.
+fn dh_list_add(lst, row): i64 {
+    if (lst == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    if (row == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    var rh = dh_list_row_h(lst);
+    if (rh > 0) { store64(row + DH_W_PREF_H, rh); }
+    # ⚠ See the file header: a flex row cannot scroll. Pinned here rather than documented-and-hoped.
+    store64(row + DH_W_FLEX, 0);
+    return dh_widget_add_child(lst, row);
+}
+
+# @public — how many rows this list holds.
+fn dh_list_count(lst): i64 {
+    if (lst == 0) { return 0; }
+    var n = 0;
+    var c = dh_widget_first_child(lst);
+    while (c != 0) {
+        n = n + 1;
+        c = dh_widget_next_sibling(c);
+    }
+    return n;
+}
+
+# @public — the row widget at `idx`, or 0 if out of range.
+fn dh_list_row_at(lst, idx): i64 {
+    if (lst == 0) { return 0; }
+    if (idx < 0) { return 0; }
+    var i = 0;
+    var c = dh_widget_first_child(lst);
+    while (c != 0) {
+        if (i == idx) { return c; }
+        i = i + 1;
+        c = dh_widget_next_sibling(c);
+    }
+    return 0;
+}
+
+# @public — total height of all rows plus the gaps between them.
+fn dh_list_content_h(lst): i64 {
+    if (lst == 0) { return 0; }
+    var n = dh_list_count(lst);
+    if (n == 0) { return 0; }
+    var rh = dh_list_row_h(lst);
+    var gap = dh_widget_gap(lst);
+    return (n * rh) + ((n - 1) * gap);
+}
+
+# @public — the largest legal scroll offset: 0 when the content fits.
+# ⛔ THE `< 0` CLAMP IS THE BOTTOM-EDGE BUG. Content shorter than the viewport gives a NEGATIVE
+# maximum, and a scroll clamped to a negative maximum scrolls the content UP off the top of a list
+# that is not even full. Every hand-rolled version of this in the stack had it.
+fn dh_list_max_scroll(lst): i64 {
+    if (lst == 0) { return 0; }
+    var pad = dh_widget_padding(lst);
+    var view = dh_widget_h(lst) - pad - pad;
+    var m = dh_list_content_h(lst) - view;
+    if (m < 0) { return 0; }
+    return m;
+}
+
+# @public — set the scroll offset, clamped to [0, max]. -> the offset actually applied.
+fn dh_list_scroll_to(lst, v): i64 {
+    if (lst == 0) { return 0; }
+    var m = dh_list_max_scroll(lst);
+    var s = v;
+    if (s < 0) { s = 0; }
+    if (s > m) { s = m; }
+    store64(lst + DH_W_SCROLL_Y, s);
+    return s;
+}
+
+# @public — scroll by `dy` px (positive = further down the content). -> the new offset.
+fn dh_list_scroll_by(lst, dy): i64 {
+    if (lst == 0) { return 0; }
+    return dh_list_scroll_to(lst, dh_widget_scroll_y(lst) + dy);
+}
+
+# @public — the selected row index, or -1.
+fn dh_list_selected(lst): i64 { return dh_widget_sel(lst); }
+
+# @public — select row `idx`. -1 clears the selection. Out-of-range is REFUSED (returns -1 and
+# changes nothing) rather than clamped to an end row: a caller selecting row 12 of a 4-row list has
+# a bug, and silently handing it row 3 hides the bug behind a plausible highlight.
+fn dh_list_select(lst, idx): i64 {
+    if (lst == 0) { return 0 - 1; }
+    if (idx == (0 - 1)) {
+        store64(lst + DH_W_SEL, 0 - 1);
+        return 0 - 1;
+    }
+    if (idx < 0) { return 0 - 1; }
+    if (idx >= dh_list_count(lst)) { return 0 - 1; }
+    store64(lst + DH_W_SEL, idx);
+    return idx;
+}
+
+# @public — move the selection by `delta` rows, CLAMPED to the ends. -> the new index, or -1.
+# ⚠ Clamped, not wrapped, and that is a deliberate split from `dh_list_select`'s refusal: arrow-key
+# movement past the end is the operator holding a key down, not a bug, and stopping at the last row
+# is what every list in every desktop does. Wrapping makes a held key cycle forever.
+# From no selection, either direction lands on the FIRST row — the operator has expressed intent to
+# enter the list, and starting at the end because they pressed Up reads as the list ignoring them.
+fn dh_list_move_sel(lst, delta): i64 {
+    if (lst == 0) { return 0 - 1; }
+    var n = dh_list_count(lst);
+    if (n == 0) { return 0 - 1; }
+    var cur = dh_widget_sel(lst);
+    if (cur < 0) {
+        store64(lst + DH_W_SEL, 0);
+        return 0;
+    }
+    var nx = cur + delta;
+    if (nx < 0) { nx = 0; }
+    if (nx > n - 1) { nx = n - 1; }
+    store64(lst + DH_W_SEL, nx);
+    return nx;
+}
+
+# @public — scroll the minimum distance that brings the selected row fully into view. -> the offset.
+#
+# ⭐⭐ THIS IS THE ONE THAT IS ALWAYS SUBTLY WRONG, and the reason it is worth writing once. The
+# tempting implementation is `scroll_to(sel * row_h)`, which centres nothing and JUMPS on every
+# keypress — the selected row snaps to the top of the viewport even when it was already visible in
+# the middle. The correct rule is: if the row is already fully visible, DO NOT SCROLL AT ALL.
+# Otherwise move by the least amount that makes it fit, which puts it at whichever edge it left.
+# ⚠ Computed in CONTENT space (row 0 at y=0), not screen space, so it is independent of where the
+# list happens to be laid out and testable without running layout.
+fn dh_list_scroll_to_sel(lst): i64 {
+    if (lst == 0) { return 0; }
+    var sel = dh_widget_sel(lst);
+    if (sel < 0) { return dh_widget_scroll_y(lst); }
+    var rh = dh_list_row_h(lst);
+    if (rh <= 0) { return dh_widget_scroll_y(lst); }
+    var gap = dh_widget_gap(lst);
+    var pad = dh_widget_padding(lst);
+    var view = dh_widget_h(lst) - pad - pad;
+    if (view <= 0) { return dh_widget_scroll_y(lst); }
+
+    var top = sel * (rh + gap);           # this row's top edge, in content space
+    var bot = top + rh;                   # ...and its bottom edge
+    var s = dh_widget_scroll_y(lst);
+
+    # Above the viewport -> bring its TOP to the viewport top.
+    if (top < s) { return dh_list_scroll_to(lst, top); }
+    # Below the viewport -> bring its BOTTOM to the viewport bottom.
+    if (bot > s + view) { return dh_list_scroll_to(lst, bot - view); }
+    # ⛔ ALREADY VISIBLE — the no-op branch, and the whole point of the function.
+    return s;
+}
+
+# @public — move the selection AND follow it with the viewport. The pairing every key handler wants;
+# separate from `dh_list_move_sel` so a caller doing its own scrolling is not fought by this one.
+fn dh_list_step(lst, delta): i64 {
+    var i = dh_list_move_sel(lst, delta);
+    dh_list_scroll_to_sel(lst);
+    return i;
+}
+
+# @public — the row index at screen point (px, py), or -1 if the point misses every row.
+# ⚠ Derived from the ROWS' real bounds rather than from `(py - list_y) / row_h` arithmetic, because
+# the rows' bounds are what layout actually produced and what `dh_hit_test` will agree with. Two
+# independent derivations of "which row is here" is how a click lands on a different row than the
+# one under the cursor.
+fn dh_list_index_at(lst, px, py): i64 {
+    if (lst == 0) { return 0 - 1; }
+    # ⛔ THE POINT MUST BE INSIDE THE LIST **AND** INSIDE THE ROW. A row scrolled half out of the
+    # viewport is still at its real coordinates, so testing the row alone leaves its hidden half
+    # clickable — the mirror image of the painted-but-inert bug: inert-looking but live.
+    if (dh_widget_contains(lst, px, py) == 0) { return 0 - 1; }
+    var i = 0;
+    var c = dh_widget_first_child(lst);
+    while (c != 0) {
+        if (dh_widget_contains(c, px, py) == 1) { return i; }
+        i = i + 1;
+        c = dh_widget_next_sibling(c);
+    }
+    return 0 - 1;
+}

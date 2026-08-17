@@ -5,6 +5,101 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.7] - 2026-08-17 — a scrolling list, an editable text field, and a painter that clips
+
+### Fixed — ⛔ THE PAINTER IGNORED BOUNDS THE HIT-TEST HAS ALWAYS ENFORCED
+
+`dh_hit_test` rejects a point outside a widget's rect at **every** level of its recursion, so a child
+drawn outside its parent was already un-clickable. `dh_draw_widget` did not clip, so it was still
+**visible**. That combination is worse than either half alone: pixels the operator can see that do not
+respond, which reads as a working control until it is used.
+
+`dh_draw_widget` now takes a clip box and intersects it with each node's own rect on the way down.
+Rect fills clip arithmetically (exact — an axis-aligned rect clipped by one is another rect), borders
+draw as four clipped edges rather than through `sd_rect`, the bitmap-font path folds the clip into its
+per-pixel bound (so clipping costs nothing per pixel), and the scalable path pushes sadish's clip stack
+(v0.4.0) so a glyph straddling the edge is **cut, not dropped**.
+
+⛔ **A SUBTREE WITH NO VISIBLE PIXELS IS NOT VISITED AT ALL.** Culling before recursion is what makes a
+10 000-row list cost its viewport rather than its content.
+
+⚠ Applied to **every** container, not just the new LIST. Gating it on the scrolling kind would have left
+the same draw/input disagreement everywhere else, which is how it survived this long.
+
+⚠ `dh_widget_contains` is now the single definition of "inside", shared by the hit-test, the clip, and
+`dh_list_index_at`. Three subtly different half-open conventions is how a 1px seam ends up dead.
+
+### Added — LIST: the container three apps had already hand-rolled
+
+crab's pane, puka's buffer, and aethersafha's launcher panel were three implementations of "rows, a
+highlight, an offset", each with its own bottom-edge bug. `src/list.cyr` is one.
+
+⭐ The scroll offset is applied **at layout time**, not at draw time, so a scrolled row's `x/y` are its
+real on-screen coordinates. That is what lets hit-testing keep working with no knowledge of scrolling:
+the pointer is compared against the same bounds the painter used. A draw-time-only offset would have
+moved the pixels and left the clickable regions behind.
+
+⛔ **`dh_list_max_scroll` clamps at 0.** Content shorter than the viewport yields a *negative* maximum,
+and a scroll clamped to a negative maximum scrolls the content up off the top of a list that is not even
+full. Every hand-rolled version in the stack had this.
+
+⭐⭐ **`dh_list_scroll_to_sel` does nothing when the row is already visible.** The tempting
+`scroll_to(sel * row_h)` snaps the selection to the top on every keypress even when it had not moved
+out of view. The rule is: already visible → do not scroll; otherwise move by the least amount that
+fits it.
+
+⚠ Out-of-range `dh_list_select` is **refused**, while `dh_list_move_sel` **clamps** — a caller selecting
+row 12 of a 4-row list has a bug and should not be handed row 3, but an operator holding Down does not.
+
+⚠ Rows must be fixed-height: a flex row grows to fill the viewport, so a list of them never scrolls.
+`dh_list_add` pins `flex = 0` rather than documenting it and hoping.
+
+### Added — TEXTINPUT now actually takes input
+
+Before this release `TEXTINPUT` was a kind and a focusability rule and nothing else. It could be built,
+focused, Tab-cycled to and drawn — and could not be typed into, because no buffer existed for a
+character to go into.
+
+⭐ The buffer is `DH_W_TEXT`, the **same field a LABEL draws from**, so an edited field renders with no
+new painting code and there is one answer to "what does this widget say" rather than a display string
+and an edit string that drift.
+
+⛔ **UTF-8 throughout, with a byte-offset caret that steps whole characters.** A caret that steps one
+byte lands inside a multi-byte sequence, and the backspace after it leaves a half-encoded byte the
+operator cannot delete — the caret can no longer find a boundary either side of it. Surrogates are
+refused (they are not scalar values); a full buffer refuses a whole codepoint rather than writing part
+of one.
+
+⛔ **The edit step runs AFTER `dh_propagate` and only if the key was not already consumed.** A window
+binding Ctrl+S would otherwise get its shortcut *and* type "s" into the focused field: the app sees a
+working shortcut, the operator sees junk accumulating, and nothing connects the two.
+
+⚠ The caret draws only on the **focused** field — a caret in every text box says every box is taking
+input, which is the one thing the operator uses it to find out.
+
+⚠ `DH_KEY_*` gained the named keys, at **puka's `InputKey` values verbatim** (0x110000+). This enum's
+header already promised it is puka's sym space; a toolkit numbering Left as 3 while its input source
+sends 0x110003 does not fail loudly, it silently edits text on arrow keys.
+
+### Fixed — `[lib]` module list omitted the new modules
+
+⛔ Same defect the client layer hit in 0.9.4, caught before release this time: `src/list.cyr` and
+`src/textinput.cyr` were absent from `[lib] modules`, so `dist/dhancha.cyr` shipped none of the new
+API and consumers would have linked against a bundle without it. `cyrius distlib` reports this as an
+**undefined-function warning** (`dh_text_char_index`, from surface.cyr's caret call) rather than as an
+ordering or omission error, which is a confusing way to learn it.
+
+### Testing
+
+`programs/list_test.cyr` (55 checks) and `programs/textinput_test.cyr` (80 checks), both mutation-tested
+— byte-stepping caret, off-by-one capacity, accepted surrogates, swallowed Tab, dropped clip clamp,
+negative max scroll, snap-to-top scrolling, unapplied scroll offset, caret drawn unfocused, and the
+dispatcher not calling the editor are each caught by at least one check.
+
+⚠ Two of those tests exist because the first version of the suite passed a mutation: the guard that an
+app handler beats the field, and the end-to-end path proving the **dispatcher** calls the editor at all.
+Every other check calls `dh_text_key` directly and would pass with the field unwired.
+
 ## [0.9.6] - 2026-08-17 — per-widget motion, and every override goes through the guards
 
 ### Added — a widget carries a motion ASK; rupa decides what it gets

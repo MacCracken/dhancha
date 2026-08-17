@@ -1,0 +1,161 @@
+# programs/list_test.cyr — RUN test for the LIST container: scroll clamping, selection, the
+# keep-selected-visible rule, and the draw/input clip agreement.
+# Exit code = failed checks.
+#
+# ⚠ THE INTERESTING CASES ARE ALL EDGES. A list that scrolls when you drag it is easy; the bugs
+# live at "content shorter than the viewport", "selection already visible", and "row half off the
+# bottom". Those are what this file is mostly made of.
+
+include "src/lib.cyr"
+
+var g_fails = 0;
+
+fn check(got, want): i64 {
+    if (got == want) { return 0; }
+    g_fails = g_fails + 1;
+    return 1;
+}
+
+# Build a list of `n` rows, row height 20, no gap/pad, laid out `view_h` tall.
+fn mk_list(n, view_h): i64 {
+    var lst = dh_list_new(20);
+    var i = 0;
+    while (i < n) {
+        dh_list_add(lst, dh_widget_new(LABEL));
+        i = i + 1;
+    }
+    dh_layout_apply(lst, 100, view_h);
+    return lst;
+}
+
+fn main(): i64 {
+    alloc_init();
+
+    # ---- content shorter than the viewport ------------------------------------------------
+    # ⛔ THE BOTTOM-EDGE BUG: 3 rows (60px) in a 100px viewport has max scroll 0, NOT -40. A
+    # negative maximum lets the content scroll up off the top of a list that is not even full.
+    var small = mk_list(3, 100);
+    check(dh_list_content_h(small), 60);
+    check(dh_list_max_scroll(small), 0);
+    check(dh_list_scroll_to(small, 40), 0);          # refused — there is nowhere to go
+    check(dh_widget_scroll_y(small), 0);
+
+    # ---- content taller than the viewport -------------------------------------------------
+    var lst = mk_list(10, 100);                      # 200px of content in 100px
+    check(dh_list_content_h(lst), 200);
+    check(dh_list_max_scroll(lst), 100);
+    check(dh_list_scroll_to(lst, 40), 40);
+    check(dh_list_scroll_to(lst, 999), 100);         # clamped to the end
+    check(dh_list_scroll_to(lst, 0 - 5), 0);         # ...and to the start
+    check(dh_list_scroll_by(lst, 30), 30);
+    check(dh_list_scroll_by(lst, 0 - 100), 0);
+
+    # ---- the scroll offset actually MOVES the rows ----------------------------------------
+    # ⚠ Asserted through layout, not by reading the field back: the field being set proves nothing
+    # about anything on screen. Row 0 sits at y=0 unscrolled and y=-40 scrolled by 40.
+    dh_list_scroll_to(lst, 0);
+    dh_layout_apply(lst, 100, 100);
+    check(dh_widget_y(dh_list_row_at(lst, 0)), 0);
+    check(dh_widget_y(dh_list_row_at(lst, 2)), 40);
+    dh_list_scroll_to(lst, 40);
+    dh_layout_apply(lst, 100, 100);
+    check(dh_widget_y(dh_list_row_at(lst, 0)), 0 - 40);
+    check(dh_widget_y(dh_list_row_at(lst, 2)), 0);
+
+    # ---- selection ------------------------------------------------------------------------
+    # ⛔ A FRESH LIST HAS NO SELECTION. 0 would mean every list boots claiming row 0 was chosen.
+    var sel = mk_list(4, 100);
+    check(dh_list_selected(sel), 0 - 1);
+    check(dh_list_select(sel, 2), 2);
+    check(dh_list_selected(sel), 2);
+    check(dh_list_select(sel, 12), 0 - 1);           # out of range REFUSED...
+    check(dh_list_selected(sel), 2);                 # ...and the old selection survives it
+    check(dh_list_select(sel, 0 - 1), 0 - 1);        # -1 clears
+    check(dh_list_selected(sel), 0 - 1);
+
+    # Arrow movement CLAMPS (a held key stops at the end; it does not wrap).
+    check(dh_list_move_sel(sel, 1), 0);              # from nothing -> the FIRST row...
+    check(dh_list_move_sel(sel, 0 - 1), 0);          # ...and Up at the top stays put
+    check(dh_list_move_sel(sel, 2), 2);
+    check(dh_list_move_sel(sel, 99), 3);             # clamped to the last row, not wrapped
+    check(dh_list_move_sel(sel, 1), 3);
+    # From no selection, Up also lands on the first row — entering the list, not jumping to its end.
+    dh_list_select(sel, 0 - 1);
+    check(dh_list_move_sel(sel, 0 - 1), 0);
+    # An empty list has nothing to move to and must not invent a selection.
+    var empty = mk_list(0, 100);
+    check(dh_list_move_sel(empty, 1), 0 - 1);
+    check(dh_list_content_h(empty), 0);
+    check(dh_list_max_scroll(empty), 0);
+
+    # ---- ⭐⭐ keep-selected-visible: the no-op branch is the whole point ---------------------
+    var k = mk_list(10, 100);                        # rows 0..9, 20px each, viewport 100 (5 rows)
+    dh_list_select(k, 2);
+    check(dh_list_scroll_to_sel(k), 0);              # row 2 spans 40..60 — ALREADY VISIBLE, no jump
+    check(dh_widget_scroll_y(k), 0);
+    dh_list_select(k, 4);
+    check(dh_list_scroll_to_sel(k), 0);              # row 4 spans 80..100 — exactly the last visible
+    dh_list_select(k, 5);
+    check(dh_list_scroll_to_sel(k), 20);             # 100..120 -> minimum move: bottom to bottom
+    dh_list_select(k, 9);
+    check(dh_list_scroll_to_sel(k), 100);            # the end
+    dh_list_select(k, 8);
+    check(dh_list_scroll_to_sel(k), 100);            # still visible after that move — DO NOT scroll
+    dh_list_select(k, 0);
+    check(dh_list_scroll_to_sel(k), 0);              # far above -> its top to the viewport top
+    # ⚠ And a middle row reached from BELOW parks at the top edge, not re-centred.
+    dh_list_scroll_to(k, 100);
+    dh_list_select(k, 3);
+    check(dh_list_scroll_to_sel(k), 60);
+    # With no selection at all, it must leave the offset alone rather than snapping to the top.
+    dh_list_scroll_to(k, 40);
+    dh_list_select(k, 0 - 1);
+    check(dh_list_scroll_to_sel(k), 40);
+
+    # `dh_list_step` is the pairing a key handler wants: move AND follow.
+    dh_list_scroll_to(k, 0);
+    dh_list_select(k, 4);
+    check(dh_list_step(k, 1), 5);
+    check(dh_widget_scroll_y(k), 20);
+
+    # ---- ⛔ THE CLIP AGREEMENT: what you can see is what you can hit -----------------------
+    # A row scrolled above the viewport keeps its real (negative) coordinates, so it is still a
+    # rectangle containing points — the guard is that neither the painter nor the hit-test will
+    # accept a point outside the LIST. Both halves asserted, because either one alone is a bug:
+    # visible-but-dead (draw without clip) or dead-looking-but-live (hit without clip).
+    var c = mk_list(10, 100);
+    dh_list_scroll_to(c, 40);
+    dh_layout_apply(c, 100, 100);
+    check(dh_widget_y(dh_list_row_at(c, 0)), 0 - 40);   # row 0 is entirely above the viewport
+    check(dh_list_index_at(c, 50, 0 - 30), 0 - 1);      # ...and a point on it misses
+    check(dh_list_index_at(c, 50, 10), 2);              # row 2 (0..20 on screen) is what is there
+    check(dh_list_index_at(c, 50, 150), 0 - 1);         # below the viewport entirely
+    check(dh_list_index_at(c, 500, 10), 0 - 1);         # outside horizontally
+    # And dh_hit_test agrees with dh_list_index_at — two derivations, one answer.
+    check(dh_hit_test(c, 50, 10), dh_list_row_at(c, 2));
+    check(dh_hit_test(c, 50, 0 - 30), 0);
+
+    # ---- clipped painting -----------------------------------------------------------------
+    # ⚠ Proven on PIXELS, not on the clip arithmetic in isolation: a row painted at a negative y
+    # must leave the surface's top-left untouched. `dh_fill_rect_clip` is the unit under test and
+    # a mutation to it that drops the clamp would paint here.
+    var sds = sd_surface_new(40, 40);
+    sd_clear(sds, 0x00000000);
+    # A rect STRADDLING the clip's top edge: spans y 0..20, clipped to y 10..30 -> paints 10..20.
+    dh_fill_rect_clip(sds, 0, 0, 40, 20, 0x00FF0000, 0, 10, 40, 20);
+    check(sd_surface_pixel_at(sds, 5, 5), 0x00000000);      # in the rect, ABOVE the clip — cut
+    check(sd_surface_pixel_at(sds, 5, 15), 0x00FF0000);     # in both — painted
+    check(sd_surface_pixel_at(sds, 5, 25), 0x00000000);     # in the clip, BELOW the rect — untouched
+    # A NEGATIVE origin is the scrolled-row case: spans y -10..20, unclipped -> paints 0..20 only.
+    dh_fill_rect_clip(sds, 0, 0 - 10, 40, 30, 0x0000FF00, 0, 0, 40, 40);
+    check(sd_surface_pixel_at(sds, 5, 5), 0x0000FF00);
+    check(sd_surface_pixel_at(sds, 5, 25), 0x00000000);
+    # A rect entirely outside its clip paints nothing at all.
+    dh_fill_rect_clip(sds, 0, 30, 40, 10, 0x000000FF, 0, 0, 40, 10);
+    check(sd_surface_pixel_at(sds, 5, 35), 0x00000000);
+
+    return g_fails;
+}
+
+var rc = main();
+syscall(60, rc);

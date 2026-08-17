@@ -76,12 +76,52 @@ fn dh_surface_present(surf): i64 {
 
 # ---- widget-tree draw (sadish fills/strokes + rekha text) ----------
 
+# ============================================================================================
+# ⭐⭐ CLIPPING (0.9.7) — the draw side of a bound the INPUT side has always enforced
+# ============================================================================================
+# ⛔ THE DISAGREEMENT THIS CLOSES: `dh_hit_test` rejects a point outside a widget's rect at EVERY
+# level of the recursion, so a child painted outside its parent was already un-clickable. Draw did
+# not clip, so it was still VISIBLE. That combination — pixels you can see, that do not respond —
+# is the single failure mode this stack keeps producing, and it is worse than either half alone,
+# because it looks like a working control. Clipping the painter makes the two agree: if you can see
+# it, you can hit it.
+# ⚠ Applied to EVERY container, not just LIST. A special case for the scrolling kind would leave
+# the same disagreement in place everywhere else, which is how it got here.
+
+# Fill (x,y,w,h) intersected with the clip box (clx,cly,clw,clh). Exact — an axis-aligned rect
+# clipped by an axis-aligned rect is another rect, so there is nothing to approximate.
+fn dh_fill_rect_clip(sds, x, y, w, h, color, clx, cly, clw, clh): i64 {
+    var x0 = x;
+    var y0 = y;
+    var x1 = x + w;
+    var y1 = y + h;
+    if (x0 < clx) { x0 = clx; }
+    if (y0 < cly) { y0 = cly; }
+    if (x1 > clx + clw) { x1 = clx + clw; }
+    if (y1 > cly + clh) { y1 = cly + clh; }
+    if (x1 <= x0) { return 0; }
+    if (y1 <= y0) { return 0; }
+    return sd_fill_rect(sds, x0, y0, x1 - x0, y1 - y0, color);
+}
+
+# A 1px border as four clipped edge fills. ⚠ NOT `sd_rect`, which draws through the clip: a
+# half-scrolled row would otherwise stamp its bottom edge across whatever sits below the viewport.
+fn dh_rect_clip(sds, x, y, w, h, color, clx, cly, clw, clh): i64 {
+    if (w <= 0) { return 0; }
+    if (h <= 0) { return 0; }
+    dh_fill_rect_clip(sds, x, y, w, 1, color, clx, cly, clw, clh);
+    dh_fill_rect_clip(sds, x, y + h - 1, w, 1, color, clx, cly, clw, clh);
+    dh_fill_rect_clip(sds, x, y, 1, h, color, clx, cly, clw, clh);
+    dh_fill_rect_clip(sds, x + w - 1, y, 1, h, color, clx, cly, clw, clh);
+    return 0;
+}
+
 # Draw `text` (a cstring) left-aligned inside a box at (x, y) of height h, onto
 # the sadish surface `sds`, using `font` (a RekhaFont). Each glyph is converted
 # to a sadish path (scaled so the em-height ~= h) and union-filled into one
 # coverage canvas, then blit as white. Advance is a fixed ~0.6em (real hmtx
 # advances are a rekha v0.4 item). No-op if font is 0.
-fn dh_draw_text(sds, font, text, x, y, h): i64 {
+fn dh_draw_text(sds, font, text, x, y, h, clx, cly, clw, clh): i64 {
     if (text == 0) { return 0; }
     if (font == 0) {
         # Bitmap path: blit the kashi VGA 8x16 SYSTEM font (full CP437, crisp +
@@ -92,6 +132,12 @@ fn dh_draw_text(sds, font, text, x, y, h): i64 {
         var sh2 = sd_surface_height(sds);
         var pix = sd_surface_pixels(sds);
         var ink = dh_theme_ink();              # text in the active theme's primary-ink colour
+        # The per-pixel bound is the SURFACE intersected with the CLIP. Folding them together here
+        # means the inner loop keeps its original four comparisons — clipping costs nothing per pixel.
+        var bx0 = clx; if (bx0 < 0) { bx0 = 0; }
+        var by0 = cly; if (by0 < 0) { by0 = 0; }
+        var bx1 = clx + clw; if (bx1 > sw) { bx1 = sw; }
+        var by1 = cly + clh; if (by1 > sh2) { by1 = sh2; }
         var ky = y + (h - 16) / 2;             # vertically centre the 16px glyph in the box
         var kx = x + 3;
         var ki = 0;
@@ -104,7 +150,7 @@ fn dh_draw_text(sds, font, text, x, y, h): i64 {
                 while (kcol < 8) {
                     if ((kb & (1 << (7 - kcol))) != 0) {
                         var px = kx + kcol; var py = ky + kr;
-                        if (px >= 0) { if (px < sw) { if (py >= 0) { if (py < sh2) {
+                        if (px >= bx0) { if (px < bx1) { if (py >= by0) { if (py < by1) {
                                         # ⚠ 0xFF000000 IS LOAD-BEARING (v0.9.2). `ink` is a rupa theme
                                         # token, 0x00RRGGBB — alpha byte ZERO. Every other painter in the
                                         # stack writes byte 3 = 255, so this one path produced glyph pixels
@@ -135,6 +181,11 @@ fn dh_draw_text(sds, font, text, x, y, h): i64 {
     var cx = x + 2;
 
     var cv = sd_canvas_new(sd_surface_width(sds), sd_surface_height(sds));
+    # ⭐ REAL per-pixel clipping for the scalable path — sadish's clip stack (v0.4.0) multiplies the
+    # clip mask into the coverage before the blit, so a glyph straddling the viewport edge is CUT,
+    # not dropped. Dropping the whole glyph was the tempting shortcut and it reads as text that
+    # vanishes a row early while scrolling.
+    sd_canvas_clip_push_rect(cv, clx, cly, clx + clw, cly + clh);
     var i = 0;
     while (load8(text + i) != 0) {
         var cp = load8(text + i);
@@ -146,30 +197,69 @@ fn dh_draw_text(sds, font, text, x, y, h): i64 {
         i = i + 1;
     }
     sd_canvas_blit(cv, sds, sd_rgb(255, 255, 255));
+    sd_canvas_clip_pop(cv);
     return 0;
 }
 
 # Draw one widget (background, border, text) onto `sds`, then recurse into its
 # children. `font` may be 0 (text skipped).
-fn dh_draw_widget(sds, wgt, font): i64 {
+fn dh_draw_widget(sds, wgt, font, clx, cly, clw, clh): i64 {
     var x = dh_widget_x(wgt);
     var y = dh_widget_y(wgt);
     var w = dh_widget_w(wgt);
     var h = dh_widget_h(wgt);
+    # ⛔ CULL FIRST. A subtree with no visible pixels must not paint OR recurse — in a 10 000-row list
+    # scrolled to the bottom, the rows above are not "clipped away cheaply", they are never visited.
+    # That is what makes a long list cost the viewport rather than the content.
+    if (w <= 0) { return 0; }
+    if (h <= 0) { return 0; }
+    if (x >= clx + clw) { return 0; }
+    if (y >= cly + clh) { return 0; }
+    if (x + w <= clx) { return 0; }
+    if (y + h <= cly) { return 0; }
+
     var bg = dh_widget_bg(wgt);
     if (bg != (0 - 1)) {
-        sd_fill_rect(sds, x, y, w, h, bg);
+        dh_fill_rect_clip(sds, x, y, w, h, bg, clx, cly, clw, clh);
     }
     if (dh_widget_kind(wgt) == BUTTON) {
-        sd_rect(sds, x, y, w, h, dh_theme_line());   # 1px border in the theme's line colour
+        dh_rect_clip(sds, x, y, w, h, dh_theme_line(), clx, cly, clw, clh);
     }
     var text = dh_widget_text(wgt);
     if (text != 0) {
-        dh_draw_text(sds, font, text, x, y, h);
+        dh_draw_text(sds, font, text, x, y, h, clx, cly, clw, clh);
     }
+    # ⭐ THE CARET (0.9.7). Drawn only on the FOCUSED field: a caret in every text box at once says
+    # every box is taking input, which is exactly the thing the operator uses it to find out.
+    # ⚠ Positioned with the bitmap font's 9px advance — correct for the system font (which is what
+    # `font == 0` draws with, and is monospace) and an approximation under rekha, where glyph
+    # advances vary. A caret that drifts from proportional text is a rekha-advance item, not a
+    # reason to withhold the caret from the monospace path that is what everything ships with.
+    if (dh_widget_kind(wgt) == TEXTINPUT) {
+        if (dh_focus_get() == wgt) {
+            var cbytes = dh_text_caret(wgt);
+            var cchars = dh_text_char_index(wgt, cbytes);
+            var cx2 = x + 3 + (cchars * 9);
+            var cy2 = y + (h - 16) / 2;
+            dh_fill_rect_clip(sds, cx2, cy2, 1, 16, dh_theme_ink(), clx, cly, clw, clh);
+        }
+    }
+
+    # ⭐ THE CHILD CLIP IS THIS NODE'S BOX INTERSECTED WITH THE INHERITED ONE. Intersecting (rather
+    # than replacing) is what makes clipping compose through nesting: a row inside a list inside a
+    # scrolled panel is bounded by all three, and no level can widen what an ancestor narrowed.
+    var kx0 = x; var ky0 = y;
+    var kx1 = x + w; var ky1 = y + h;
+    if (kx0 < clx) { kx0 = clx; }
+    if (ky0 < cly) { ky0 = cly; }
+    if (kx1 > clx + clw) { kx1 = clx + clw; }
+    if (ky1 > cly + clh) { ky1 = cly + clh; }
+    if (kx1 <= kx0) { return 0; }
+    if (ky1 <= ky0) { return 0; }
+
     var child = dh_widget_first_child(wgt);
     while (child != 0) {
-        dh_draw_widget(sds, child, font);
+        dh_draw_widget(sds, child, font, kx0, ky0, kx1 - kx0, ky1 - ky0);
         child = dh_widget_next_sibling(child);
     }
     return 0;
@@ -186,7 +276,8 @@ fn dh_surface_render(surf, font): i64 {
     sd_clear(sds, dh_theme_bg());          # the active rupa theme's desktop void
     var root = dh_surface_root(surf);
     if (root != 0) {
-        dh_draw_widget(sds, root, font);
+        # The root clip is the surface itself — every widget is bounded by the thing it is drawn on.
+        dh_draw_widget(sds, root, font, 0, 0, w, h);
     }
     return sds;
 }

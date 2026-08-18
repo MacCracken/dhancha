@@ -5,6 +5,40 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.11] - 2026-08-17 — the toolkit offers both event shapes
+
+### Added — `dh_client_poll_event`, the NON-BLOCKING half
+
+⛔ **Until now `dh_client_next_event` was the only event API and it BLOCKS.** That suits an app whose
+display changes only when input arrives. It stalls one that redraws on its own — a file manager
+repainting a selection, a terminal draining a pty — so every such consumer reached past the toolkit
+to setu. That is precisely how crab ended up with a hand-rolled input loop while using dhancha for
+pixels. Operator ruling: *a toolkit should present both styles for downstream users.*
+
+⚠ **It wraps `setu_client_poll_input`, not `setu_poll_input` — a bug fix, not a detail.** setu's own
+header says the latter "decodes only the FIRST frame of each recv; coalesced or split frames are
+dropped ... kept for API compat", and a dropped tail **loses key-RELEASE events, which sticks keys**.
+Any consumer moving off a hand-rolled `setu_poll_input` loop gains that fix by adopting.
+
+⚠ A non-input frame is consumed and the poll CONTINUES rather than returning 0 — returning 0 there
+reads as "nothing pending" and stops a caller's drain loop early, stranding buffered frames behind it.
+
+### Fixed — the client layer was missing from `src/lib.cyr`
+
+`setu_client.cyr`, `setu_input.cyr` and `dh_client.cyr` were in `[lib] modules` (the dist fold) and
+**not** in the build include chain, so nothing built from `src/lib.cyr` could call `dh_client_*`.
+dhancha could not test its own connection surface, and only consumers vendoring `dist/dhancha.cyr`
+had it. Same shape as the 0.9.4 defect with the halves reversed.
+
+### Testing
+
+`programs/poll_test.cyr` (14 checks) — no socket needed: `setu_client_poll_input` drains the client's
+reassembly buffer before any syscall, so seeding that buffer exercises the real path on a host.
+Mutation-tested: stopping the drain on a non-input frame, and wrapping the frame-dropping poll.
+
+⚠ Event accessors in the test are guarded — an unguarded deref made both mutants SIGSEGV before the
+suite could report *which* check failed. A crash is a signal; a failure count is a diagnosis.
+
 ## [0.9.10] - 2026-08-17 — toolchain pin to 6.5.27
 
 ### Changed — `cyrius = "6.5.21"` -> **6.5.27**

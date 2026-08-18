@@ -66,3 +66,13 @@ include "src/canvas.cyr"      # app-drawn CANVAS slot — needs widget state, no
 include "src/textinput.cyr"   # editable TEXTINPUT buffer + caret — AFTER event.cyr, which owns DhKey
 include "src/theme.cyr"       # rupa theme tokens → sadish colours (before surface, which draws with them)
 include "src/surface.cyr"
+
+# ⛔ THE CLIENT LAYER WAS IN `[lib] modules` (the dist fold) AND NOT HERE, so nothing built from this
+# include chain could call `dh_client_*` — dhancha could not test its own connection surface, and the
+# only consumers that had it were the ones vendoring `dist/dhancha.cyr`. Same shape as the 0.9.4
+# defect where the fold was the half that was missing; this is the other half.
+# ⚠ Order is the composition order dh_client.cyr's own header names: transport, then input mapping,
+# then the client that composes them with surface.cyr.
+include "src/setu_client.cyr"
+include "src/setu_input.cyr"
+include "src/dh_client.cyr"

@@ -34,4 +34,11 @@ fn dh_client_present(c, surf, font): i64 {
 # setu_input.cyr — it reads one setu frame via setu's framing + maps it.)
 fn dh_client_next_event(c): i64 { return dh_setu_read_event(setu_client_fd(c)); }
 
+# @public — NON-BLOCKING event read. -> *DhEvent (> 0), 0 when nothing is pending, -6 on EOF.
+# ⚠ The pair matters: `dh_client_next_event` BLOCKS until a frame arrives, which suits an app that
+# only changes when input does. An app that redraws on its own — a file manager, a terminal — must
+# poll or its render loop stalls on an idle connection. Call this in a loop until it returns 0 to
+# drain everything buffered, then draw once.
+fn dh_client_poll_event(c): i64 { return dh_setu_poll_event(c); }
+
 fn dh_client_close(c): i64 { return setu_client_close(c); }

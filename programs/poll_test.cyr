@@ -1,0 +1,126 @@
+# programs/poll_test.cyr — RUN test for dh_client_poll_event / dh_setu_poll_event, the NON-BLOCKING
+# half of the toolkit's input surface (0.9.11).
+# Exit code = failed checks.
+#
+# ⭐ WHY BOTH SHAPES EXIST. `dh_client_next_event` BLOCKS. An app that only changes when input
+# arrives is fine with that; one that redraws on its own — a file manager, a terminal — stalls on an
+# idle connection. Offering only the blocking read is what pushed crab into a hand-rolled setu loop.
+#
+# ⚠ NO SOCKET IS NEEDED. `setu_client_poll_input` drains the client's reassembly buffer BEFORE any
+# syscall, so seeding that buffer exercises the real code path on a host.
+
+include "src/lib.cyr"
+
+var g_fails = 0;
+var g_n = 0;
+
+fn check(got, want): i64 {
+    g_n = g_n + 1;
+    if (got == want) { return 0; }
+    g_fails = g_fails + 1;
+    return 1;
+}
+
+# ⚠ Event accessors guarded: a regression that returns 0 (no event) where one was expected would
+# otherwise SIGSEGV on the first deref and the suite would die instead of REPORTING which check
+# failed. A crash is a signal; a failure count is a diagnosis.
+fn ev_kind(e): i64 { if (e <= 0) { return 0 - 1; } return dh_event_kind(e); }
+fn ev_a(e): i64    { if (e <= 0) { return 0 - 1; } return dh_event_a(e); }
+fn ev_b(e): i64    { if (e <= 0) { return 0 - 1; } return dh_event_b(e); }
+
+# A client whose reassembly buffer holds `n` pre-encoded frames and whose fd is invalid.
+fn mk_client(): i64 {
+    var c = alloc(SETU_C_SZ);
+    var i = 0;
+    while (i < SETU_C_SZ) { store8(c + i, 0); i = i + 1; }
+    store64(c + SETU_C_FD, 0 - 1);                  # no real fd — buffer path only
+    store64(c + SETU_C_INBUF, alloc(SETU_C_INBUF_CAP));
+    store64(c + SETU_C_INLEN, 0);
+    return c;
+}
+
+# Append one encoded message to the client's inbuf.
+fn seed(c, msg): i64 {
+    var ib = load64(c + SETU_C_INBUF);
+    var len = load64(c + SETU_C_INLEN);
+    var n = setu_encode(msg, ib + len, SETU_C_INBUF_CAP - len);
+    if (n < 0) { return 0 - 1; }
+    store64(c + SETU_C_INLEN, len + n);
+    return n;
+}
+
+fn main(): i64 {
+    alloc_init();
+
+    # ---- an idle connection yields 0, and does NOT block ----------------------------------
+    var idle = mk_client();
+    check(dh_setu_poll_event(idle), 0);
+
+    # ---- a buffered KEY frame comes back as a DhEvent ---------------------------------------
+    var c = mk_client();
+    seed(c, setu_input_key(7, 65, 1));
+    var ev = dh_setu_poll_event(c);
+    check(ev > 0, 1);
+    check(ev_kind(ev), KEY);
+    check(ev_a(ev), 65);                      # keysym
+    check(ev_b(ev), 1);                       # press
+    # ...and the buffer is now empty
+    check(dh_setu_poll_event(c), 0);
+
+    # ---- ⛔ A NON-INPUT FRAME IS CONSUMED AND THE POLL CONTINUES ----------------------------
+    # Returning 0 on a non-input frame would read as "nothing pending" and stop a caller's drain
+    # loop early, stranding frames already buffered behind it — the dropped-tail defect this
+    # wrapper exists to avoid. The KEY below sits BEHIND a HELLO and must still arrive.
+    var m = mk_client();
+    seed(m, setu_hello(1, 0));                      # not an input frame
+    seed(m, setu_input_key(7, 66, 1));
+    var ev2 = dh_setu_poll_event(m);
+    check(ev2 > 0, 1);
+    check(ev_kind(ev2), KEY);
+    check(ev_a(ev2), 66);                     # the key BEHIND the non-input frame
+
+    # ---- draining several queued events in order ---------------------------------------------
+    var d = mk_client();
+    seed(d, setu_input_key(7, 97, 1));
+    seed(d, setu_input_key(7, 98, 1));
+    seed(d, setu_input_key(7, 99, 0));
+    var e1 = dh_setu_poll_event(d);
+    var e2 = dh_setu_poll_event(d);
+    var e3 = dh_setu_poll_event(d);
+    check(ev_a(e1), 97);
+    check(ev_a(e2), 98);
+    check(ev_a(e3), 99);
+    check(ev_b(e3), 0);                       # ⚠ the RELEASE — the event a dropped tail loses
+    check(dh_setu_poll_event(d), 0);                # drained
+
+    # ---- dh_client_poll_event is the same thing on a DhClient --------------------------------
+    var k = mk_client();
+    seed(k, setu_input_key(7, 88, 1));
+    var ke = dh_client_poll_event(k);
+    check(ev_kind(ke), KEY);
+    check(ev_a(ke), 88);
+
+    # ---- ⛔⛔ SETU_CLOSE MUST SURVIVE THE POLL ------------------------------------------------
+    # The compositor sends it when it removes a window. A client that keeps running holds its `#97`
+    # channel end and its `#86` GPU-visible shm slot for the rest of the boot — 16 slots exist
+    # system-wide, and the client's EXIT is what releases them. Before WINDOW_CLOSE was mapped, the
+    # drain loop treated it as a non-input frame and CONSUMED IT SILENTLY, which would have
+    # recreated the orphaned-client leak measured on the 2026-08-08 iron burn in every consumer
+    # that adopted this poll.
+    var q = mk_client();
+    seed(q, setu_close(7));       # ⚠ CLOSE carries a surface id — a kind-only msg will not encode
+    var qe = dh_setu_poll_event(q);
+    check(qe > 0, 1);
+    check(ev_kind(qe), WINDOW_CLOSE);
+    # ...and it must not be reordered behind queued input either.
+    var z = mk_client();
+    seed(z, setu_input_key(7, 65, 1));
+    seed(z, setu_close(7));
+    check(ev_kind(dh_setu_poll_event(z)), KEY);
+    check(ev_kind(dh_setu_poll_event(z)), WINDOW_CLOSE);
+
+    return g_fails;
+}
+
+var rc = main();
+syscall(60, rc);

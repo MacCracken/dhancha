@@ -1059,6 +1059,13 @@ enum DhEventKind {
     DRAG_MOVE     = 9;   # synthesized: pointer moved while dragging (to source)
     DRAG_DROP     = 10;  # synthesized: drag released over a drop target
     DRAG_END      = 11;  # synthesized: drag finished (to source)
+    # ⛔⛔ WINDOW_CLOSE IS NOT AN INPUT EVENT AND IT IS THE MOST IMPORTANT ONE TO DELIVER. The
+    # compositor sends SETU_CLOSE when it removes a client's window. A client that keeps running
+    # holds its `#97` channel end and its `#86` GPU-visible shm slot for the rest of the boot — and
+    # there are only 16 of those slots system-wide. Its EXIT is what releases them, so this is a
+    # release path, not a courtesy. Measured on the 2026-08-08 iron burn: a client that ignored it
+    # was left orphaned alive. An event mapper that drops it recreates that leak in every consumer.
+    WINDOW_CLOSE  = 12;
 }
 
 # Well-known key codes the toolkit acts on itself (values are ASCII /
@@ -2557,6 +2564,7 @@ fn dh_setu_map_input(m): i64 {
     elif (k == SETU_INPUT_PTR_MOVE) { dk = POINTER_MOVE; a = setu_msg_arg(m, 1); b = setu_msg_arg(m, 2); }
     elif (k == SETU_INPUT_PTR_BTN)  { dk = POINTER_BTN;  a = setu_msg_arg(m, 1); b = setu_msg_arg(m, 2); }
     elif (k == SETU_INPUT_FOCUS)    { dk = FOCUS;        a = setu_msg_arg(m, 1); b = 0; }
+    elif (k == SETU_CLOSE)          { dk = WINDOW_CLOSE; a = 0; b = 0; }
     else { return 0; }
     var ev = dh_event_new(dk);
     store64(ev + DH_E_A, a);

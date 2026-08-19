@@ -23,6 +23,7 @@ fn dh_setu_map_input(m): i64 {
     elif (k == SETU_INPUT_PTR_BTN)  { dk = POINTER_BTN;  a = setu_msg_arg(m, 1); b = setu_msg_arg(m, 2); }
     elif (k == SETU_INPUT_FOCUS)    { dk = FOCUS;        a = setu_msg_arg(m, 1); b = 0; }
     elif (k == SETU_CLOSE)          { dk = WINDOW_CLOSE; a = 0; b = 0; }
+    elif (k == SETU_CONFIGURE)      { dk = WINDOW_CONFIGURE; a = setu_msg_arg(m, 1); b = setu_msg_arg(m, 2); }
     else { return 0; }
     var ev = dh_event_new(dk);
     store64(ev + DH_E_A, a);

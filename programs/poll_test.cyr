@@ -119,6 +119,25 @@ fn main(): i64 {
     check(ev_kind(dh_setu_poll_event(z)), KEY);
     check(ev_kind(dh_setu_poll_event(z)), WINDOW_CLOSE);
 
+    # ---- ⭐ WINDOW_CONFIGURE: the compositor asking for a new size ---------------------------
+    # ⛔ IT MUST SURVIVE THE POLL for the same reason CLOSE must: it is not an input frame, and a
+    # drain loop that consumed it silently would leave the client frozen at its old extent forever
+    # while the compositor clamped every blit. The size is the payload, not a notification.
+    var cfg = mk_client();
+    seed(cfg, setu_configure(7, 1280, 720, 0));
+    var ce = dh_setu_poll_event(cfg);
+    check(ev_kind(ce), WINDOW_CONFIGURE);
+    check(ev_a(ce), 1280);
+    check(ev_b(ce), 720);
+    # ...and it must not be reordered behind queued input either.
+    var cq = mk_client();
+    seed(cq, setu_input_key(7, 65, 1));
+    seed(cq, setu_configure(7, 800, 600, 0));
+    check(ev_kind(dh_setu_poll_event(cq)), KEY);
+    var c2 = dh_setu_poll_event(cq);
+    check(ev_kind(c2), WINDOW_CONFIGURE);
+    check(ev_a(c2), 800);
+
     return g_fails;
 }
 

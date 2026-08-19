@@ -5,6 +5,27 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.12] - 2026-08-18 — WINDOW_CONFIGURE: the compositor may ask a client to resize
+
+### Added — `SETU_CONFIGURE` reaches apps as a `DhEvent`
+
+`SETU_CONFIGURE` (S->C: id, w, h, state) has been in setu's protocol since it was written, with a
+constructor and **zero senders and zero handlers on either side**. aethersafha 0.16.8 now sends it;
+this maps it to `WINDOW_CONFIGURE` (`a` = width, `b` = height) so a client can act on it.
+
+⛔ **It is an ASK, not a fact.** The compositor cannot resize a client's buffer — the buffer is the
+client's, and on agnos a `#86` slot it owns. Until the client re-attaches at the requested size the
+compositor clamps or refuses its blit, so a client that ignores this **freezes at its old extent**.
+Before 0.16.8 there was neither ask nor clamp: the blit read `win_w x win_h` from a smaller slot and
+took a page fault on iron.
+
+⚠ Like `WINDOW_CLOSE`, it survives the non-input drain in `dh_setu_poll_event` — a poll that consumed
+it silently would leave the client frozen with no way to learn why.
+
+### Testing
+
+`poll_test` 26 checks. Mutation-tested: unmapping `SETU_CONFIGURE` fails 5.
+
 ## [0.9.11] - 2026-08-17 — the toolkit offers both event shapes
 
 ### Added — `dh_client_poll_event`, the NON-BLOCKING half

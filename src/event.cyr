@@ -40,6 +40,13 @@ enum DhEventKind {
     # release path, not a courtesy. Measured on the 2026-08-08 iron burn: a client that ignored it
     # was left orphaned alive. An event mapper that drops it recreates that leak in every consumer.
     WINDOW_CLOSE  = 12;
+    # ⭐⭐ THE COMPOSITOR ASKS FOR A NEW SIZE (`SETU_CONFIGURE`; `a` = width, `b` = height).
+    # ⛔ IT IS AN ASK, NOT A FACT. The compositor cannot resize a client's buffer — the buffer is the
+    # client's, and on agnos it is a `#86` slot the client owns. Until the client re-attaches at this
+    # size the compositor CLAMPS or REFUSES its blit, so a client that ignores this event does not
+    # crash, it FREEZES at its old extent. Before aethersafha 0.16.8 there was no clamp and no ask:
+    # the blit read `win_w x win_h` out of the smaller slot and took a page fault.
+    WINDOW_CONFIGURE = 13;
 }
 
 # Well-known key codes the toolkit acts on itself (values are ASCII /

@@ -1,0 +1,157 @@
+# programs/arena_test.cyr — RUN test for the PER-FRAME ARENA (0.9.15).
+#
+# ⭐⭐ WHAT THIS EXISTS TO PROVE. dhancha is immediate-mode: an app rebuilds its widget tree every
+# frame, and the allocator underneath (`lib/alloc.cyr`) is a bump allocator with **no `free()`**. So
+# before 0.9.15 every frame's tree was retained for the life of the process — measured against crab
+# at 380x220, ~236 widgets x 248 B = 58,528 B per frame, permanently. `dh_frame_arena_set` routes the
+# per-frame allocations onto a caller-supplied arena; `dh_frame_begin` rewinds it.
+#
+# ⚠ THE HEADLINE ASSERTION IS CONVERGENCE, NOT "IT USES AN ARENA". An arena that grew a fresh chunk
+# every frame would satisfy every structural check below and still leak exactly as much. The gate is
+# that GLOBAL `alloc_used()` stops moving once the arena has reached its high-water mark.
+
+include "src/lib.cyr"
+
+var g_fails = 0;
+var g_n = 0;
+
+fn check(got, want): i64 {
+    g_n = g_n + 1;
+    if (got == want) { return 0; }
+    g_fails = g_fails + 1;
+    var m = "arena_test: check failed at #";
+    syscall(1, 2, m, strlen(m));
+    fmt_int_fd(2, g_n);
+    return 1;
+}
+
+# Build a representative frame: a window with two columns of rows, laid out twice — the shape crab
+# renders. Returns the root. `rows` per column.
+fn at_frame(rows): i64 {
+    var root = dh_widget_new(WINDOW);
+    dh_widget_set_layout(root, BOX_V);
+    dh_widget_set_bg(root, dh_theme_bg());
+    var cols = dh_widget_new(BOX);
+    dh_widget_set_layout(cols, BOX_H);
+    var c = 0;
+    while (c < 2) {
+        var lst = dh_list_new(26);
+        var i = 0;
+        while (i < rows) {
+            var row = dh_widget_new(LABEL);
+            dh_widget_set_bg(row, 0 - 1);
+            # ⚠ Per-frame scratch through the SAME allocator as the widget. `dh_widget_set_text`
+            # stores the pointer and does not copy, so a global-alloc string on an arena widget would
+            # be the one lifetime mismatch this API can produce.
+            var txt = dh_falloc(16);
+            store8(txt, 114); store8(txt + 1, 111); store8(txt + 2, 119); store8(txt + 3, 0);
+            dh_widget_set_text(row, txt);
+            dh_list_add(lst, row);
+            i = i + 1;
+        }
+        if (c == 0) { dh_focus_set(lst); }
+        dh_widget_add_child(cols, lst);
+        c = c + 1;
+    }
+    dh_widget_add_child(root, cols);
+    dh_layout_apply(root, 380, 220);      # exercises layout's measure scratch too
+    dh_layout_apply(root, 380, 220);
+    return root;
+}
+
+fn main(): i64 {
+    alloc_init();
+
+    # ── A) THE DEFAULT IS UNCHANGED: no arena, global allocator, and it grows every frame ──────
+    check(dh_frame_arena_get(), 0);
+    check(dh_falloc(32) != 0, 1);                 # falls back to the global allocator
+    check(dh_frame_begin(), DHANCHA_OK);          # no-op without an arena
+
+    var g0 = alloc_used();
+    at_frame(20);
+    var g1 = alloc_used();
+    at_frame(20);
+    var g2 = alloc_used();
+    # ⛔ THE PRE-0.9.15 BEHAVIOUR, ASSERTED RATHER THAN ASSUMED. Two identical frames cost two
+    # frames' worth. If this ever reads 0 the baseline has moved and every saving below is measured
+    # against nothing.
+    check((g1 - g0) > 0, 1);
+    check((g2 - g1) > 0, 1);
+
+    # ── B) WITH AN ARENA, THE WIDGETS COME OFF IT ──────
+    var a = arena_new_growable(262144);
+    check(a != 0, 1);
+    check(dh_frame_arena_set(a), DHANCHA_OK);
+    check(dh_frame_arena_get(), a);
+
+    dh_frame_begin();
+    check(arena_used(a), 0);
+    at_frame(20);
+    check(arena_used(a) > 0, 1);                  # the tree really landed in the arena
+
+    # ── C) dh_frame_begin REWINDS THE ARENA *AND* DROPS THE RETAINED WIDGET POINTERS ──────────
+    # ⛔ THE SECOND HALF IS THE SAFETY ONE. `_dh_focus` is a raw widget pointer held across calls;
+    # after a rewind it addresses memory the arena is about to hand out again, so `dh_focus_within`
+    # would walk recycled parent links and answer confidently about a widget that no longer exists.
+    check(dh_focus_get() != 0, 1);                # at_frame focused the first list
+    dh_frame_begin();
+    check(arena_used(a), 0);
+    check(dh_focus_get(), 0);                     # ...and the stale pointer is gone
+
+    # ── D) THE HEADLINE: THE GLOBAL HEAP STOPS GROWING ──────
+    # Warm up so the GROW arena reaches its high-water mark and chains whatever chunks it needs.
+    var w = 0;
+    while (w < 4) { dh_frame_begin(); at_frame(20); w = w + 1; }
+    var b0 = alloc_used();
+    var f = 0;
+    while (f < 20) { dh_frame_begin(); at_frame(20); f = f + 1; }
+    var b1 = alloc_used();
+    # ⭐ TWENTY frames must cost the global allocator NOTHING. `arena_reset` on a GROW arena rewinds
+    # to the first chunk and keeps the chain, so the loop reuses the same memory forever.
+    check(b1 - b0, 0);
+
+    # ── E) THE GROW PATH: A FRAME BIGGER THAN THE CHUNK CHAINS ONCE, THEN COSTS NOTHING ──
+    # ⛔ THE FIRST DRAFT OF THIS GROUP DID NOT TEST WHAT ITS COMMENT CLAIMED. It rendered a
+    # 120-row frame against a 256 KiB arena and said "forces the chain to extend" — ~244 widgets
+    # x 248 B is ~60 KiB, so it never came close and the GROW path was never executed. Caught by
+    # asserting `arena_capacity_total`, which the draft did not do. ⇒ Use an arena deliberately
+    # too small, and PROVE the chain grew before claiming anything about what it costs.
+    var small = arena_new_growable(8192);
+    check(small != 0, 1);
+    dh_frame_arena_set(small);
+    check(arena_capacity_total(small), 8192);
+    dh_frame_begin();
+    at_frame(60);                                 # ~124 widgets x 248 B — far past 8 KiB
+    check(arena_capacity_total(small) > 8192, 1); # the chain really extended
+    var grown = arena_capacity_total(small);
+
+    var c0 = alloc_used();
+    var g = 0;
+    while (g < 10) { dh_frame_begin(); at_frame(60); g = g + 1; }
+    var c1 = alloc_used();
+    # ⭐ Reset rewinds to the FIRST chunk and keeps the chain, so the ten repeats re-walk the same
+    # chunks. Neither the global heap nor the chain may move.
+    check(c1 - c0, 0);
+    check(arena_capacity_total(small), grown);
+
+    dh_frame_arena_set(a);
+
+    # ── F) UNSETTING RESTORES THE OLD BEHAVIOUR EXACTLY ──────
+    dh_frame_arena_set(0);
+    check(dh_frame_arena_get(), 0);
+    var d0 = alloc_used();
+    at_frame(20);
+    check(alloc_used() - d0 > 0, 1);
+
+    if (g_fails == 0) {
+        var ok = "arena_test: PASS (per-frame arena converges; global heap flat)\n";
+        syscall(1, 1, ok, strlen(ok));
+    } else {
+        var bad = "arena_test: FAIL\n";
+        syscall(1, 2, bad, strlen(bad));
+    }
+    return g_fails;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

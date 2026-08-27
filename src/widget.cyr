@@ -142,6 +142,64 @@ enum DhAlign {
     ALIGN_END     = 3;
 }
 
+# ============================================================================================
+# ⭐⭐ THE PER-FRAME ARENA (0.9.15) — how an immediate-mode toolkit stops leaking a tree a frame
+# ============================================================================================
+# ⛔ THE PROBLEM IS THE SUBSTRATE, NOT THE TOOLKIT'S STYLE. `lib/alloc.cyr` is a bump allocator with
+# **no `free()`**; `alloc_reset` rewinds the WHOLE arena and would take the caller's own long-lived
+# objects with it. So an app that rebuilds its widget tree every frame — which is what immediate-mode
+# means, and what makes toolkit-owned selection and scroll work at all — retains every widget it has
+# ever built, for the life of the process. Measured against crab at 380x220 with 114 entries per pane:
+# **~236 widgets x 248 B = 58,528 B per frame**, permanently.
+#
+# ⇒ Route the PER-FRAME allocations through a caller-supplied arena. `arena_reset` is a bump back to
+# base with no free list, and a GROW arena keeps its chunks across resets — so a render loop converges
+# on its high-water mark and then **allocates nothing at all**.
+#
+# ⛔⛔ WHAT IS AND IS NOT ROUTED HERE IS A SAFETY BOUNDARY, NOT A COMPLETENESS ONE. dhancha calls
+# `alloc()` at 19 sites and only the per-frame ones may move:
+#   ROUTED  — `dh_widget_new` (this file) and layout's measure scratch (`layout.cyr`). Both die with
+#             the frame by construction.
+#   NOT     — `dh_surface_new` and its pixels, the setu client's shared buffer, event records and
+#             queues, textinput text buffers, canvas surfaces, error records. **Every one of these
+#             outlives a frame**, and a caller holds pointers to them across resets. Routing
+#             `dh_surface_new` in particular would free crab's session surface out from under it on
+#             the first reset — a use-after-free that the bump allocator would then hand back out,
+#             so it would corrupt silently rather than fault.
+#
+# ⚠ EXHAUSTION DEGRADES TO A LEAK, NEVER TO A NULL DEREF. `dh_falloc` falls back to the global
+# allocator when the arena refuses. The stdlib's own arena notes diagnose why this matters: a 0 from
+# `arena_alloc` is indistinguishable from a valid pointer and faults several layers away, so
+# "adopting the feature made the failure worse and quieter". A dropped widget is a corrupted frame;
+# a spilled one is merely the cost we had before. ⭐ Callers should still prefer
+# `arena_new_growable`, which chains a chunk instead of refusing and never reaches this fallback.
+#
+# ⛔ RESETTING INVALIDATES EVERY WIDGET POINTER — INCLUDING THE FOUR DHANCHA ITSELF HOLDS.
+# `_dh_focus`, `_dh_hover`, `_dh_press` and `_dh_drag_src` (event.cyr) are raw widget pointers kept
+# across calls. After a reset they address memory the arena is about to hand out again, so a
+# `dh_focus_within` walk would follow recycled parent links. That is why the reset entry point is
+# `dh_frame_begin` (event.cyr) — it resets the arena AND clears those four, and the two halves cannot
+# be done separately. **Do not call `arena_reset` on a frame arena directly.**
+var _dh_frame_arena = 0;
+
+# @public — route dhancha's per-frame allocations through arena `a`. Pass 0 to go back to the global
+# allocator, which is the default and is exactly the pre-0.9.15 behaviour.
+fn dh_frame_arena_set(a): i64 { _dh_frame_arena = a; return DHANCHA_OK; }
+
+# @public — the arena currently backing per-frame allocations, or 0 for the global allocator.
+fn dh_frame_arena_get(): i64 { return _dh_frame_arena; }
+
+# @public — allocate `size` bytes that live only until the next `dh_frame_begin`. Consumers may use
+# this for their own per-frame scratch: a row's display string handed to `dh_widget_set_text` MUST
+# share the widget's lifetime, because `set_text` stores the pointer and does not copy.
+# ⚠ Falls back to the global allocator when no arena is set or the arena refuses — see the ⛔ above.
+fn dh_falloc(size): i64 {
+    if (_dh_frame_arena == 0) { return alloc(size); }
+    var p = arena_alloc(_dh_frame_arena, size);
+    if (p == 0) { return alloc(size); }
+    return p;
+}
+
 # Monotonic widget-id source. A plain module-global SCALAR (not a `[1]` array —
 # module-global `var X[N]` sizing is non-uniform in cyrius, so an 8-byte
 # load64/store64 on a `[1]` can read/write out of bounds). A scalar i64 is a
@@ -151,7 +209,9 @@ var _dh_next_widget_id = 0;
 # Allocate + zero-init a widget of the given kind. Returns a DhWidget*.
 # All bounds start at 0 (layout fills them in); tree links start null.
 fn dh_widget_new(kind): i64 {
-    var wgt = alloc(DH_WIDGET_SIZE);
+    # ⚠ `dh_falloc`, not `alloc` (0.9.15) — the widget tree is the per-frame allocation. See the ⛔
+    # block above `_dh_frame_arena` for what may and may not move onto the arena, and why.
+    var wgt = dh_falloc(DH_WIDGET_SIZE);
     var id = _dh_next_widget_id;
     _dh_next_widget_id = id + 1;
     store64(wgt + DH_W_ID, id);

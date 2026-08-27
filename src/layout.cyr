@@ -72,7 +72,7 @@ fn dh_measure(wgt, out): i64 {
     var pad = dh_widget_padding(wgt);
     var gap = dh_widget_gap(wgt);
     var mode = dh_widget_layout(wgt);
-    var cbuf = alloc(16);
+    var cbuf = dh_falloc(16);        # per-frame measure scratch (0.9.15) — never retained
     var count = 0;
     var sum_w = 0;
     var sum_h = 0;
@@ -120,12 +120,12 @@ fn dh_measure(wgt, out): i64 {
 
 # Convenience: natural width / height only.
 fn dh_measure_w(wgt): i64 {
-    var m = alloc(16);
+    var m = dh_falloc(16);           # per-frame measure scratch (0.9.15) — never retained
     dh_measure(wgt, m);
     return load64(m);
 }
 fn dh_measure_h(wgt): i64 {
-    var m = alloc(16);
+    var m = dh_falloc(16);           # per-frame measure scratch (0.9.15) — never retained
     dh_measure(wgt, m);
     return load64(m + 8);
 }
@@ -138,7 +138,7 @@ fn dh_child_main(child, vertical): i64 {
     var pm = dh_widget_pref_w(child);
     if (vertical == 1) { pm = dh_widget_pref_h(child); }
     if (pm != 0) { return pm; }
-    var m = alloc(16);
+    var m = dh_falloc(16);           # per-frame measure scratch (0.9.15) — never retained
     dh_measure(child, m);
     var mm = load64(m);
     if (vertical == 1) { mm = load64(m + 8); }
@@ -289,7 +289,7 @@ fn dh_layout_apply(root, avail_w, avail_h): i64 {
 # @public — measure `root`'s natural size, then lay it out at that size
 # (origin 0,0). Convenience for a window that shrinks to fit its content.
 fn dh_layout_fit(root): i64 {
-    var m = alloc(16);
+    var m = dh_falloc(16);           # per-frame measure scratch (0.9.15) — never retained
     dh_measure(root, m);
     return dh_layout_at(root, 0, 0, load64(m), load64(m + 8));
 }

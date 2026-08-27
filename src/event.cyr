@@ -176,6 +176,27 @@ fn dh_reset_input(): i64 {
     return DHANCHA_OK;
 }
 
+# @public — start a new frame: reset the frame arena AND drop the widget pointers dhancha retains.
+# No-op when no frame arena is set, so an app that has not opted in is unaffected.
+#
+# ⛔⛔ THE TWO HALVES CANNOT BE DONE SEPARATELY, WHICH IS WHY THIS ENTRY POINT EXISTS AND WHY
+# `arena_reset` MUST NOT BE CALLED ON A FRAME ARENA DIRECTLY. `_dh_focus`, `_dh_hover`, `_dh_press`
+# and `_dh_drag_src` are raw widget pointers held across calls. After a reset they address memory the
+# arena is about to hand out again — so `dh_focus_within` would walk recycled parent links and answer
+# a question about a widget that no longer exists, with no fault to say so. Resetting the arena
+# without clearing them converts a memory saving into silent misbehaviour.
+# ⚠ IT FOLLOWS THAT AN APP USING A FRAME ARENA MUST RE-ESTABLISH FOCUS EVERY FRAME. crab does
+# (`crab_pane` calls `dh_focus_set` on the active pane while building the tree). An app that sets
+# focus once at startup and expects it to persist must NOT arena its widgets — cross-frame widget
+# identity and a per-frame arena are mutually exclusive by construction, not by policy.
+fn dh_frame_begin(): i64 {
+    var a = dh_frame_arena_get();
+    if (a == 0) { return DHANCHA_OK; }
+    arena_reset(a);
+    dh_reset_input();
+    return DHANCHA_OK;
+}
+
 # Current pointer position (last POINTER_MOVE).
 fn dh_pointer_x(): i64 { return _dh_ptr_x; }
 fn dh_pointer_y(): i64 { return _dh_ptr_y; }

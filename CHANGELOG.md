@@ -5,6 +5,71 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.15] - 2026-08-27 — a per-frame arena: an immediate-mode toolkit that stops leaking a tree a frame
+
+### Added — `dh_frame_arena_set` / `dh_frame_begin` / `dh_falloc`
+
+dhancha is immediate-mode: an app rebuilds its widget tree every frame. The allocator underneath
+(`lib/alloc.cyr`) is a bump allocator with **no `free()`**, and `alloc_reset` rewinds the *whole*
+arena — taking the caller's long-lived objects with it — so until now **every frame's tree was
+retained for the life of the process**. Measured against crab at 380x220 with 114 entries per pane:
+**~236 widgets x 248 B = 58,528 B per frame**, permanently, plus layout's measure scratch.
+
+An app now supplies an arena and dhancha routes its per-frame allocations onto it:
+
+```
+var a = arena_new_growable(262144);
+dh_frame_arena_set(a);
+while (running) {
+    dh_frame_begin();          # rewind the arena AND drop dhancha's retained widget pointers
+    ... build the tree, lay out, render ...
+}
+```
+
+⭐ **The gate is CONVERGENCE, not "it uses an arena".** `arena_reset` on a GROW arena rewinds to the
+first chunk and **keeps the chain**, so a render loop settles at its high-water mark and then costs
+the global allocator **nothing at all**. `programs/arena_test.cyr` asserts exactly that: 20 identical
+frames, then 10 larger ones, must each move `alloc_used()` by **0**.
+
+⛔ **WHAT IS ROUTED IS A SAFETY BOUNDARY, NOT A COMPLETENESS ONE.** dhancha calls `alloc()` at 19
+sites and only the per-frame ones moved — `dh_widget_new` and layout's measure scratch, both of which
+die with the frame by construction. **Not** routed: `dh_surface_new` and its pixels, the setu client's
+shared buffer, event records and queues, textinput text buffers, canvas surfaces, error records.
+Every one of those outlives a frame and a caller holds pointers to them across resets. Routing
+`dh_surface_new` in particular would free a consumer's session surface out from under it on the first
+rewind — and the bump allocator would then hand that memory back out, so it would corrupt silently
+rather than fault.
+
+⛔ **`dh_frame_begin` DOES TWO THINGS AND THEY CANNOT BE SEPARATED.** `_dh_focus`, `_dh_hover`,
+`_dh_press` and `_dh_drag_src` are raw widget pointers held across calls. After a rewind they address
+memory the arena is about to hand out again, so `dh_focus_within` would walk recycled parent links and
+answer confidently about a widget that no longer exists — with no fault to say so. ⇒ **Do not call
+`arena_reset` on a frame arena directly.**
+⚠ It follows that an app using a frame arena **must re-establish focus every frame**. Cross-frame
+widget identity and a per-frame arena are mutually exclusive by construction, not by policy.
+
+⚠ **Exhaustion degrades to a leak, never to a null deref.** `dh_falloc` falls back to the global
+allocator when the arena refuses. The stdlib's own arena notes diagnose why that matters: a 0 from
+`arena_alloc` is indistinguishable from a valid pointer and faults several layers away, so adopting
+the feature would otherwise make the failure *worse and quieter*. Prefer `arena_new_growable`, which
+chains a chunk and never reaches the fallback.
+
+⭐ **Opt-in, and the default is byte-for-byte the old behaviour.** With no arena set, `dh_falloc` is
+`alloc` and `dh_frame_begin` is a no-op.
+
+### Testing
+
+New `programs/arena_test.cyr` — 20 checks across six groups: the unchanged default, widgets actually
+landing in the arena, `dh_frame_begin` doing both halves, global-heap convergence over 20 frames and
+again over 10 larger ones, and unsetting restoring the old behaviour exactly.
+
+⭐ **Mutation-verified, five ways**, each failing: `dh_widget_new` back on `alloc`; `dh_frame_begin`
+skipping `dh_reset_input`; `dh_frame_begin` skipping `arena_reset`; layout scratch back on `alloc`;
+`dh_falloc` ignoring the arena.
+
+⚠ The suite asserts the **pre-arena baseline too** — two arena-less frames must each cost the global
+heap something. Without that, every saving below it would be measured against nothing.
+
 ## [0.9.14] - 2026-08-26 — `dh_surface_render` reuses its render target
 
 ### Changed — the returned `SdSurface` is owned by the `DhSurface` and reused across calls

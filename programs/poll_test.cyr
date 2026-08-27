@@ -138,6 +138,51 @@ fn main(): i64 {
     check(ev_kind(c2), WINDOW_CONFIGURE);
     check(ev_a(c2), 800);
 
+    # ---- ⭐⭐ AN IDLE POLL ALLOCATES NOTHING (0.9.16) ---------------------------------------
+    # ⛔ THE DEFECT THIS GATES: `dh_setu_poll_event` called `setu_msg_new()` — 80 B — **before** it
+    # knew whether anything was pending. `lib/alloc.cyr` has no `free()`, so an idle desktop grew the
+    # heap once per wakeup forever, and anything repainting without input grew it at the repaint rate
+    # (~4.8 KB/s at 60 Hz). It was the last unbounded per-cycle allocation in the render/input loop
+    # after 0.9.13-0.9.15 took the frame itself to zero.
+    # ⚠ WARM UP FIRST. The scratch message and the client's inbuf are both allocated on FIRST use, so
+    # measuring from a cold client would report their one-time cost as a per-poll one — which is the
+    # shape of measurement that makes a real fix look broken.
+    var idle2 = mk_client();
+    dh_setu_poll_event(idle2);
+    var p0 = alloc_used();
+    var pi = 0;
+    while (pi < 200) { dh_setu_poll_event(idle2); pi = pi + 1; }
+    check(alloc_used() - p0, 0);                 # 200 idle polls, zero bytes
+
+    # ⚠ NON-VACUITY: the same loop against a client that DOES have frames must still cost something,
+    # or a zero above would only prove the poll did nothing. An event is a real `dh_event_new`.
+    var busy = mk_client();
+    seed(busy, setu_input_key(7, 65, 1));
+    dh_setu_poll_event(busy);                    # warm the inbuf
+    seed(busy, setu_input_key(7, 66, 1));
+    var b0 = alloc_used();
+    check(ev_kind(dh_setu_poll_event(busy)), KEY);
+    check(alloc_used() - b0 > 0, 1);             # an event still allocates — only the IDLE path is free
+
+    # ⚠ A CONFIGURE followed by a CLOSE through the SHARED scratch — the sequence that would expose
+    # stale args if anything read past `argc`.
+    # ⛔ THESE CHECKS DO **NOT** PIN THE SCRATCH'S ZEROING, AND SAYING SO IS THE POINT. They were
+    # written believing they did; mutation says otherwise — removing the zeroing from
+    # `dh_setu_msg_scratch` leaves this file green. It cannot fail, because `dh_setu_map_input` maps
+    # `SETU_CLOSE` with a literal `a = 0; b = 0;` rather than by reading the message, and every kind
+    # that DOES read an arg has that arg guaranteed present by `setu_decode`'s argc-vs-kind check.
+    # ⇒ The zeroing is **unexercised defence, measured not assumed**: it removes a dependency on
+    # setu's argc validation staying correct, and costs ten stores. What these lines really pin is
+    # the mapping and the ordering across a reused buffer, which is worth having on its own.
+    var reuse = mk_client();
+    seed(reuse, setu_configure(7, 1280, 720, 0));
+    seed(reuse, setu_close(7));
+    check(ev_a(dh_setu_poll_event(reuse)), 1280);
+    var ce2 = dh_setu_poll_event(reuse);
+    check(ev_kind(ce2), WINDOW_CLOSE);
+    check(ev_a(ce2), 0);
+    check(ev_b(ce2), 0);
+
     return g_fails;
 }
 

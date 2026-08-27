@@ -5,6 +5,47 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.16] - 2026-08-27 — an idle poll allocates nothing
+
+### Fixed — `dh_setu_poll_event` allocated 80 B before it knew whether anything was pending
+
+It opened with `setu_msg_new()` — an 80-byte `alloc` — and only then asked the client whether a frame
+was there. `lib/alloc.cyr` has **no `free()`**, so an idle desktop grew the heap once per wakeup
+forever, and a client repainting without input grew it at the repaint rate: **~4.8 KB/s at 60 Hz**,
+permanently.
+
+⭐ **This was the last unbounded per-cycle allocation in the render/input loop.** 0.9.13–0.9.15 took a
+rendered frame to zero bytes; this is the other half. With both, the loop allocates **nothing** in
+steady state — which is what makes a self-repainting element (an idle animation, a transfer progress
+bar, an index counter) affordable rather than a slow leak.
+
+The message is pure scratch: `setu_client_poll_input` fills it and `dh_setu_map_input` reads it to
+build a **separate** `DhEvent`, so one per process is enough. `dh_setu_msg_scratch()` hands out that
+buffer, zeroed. `dh_setu_read_event` uses it too.
+
+⚠ **NOT on the frame arena, and that is the trap worth naming.** Routing it through `dh_falloc` would
+be wrong: polling happens in the event loop, `dh_frame_begin` rewinds the arena inside the caller's
+render, and the scratch would be freed out from under a loop still using it. Per-frame and per-poll
+are different lifetimes.
+
+⚠ An **event** still allocates — `dh_event_new` is 56 B per real event, which is per-input, not
+per-cycle. Only the idle path is free.
+
+### Testing
+
+`poll_test` gains 8 checks: 200 idle polls moving the global heap by **exactly 0 bytes**, a
+non-vacuity arm proving a client with frames still costs something, and the CONFIGURE→CLOSE sequence
+across the shared buffer.
+
+⚠ **Warm-up is load-bearing in that measurement** — the scratch and the client's inbuf are both
+allocated on first use, so measuring from a cold client reports their one-time cost as a per-poll one.
+
+⛔ **The zeroing of the reused scratch is UNEXERCISED DEFENCE, and the test says so rather than
+implying coverage.** Removing it leaves `poll_test` green: `dh_setu_map_input` maps `SETU_CLOSE` with
+a literal `a = 0`, and every kind that reads an arg has it guaranteed by `setu_decode`'s argc-vs-kind
+check. Measured, not assumed. It is kept because it removes a dependency on that validation staying
+correct, for ten stores.
+
 ## [0.9.15] - 2026-08-27 — a per-frame arena: an immediate-mode toolkit that stops leaking a tree a frame
 
 ### Added — `dh_frame_arena_set` / `dh_frame_begin` / `dh_falloc`

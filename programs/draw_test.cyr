@@ -43,8 +43,66 @@ fn main(): i64 {
     check(sd_surface_pixel_at(sds, 20, 22), 255);        # button blue interior
     check(sd_surface_pixel_at(sds, 0, 22), dh_theme_line());   # button border (left edge, active theme's line colour)
 
+    # ── R) THE RENDER TARGET IS REUSED, AND REUSE IS PIXEL-IDENTICAL (0.9.14) ──────
+    # ⛔ Until 0.9.13 every `dh_surface_render` allocated a fresh `sd_surface_new` — 334,432 B at
+    # crab's 380x220, retained forever, because the allocator has no `free()`. The target is now
+    # cached on the DhSurface. These checks pin BOTH halves of that: the identity (so a caller
+    # cannot be surprised by aliasing) and the equivalence (so reuse cannot leave residue).
+    var again = dh_surface_render(surf, 0);
+    check(again, sds);                                   # same object, not a new allocation
+
+    # Re-render a DIFFERENT tree into the SAME surface, then restore the original and compare.
+    # If `sd_clear` ever stops covering every pixel, the restored frame keeps residue and this fails.
+    var alt = dh_widget_new(WINDOW);
+    dh_widget_set_layout(alt, BOX_V);
+    dh_widget_set_bg(alt, RED);                          # a full-window red wash
+    dh_surface_set_root(surf, alt);
+    dh_layout_apply(alt, 40, 40);
+    dh_surface_render(surf, 0);
+    check(sd_surface_pixel_at(sds, 20, 35), 16711680);   # the alt frame really did overwrite it
+
+    # ⛔⛔ THE RESIDUE CHECK NEEDS A TREE THAT DOES *NOT* COVER THE SURFACE, AND THE FIRST DRAFT OF
+    # THIS TEST DID NOT HAVE ONE. Every tree above paints its root across the full 40x40, so deleting
+    # `sd_clear` from `dh_surface_render` left them all green — the frame was fully repainted either
+    # way. A reuse test that only ever renders opaque full-surface trees cannot see residue, which is
+    # the single failure mode reuse introduces and a fresh allocation could not have had.
+    # ⇒ Render a root that paints NOTHING (`bg = -1`) with one short child, and read a pixel below it.
+    var sparse = dh_widget_new(WINDOW);
+    dh_widget_set_layout(sparse, BOX_V);
+    dh_widget_set_bg(sparse, 0 - 1);                     # paints nothing at all
+    var tiny = dh_widget_new(BOX);
+    dh_widget_set_bg(tiny, BLUE);
+    dh_widget_set_pref(tiny, 0, 10);
+    dh_widget_add_child(sparse, tiny);
+    dh_surface_set_root(surf, sparse);
+    dh_layout_apply(sparse, 40, 40);
+    dh_surface_render(surf, 0);
+    # ⚠ Guard the guard: if the theme's background were red this check would pass vacuously.
+    check(dh_theme_bg() == 16711680, 0);
+    # y=35 is painted by nothing in `sparse`. With the clear it is the theme background; without it,
+    # the red wash from the previous frame survives into a frame that never drew red.
+    check(sd_surface_pixel_at(sds, 20, 35), dh_theme_bg());
+
+    dh_surface_set_root(surf, root);
+    dh_layout_apply(root, 40, 40);
+    dh_surface_render(surf, 0);
+    check(sd_surface_pixel_at(sds, 20, 35), 13158600);   # ...and the original frame comes back EXACT
+    check(sd_surface_pixel_at(sds, 20, 7), 16711680);
+    check(sd_surface_pixel_at(sds, 20, 22), 255);
+    check(sd_surface_pixel_at(sds, 0, 22), dh_theme_line());
+
+    # ⚠ TWO DhSurfaces STILL GIVE TWO IMAGES. This is the escape hatch the contract change leaves
+    # open, and a caller that needs two frames at once depends on it holding.
+    var surf2 = dh_surface_new(40, 40);
+    dh_surface_set_root(surf2, alt);
+    dh_layout_apply(alt, 40, 40);
+    var sds2 = dh_surface_render(surf2, 0);
+    check(sds2 == sds, 0);                               # distinct targets
+    check(sd_surface_pixel_at(sds2, 20, 35), 16711680);  # surf2 holds the alt frame...
+    check(sd_surface_pixel_at(sds, 20, 35), 13158600);   # ...and surf still holds its own
+
     if (g_fails == 0) {
-        var ok = "draw_test: PASS (bg + border render)\n";
+        var ok = "draw_test: PASS (bg + border render, reused target)\n";
         syscall(1, 1, ok, strlen(ok));
     } else {
         var bad = "draw_test: FAIL\n";

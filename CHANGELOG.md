@@ -5,6 +5,51 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.14] - 2026-08-26 — `dh_surface_render` reuses its render target
+
+### Changed — the returned `SdSurface` is owned by the `DhSurface` and reused across calls
+
+⛔ **THIS IS A CONTRACT CHANGE.** Until 0.9.13 every `dh_surface_render` allocated a brand-new
+`sd_surface_new(w, h)`, so two renders of the same `DhSurface` produced two independent images. They
+are now **the same object**: a caller holding an earlier render sees it overwritten by the next one.
+A caller that genuinely wants two images at once must render into **two `DhSurface`s** — which is
+strictly clearer than the old behaviour, where the aliasing question was invisible because the answer
+was always "no", and always cost a full-size buffer to say so.
+
+⚠ **Why it is worth a contract change.** `lib/alloc.cyr` is a bump allocator with **no `free()`**, so
+the per-call allocation was never transient — it was retained for the life of the process, every
+frame, forever. Measured against crab at 380x220: **334,432 B per frame**, which after 0.9.13's fix
+was **81 % of the entire frame cost**. An immediate-mode toolkit that cannot repaint without leaking a
+screenful cannot host an animation, a progress bar or a clock.
+
+`DhSurface` grows **40 → 48 bytes** for the cached target (`DH_S_SDS` at +40). Reuse is
+pixel-identical because `sd_clear` fills every pixel of the surface before the tree is drawn; if that
+ever stops being true, reuse stops being safe, and `draw_test` now says so.
+
+### Fixed — `dh_surface_render` dereferenced a failed allocation
+
+The old body passed `sd_surface_new`'s result straight into `sd_clear` with no check, so an OOM there
+dereferenced 0 instead of returning it. It now returns 0, which the documented contract already
+promised for a bad surface.
+
+### Testing
+
+`draw_test` gains 10 checks pinning both halves of the new contract: the **identity** (a second render
+returns the same object; two `DhSurface`s still return two) and the **equivalence** (a frame rendered,
+overwritten, and rendered again is pixel-identical, with no residue).
+
+⛔ **The first draft of the residue check could not fail, and mutation testing is what caught it.**
+Every tree it rendered painted its root across the full surface, so deleting `sd_clear` outright left
+the suite green. The check now renders a root that paints nothing (`bg = -1`) above a short child and
+reads a pixel below it, where residue from the previous frame is the only thing that could appear.
+Mutation-verified: reverting to per-call allocation fails, deleting `sd_clear` fails, and sharing one
+target across all surfaces fails.
+
+⚠ **One branch is unexercised and is documented as such**: the cached target's dimension check cannot
+be reached, because there is no `dh_surface_resize` and a `DhSurface`'s `w`/`h` are immutable after
+construction. Deleting it does **not** fail the suite — measured, not assumed. It is kept so that the
+entry point `WINDOW_CONFIGURE` implies cannot land without the cache already being correct.
+
 ## [0.9.13] - 2026-08-26 — a DhSurface no longer carries a pixel buffer nothing reads
 
 ### Fixed — `dh_surface_new` allocated a full-size pixel buffer that was never written and never read

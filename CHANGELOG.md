@@ -5,6 +5,52 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.13] - 2026-08-26 — a DhSurface no longer carries a pixel buffer nothing reads
+
+### Fixed — `dh_surface_new` allocated a full-size pixel buffer that was never written and never read
+
+`dh_surface_new` did `alloc(40)` for the struct and then `alloc(w * h * 4)` for a pixel buffer stored
+at `DH_S_PIXELS`. **`dh_surface_render` ignores that buffer entirely** — it allocates its own
+`sd_surface_new(w, h)` and draws the widget tree into that. Nothing in dhancha, none of its
+`programs/`, and no consumer in the stack ever wrote or read the field.
+
+⛔ **The allocator underneath has no `free()`.** `lib/alloc.cyr` is a chunk-based bump allocator;
+`alloc_reset` rewinds the *whole* arena, so a consumer that builds a surface per frame cannot reclaim
+any of it. Every byte a render touches is retained for the life of the process.
+
+⭐ **Measured, against crab 0.5.0 at 380x220 with 114 entries per pane** (the real iron count for `/`,
+via a host probe on the production `crab_render`):
+
+| | per frame |
+|---|---:|
+| before | **746,440 B** |
+| after | **412,040 B** |
+| saved | **334,400 B — 44.8 %** |
+
+`dh_surface_new(380, 220)` itself goes from **334,440 B to 40 B**.
+
+⚠ **THE FIELD IS DEFERRED, NOT DELETED, AND THAT IS NOT FUSSINESS.** `surface.cyr` ships in
+`dist/dhancha.cyr`, so an external caller may hold `dh_surface_pixels`. The accessor now allocates on
+first call and caches, so such a caller still receives an owned `w*h*4` buffer and cannot tell the
+difference; every caller that does not ask — which is all of dhancha, all of its programs, puka and
+crab — pays nothing.
+
+⛔ **And it is NOT the one-line change it looks like.** Simply storing 0 breaks `event_test` S):
+`dh_surface_present` returns `DHANCHA_ERR_NO_SURFACE` when pixels are 0 and `DHANCHA_ERR_UNSUPPORTED`
+otherwise, so a permanently-zero field silently downgrades 0.9.5's "refuse loudly and diagnosably"
+contract to "bad surface". **Mutation-verified**: the naive variant fails `event_test` with exit 1.
+
+⚠ **This is the first of three steps.** The other pixel buffer — `dh_surface_render`'s per-call
+`sd_surface_new`, another 334,432 B per frame — and the ~236 widget records per frame are still
+unreclaimed. Reusing the render target needs a caller that keeps its `DhSurface` alive across frames,
+and crab builds a fresh one inside `crab_render`; that is a separate change on both sides. See crab
+`docs/architecture/001-every-frame-allocates-and-nothing-is-freed.md`.
+
+### Testing
+
+All 10 `programs/*_test.cyr` suites pass unchanged (`event_test` included). Mutation-tested: replacing
+the deferred accessor with the plain `load64` one fails `event_test`.
+
 ## [0.9.12] - 2026-08-18 — WINDOW_CONFIGURE: the compositor may ask a client to resize
 
 ### Added — `SETU_CONFIGURE` reaches apps as a `DhEvent`

@@ -101,6 +101,58 @@ fn main(): i64 {
     check(sd_surface_pixel_at(sds2, 20, 35), 16711680);  # surf2 holds the alt frame...
     check(sd_surface_pixel_at(sds, 20, 35), 13158600);   # ...and surf still holds its own
 
+    # ── S) RESIZE (0.9.17) — and it makes 0.9.14's dormant branch live ─────────────
+    # ⛔ 0.9.14 cached the render target on the DhSurface and compared its dimensions before reusing
+    # it. That comparison was documented as UNREACHABLE and measured as such — deleting it did not
+    # fail this file, because `w`/`h` could not change on a live surface. `dh_surface_resize` is the
+    # entry point that ⚠ said would make it live. These are the checks that note promised.
+    var rs2 = dh_surface_new(40, 40);
+    dh_surface_set_root(rs2, root);
+    dh_layout_apply(root, 40, 40);
+    var before = dh_surface_render(rs2, 0);
+    check(sd_surface_width(before), 40);
+
+    check(dh_surface_resize(rs2, 80, 60), DHANCHA_OK);
+    check(dh_surface_width(rs2), 80);
+    check(dh_surface_height(rs2), 60);
+    dh_layout_apply(root, 80, 60);
+    var after = dh_surface_render(rs2, 0);
+    check(sd_surface_width(after), 80);          # the target really was re-made at the new extent
+    check(sd_surface_height(after), 60);
+    check(after == before, 0);                   # ...and it is a DIFFERENT object
+
+    # ⚠ AND IT IS STILL REUSED AT THE NEW SIZE — a resize must not turn every later frame back into
+    # an allocation. Rendering again returns the same target.
+    check(dh_surface_render(rs2, 0), after);
+
+    # ⛔⛔ THE LATENT OVERFLOW 0.9.13 CREATED, AND THE REASON RESIZE MUST DROP THE PIXEL CACHE.
+    # `dh_surface_pixels` allocates `w*h*4` on first ask and caches it. Growing the surface while
+    # that cache stood would hand a caller a buffer sized for the OLD extent to write the NEW one —
+    # a silent heap overflow into whatever the bump allocator placed after it. Nothing could reach it
+    # while `w`/`h` were immutable; `dh_surface_resize` is what makes it reachable.
+    var pxs = dh_surface_new(8, 8);
+    var p_small = dh_surface_pixels(pxs);        # forces the 8x8x4 = 256 B allocation
+    check(p_small != 0, 1);
+    check(dh_surface_resize(pxs, 64, 64), DHANCHA_OK);
+    var p_big = dh_surface_pixels(pxs);          # must be a NEW, larger buffer
+    check(p_big != 0, 1);
+    check(p_big == p_small, 0);                  # the stale-sized cache was dropped
+
+    # --- refusals, and the no-op ---------------------------------------------------------------
+    check(dh_surface_resize(0, 10, 10), DHANCHA_ERR_NO_SURFACE);
+    check(dh_surface_resize(rs2, 0, 10), DHANCHA_ERR_BAD_ARG);
+    check(dh_surface_resize(rs2, 10, 0), DHANCHA_ERR_BAD_ARG);
+    check(dh_surface_resize(rs2, 0 - 1, 10), DHANCHA_ERR_BAD_ARG);
+    check(dh_surface_width(rs2), 80);            # a refused resize changes nothing
+    check(dh_surface_height(rs2), 60);
+    # ⚠ Resizing to the SAME extent must not drop the caches — a compositor is free to re-send a
+    # CONFIGURE with the size the client already has, and treating that as a change would throw away
+    # a render target and a pixel buffer for nothing, every time.
+    var same_px = dh_surface_pixels(rs2);
+    check(dh_surface_resize(rs2, 80, 60), DHANCHA_OK);
+    check(dh_surface_pixels(rs2), same_px);
+    check(dh_surface_render(rs2, 0), after);
+
     if (g_fails == 0) {
         var ok = "draw_test: PASS (bg + border render, reused target)\n";
         syscall(1, 1, ok, strlen(ok));

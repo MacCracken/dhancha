@@ -21,6 +21,10 @@ enum DhanchaErrCode {
     DHANCHA_ERR_NO_SURFACE = 3;   # no client surface / present target
     DHANCHA_ERR_LAYOUT     = 4;   # layout measure/arrange could not resolve
     DHANCHA_ERR_UNSUPPORTED = 5;  # valid request dhancha can't service yet
+    # ⚠ 0.9.17 — added for `dh_surface_resize`, which must distinguish "no surface" from "a surface,
+    # and a size that is not a size". Folding a degenerate extent into `_NO_SURFACE` would tell a
+    # caller to check its handle when the handle was fine.
+    DHANCHA_ERR_BAD_ARG    = 6;   # a well-formed call carrying an out-of-range value
     DHANCHA_ERR_OTHER      = 99;  # catch-all
 }
 
@@ -62,6 +66,7 @@ fn dhancha_err_name(code): i64 {
     if (code == DHANCHA_ERR_NO_SURFACE)  { return "no surface"; }
     if (code == DHANCHA_ERR_LAYOUT)      { return "layout failed"; }
     if (code == DHANCHA_ERR_UNSUPPORTED) { return "unsupported feature"; }
+    if (code == DHANCHA_ERR_BAD_ARG)     { return "bad argument"; }
     if (code == DHANCHA_ERR_OTHER)       { return "other error"; }
     return "unknown error";
 }

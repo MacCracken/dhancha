@@ -5,6 +5,59 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.17] - 2026-08-27 — `dh_surface_resize`: the entry point `WINDOW_CONFIGURE` has waited five releases for
+
+### Added — `dh_surface_resize(surf, w, h)`
+
+`SETU_CONFIGURE` has reached apps as `WINDOW_CONFIGURE` since **0.9.12**, and **no client could act on
+it**: a `DhSurface`'s `w`/`h` were fixed at construction with no way to change them. A client that
+ignores the ask does not crash — it **freezes at its old extent** while the compositor clamps or
+refuses every blit. This is the missing half.
+
+Returns `DHANCHA_OK`, or `DHANCHA_ERR_NO_SURFACE` / the new `DHANCHA_ERR_BAD_ARG` for a degenerate
+extent. ⚠ Resizing to the size the surface already has is a **no-op** — a compositor is free to
+re-send a CONFIGURE with the current size, and treating that as a change would discard a render target
+and a pixel buffer for nothing, every time.
+
+### Fixed — a latent buffer overflow that 0.9.13 created and nothing could reach until now
+
+`dh_surface_pixels` allocates `w*h*4` **on first ask** and caches it (0.9.13). With `w`/`h` immutable
+that was safe by construction. The moment a surface can grow, a cached buffer sized for the **old**
+extent would be handed to a caller writing the **new** one — a silent heap overflow into whatever the
+bump allocator placed after it, in an allocator with no `free()`.
+
+⇒ `dh_surface_resize` **drops the pixel cache**; the next `dh_surface_pixels` re-allocates at the new
+size. The old buffer is abandoned rather than freed — there is nothing to free it with — so a resize
+costs one screenful once, which is the right trade against handing back a short one.
+
+⚠ **This is the shape of hazard a lazy cache creates: it was correct when written and became wrong
+because something else became possible.** It was found by asking what resize would touch, not by a
+failure.
+
+### Changed — 0.9.14's dimension check is now LIVE
+
+`dh_surface_render` has compared its cached target's dimensions against the surface's since 0.9.14.
+That branch was **unreachable**, documented as such, and *measured* as such — deleting it did not fail
+`draw_test`. Its ⚠ said "when `dh_surface_resize` lands, it makes this branch live — add the test
+then." It landed, and `draw_test` now pins it.
+
+⇒ The render target is deliberately **not** dropped by `dh_surface_resize`: the existing check is the
+mechanism, rather than a second invalidation site that can drift from it.
+
+### Added — `DHANCHA_ERR_BAD_ARG` (6)
+
+A well-formed call carrying an out-of-range value. Folding a degenerate extent into `_NO_SURFACE`
+would tell a caller to check its handle when the handle was fine.
+
+### Testing
+
+`draw_test` gains 20 checks: the resize itself, the target re-made at the new extent **and still
+reused after it**, the dropped pixel cache, every refusal, and the same-extent no-op.
+
+⭐ **Mutation-verified, four ways**, each failing: dropping the pixel-cache invalidation (1 check);
+deleting the now-live dimension check (3); removing the same-extent no-op (1); accepting a degenerate
+size (5).
+
 ## [0.9.16] - 2026-08-27 — an idle poll allocates nothing
 
 ### Fixed — `dh_setu_poll_event` allocated 80 B before it knew whether anything was pending

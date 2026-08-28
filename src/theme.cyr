@@ -19,3 +19,16 @@ fn dh_theme_ink(): i64    { return dh_theme_col(rupa_theme_ink(rupa_theme_active
 fn dh_theme_mute(): i64   { return dh_theme_col(rupa_theme_mute(rupa_theme_active())); }
 fn dh_theme_accent(): i64 { return dh_theme_col(rupa_theme_accent(rupa_theme_active())); }
 fn dh_theme_alert(): i64  { return dh_theme_col(rupa_theme_alert(rupa_theme_active())); }
+
+# ⭐ THE INK THAT GOES *ON* AN ACCENT FILL (0.9.20, rupa 0.1.5). Every other token above names a
+# colour you paint WITH; this one names the colour you paint ON TOP OF `dh_theme_accent()`.
+# ⛔ WITHOUT IT THE SELECTED ROW WAS UNREADABLE. `dh_draw_list_selection` fills the focused
+# selection with `accent`, and the row's label was then drawn in `ink` — on MUDRA dark that is
+# 0xE7E9EF on 0x00E5FF, a contrast ratio of **1.27:1**. The highlight was landing on the one row the
+# operator is looking at and erasing its text.
+fn dh_theme_on_accent(): i64 { return dh_theme_col(rupa_theme_on_accent(rupa_theme_active())); }
+
+# ⚠ `faint` and `held` were published by rupa and never bound here, so a consumer wanting either had
+# to reach past the toolkit into rupa directly — which is the coupling this file exists to prevent.
+fn dh_theme_faint(): i64  { return dh_theme_col(rupa_theme_faint(rupa_theme_active())); }
+fn dh_theme_held(): i64   { return dh_theme_col(rupa_theme_held(rupa_theme_active())); }

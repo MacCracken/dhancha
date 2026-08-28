@@ -1,0 +1,130 @@
+# @public — dhancha COLUMNS: the shared width spec that makes a header and its rows line up.
+# table.cyr — the POLICY over column geometry. Like list.cyr, this file owns no pixels and no state
+# beyond the spec itself; rows are ordinary BOX_H widgets and cells are ordinary LABELs.
+#
+# ⭐ WHY A SHARED SPEC IS THE WHOLE FEATURE. dhancha could already draw a row of cells — a BOX_H of
+# fixed-width LABELs lays out correctly on its own. What it could NOT do is guarantee that the header
+# and every row agree on where column 2 starts. Rows laid out independently drift the moment one
+# cell's content changes a width, and a table whose columns drift is worse than no columns at all:
+# the reader trusts the alignment to tell them which value belongs to which heading.
+# ⇒ One spec, read by the header and by every row. Alignment is then structural, not a coincidence
+# that holds until someone passes a longer string.
+#
+# ⛔ FIXED WIDTHS, NOT CONTENT-MEASURED. Measuring the widest cell needs every row's text before the
+# first row can be placed, which is a second full pass over a directory that may hold thousands of
+# entries — and it makes the column geometry depend on what happens to be on screen, so scrolling
+# would shift the columns. Auto-sizing is a real feature; it is not this one.
+#
+# ⚠ THE LAST COLUMN MAY BE 0, MEANING "take the remainder". Anything else would force the caller to
+# know the container's pixel width at build time, which for a resizable pane it does not.
+
+enum DhCols {
+    DH_COLS_MAX    = 4;     # columns per spec
+    DH_COLS_N      = 0;     # how many are in use
+    DH_COLS_W0     = 8;     # widths, one qword each
+    DH_COLS_SZ     = 40;
+}
+
+# @public — a spec for `n` columns (clamped to DH_COLS_MAX). All widths start 0 ("remainder").
+fn dh_cols_new(n): i64 {
+    var c = alloc(DH_COLS_SZ);
+    if (c == 0) { return 0; }
+    var k = n;
+    if (k < 0) { k = 0; }
+    if (k > DH_COLS_MAX) { k = DH_COLS_MAX; }
+    store64(c + DH_COLS_N, k);
+    var i = 0;
+    while (i < DH_COLS_MAX) { store64(c + DH_COLS_W0 + i * 8, 0); i = i + 1; }
+    return c;
+}
+
+# @public — re-initialise an EXISTING spec for `n` columns, without allocating.
+# ⛔ THIS EXISTS BECAUSE A SPEC PER FRAME IS A LEAK. `alloc` is a bump allocator with no `free()`, so
+# a consumer that built its column spec inside its render function retained 40 bytes per pane per
+# frame, forever — which is precisely the per-frame allocation dhancha 0.9.13-0.9.16 spent four
+# releases removing. A caller allocates ONE spec and resets it when its geometry changes.
+fn dh_cols_reset(spec, n): i64 {
+    if (spec == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    var k = n;
+    if (k < 0) { k = 0; }
+    if (k > DH_COLS_MAX) { k = DH_COLS_MAX; }
+    store64(spec + DH_COLS_N, k);
+    var i = 0;
+    while (i < DH_COLS_MAX) { store64(spec + DH_COLS_W0 + i * 8, 0); i = i + 1; }
+    return 0;
+}
+
+# @public — how many columns this spec holds.
+fn dh_cols_count(spec): i64 {
+    if (spec == 0) { return 0; }
+    return load64(spec + DH_COLS_N);
+}
+
+# @public — set column `i`'s width in px. 0 means "take the remaining width".
+fn dh_cols_set_width(spec, i, w): i64 {
+    if (spec == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    if (i < 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    if (i >= dh_cols_count(spec)) { return DHANCHA_ERR_BAD_WIDGET; }
+    if (w < 0) { w = 0; }
+    store64(spec + DH_COLS_W0 + i * 8, w);
+    return 0;
+}
+
+# @public — column `i`'s width, or 0 (remainder / out of range).
+fn dh_cols_width(spec, i): i64 {
+    if (spec == 0) { return 0; }
+    if (i < 0) { return 0; }
+    if (i >= dh_cols_count(spec)) { return 0; }
+    return load64(spec + DH_COLS_W0 + i * 8);
+}
+
+# @public — total of the FIXED widths. A 0-width column contributes nothing, which is what makes
+# this the right number to subtract when working out the remainder column's size.
+fn dh_cols_fixed_total(spec): i64 {
+    var t = 0;
+    var i = 0;
+    var n = dh_cols_count(spec);
+    while (i < n) { t = t + dh_cols_width(spec, i); i = i + 1; }
+    return t;
+}
+
+# @public — an empty row laid out for this spec: a BOX_H whose children are its cells.
+# ⚠ Not added to any list — the caller does that, so a row can also be used as a HEADER sitting
+# outside the list (which is exactly how a header avoids scrolling with the rows).
+fn dh_table_row(spec): i64 {
+    var r = dh_widget_new(DhWidgetKind.BOX);
+    if (r == 0) { return 0; }
+    dh_widget_set_layout(r, DhLayout.BOX_H);
+    return r;
+}
+
+# @public — append cell `i` carrying `text`, sized from the spec. Returns the cell widget, or 0.
+# ⚠ A 0-width column becomes flex 1 — it takes the leftover space — and every other column is fixed
+# with flex 0. That is the "last column is the remainder" rule, expressed in the layout engine that
+# already exists rather than in arithmetic here.
+fn dh_table_cell(row, spec, i, text): i64 {
+    if (row == 0) { return 0; }
+    var c = dh_widget_new(DhWidgetKind.LABEL);
+    if (c == 0) { return 0; }
+    dh_widget_set_text(c, text);
+    var w = dh_cols_width(spec, i);
+    if (w > 0) {
+        store64(c + DH_W_PREF_W, w);
+        store64(c + DH_W_FLEX, 0);
+    } else {
+        store64(c + DH_W_FLEX, 1);
+    }
+    dh_widget_add_child(row, c);
+    return c;
+}
+
+# @public — a header row for this spec: the same geometry as a data row, drawn in the theme's
+# SECONDARY ink so it reads as a label rather than as another entry.
+# ⛔ A HEADER THAT LOOKS LIKE A ROW IS A BUG, not a style choice — the first line of a file list
+# reading as a file is exactly the misreading a header exists to prevent.
+fn dh_table_header(spec): i64 {
+    var h = dh_table_row(spec);
+    if (h == 0) { return 0; }
+    dh_widget_set_fg(h, dh_theme_mute());
+    return h;
+}

@@ -17,6 +17,25 @@ fn check(got, want): i64 {
 }
 
 # Build a list of `n` rows, row height 20, no gap/pad, laid out `view_h` tall.
+# Count pixels of exactly `col` in a rectangle. ⚠ THE ORACLE COUNTS RATHER THAN PROBES: checking one
+# coordinate would require the exact bitmap of one CP437 glyph to be right, which is a second thing to
+# get wrong. A count does not care about the letterform.
+fn count_col(sds, x0, y0, x1, y1, col): i64 {
+    var n = 0;
+    var yy = y0;
+    while (yy < y1) {
+        var xx = x0;
+        while (xx < x1) {
+            if (sd_surface_pixel_at(sds, xx, yy) == col) { n = n + 1; }
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+    return n;
+}
+
+fn t_gt(a, b): i64 { if (a > b) { return 1; } return 0; }
+
 fn mk_list(n, view_h): i64 {
     var lst = dh_list_new(20);
     var i = 0;
@@ -205,6 +224,56 @@ fn main(): i64 {
 
     # ⭐ A LIST TAKES KEYBOARD FOCUS — a list Tab cannot reach is a mouse-only control.
     check(dh_widget_focusable(p), 1);
+
+    # ---- ⭐⭐ THE SELECTED ROW'S TEXT SURVIVES ITS OWN HIGHLIGHT (0.9.20, rupa 0.1.5) ----------
+    # ⛔ THE HIGHLIGHT WAS ERASING THE ROW IT HIGHLIGHTED. The focused selection is filled with
+    # `accent`, and every row's label was then drawn in the theme's primary `ink` — on MUDRA dark
+    # that is 0xE7E9EF on 0x00E5FF, a contrast ratio of **1.27:1**. The one row the operator is
+    # looking at was the one row that could not be read.
+    # ⚠ COMPARE AGAINST THE BARE 0xRRGGBB, NOT `colour | 0xFF000000`. Glyph pixels really are stored
+    # with alpha 0xFF (v0.9.2, load-bearing under agnos `#92` premultiplied src-over) — but
+    # `sd_surface_pixel_at` rebuilds its answer from b/g/r only and drops the alpha byte, so a probe
+    # never sees it. Expecting the alpha here fails against correct code.
+    rupa_theme_set_active_name("mudra-dark");
+    var r = dh_list_new(20);
+    var r0 = dh_widget_new(LABEL);
+    var r1 = dh_widget_new(LABEL);
+    dh_widget_set_text(r0, "MMMM");
+    dh_widget_set_text(r1, "MMMM");
+    dh_list_add(r, r0);
+    dh_list_add(r, r1);
+    dh_widget_set_bounds(r, 0, 0, 60, 40);
+    dh_layout_apply(r, 60, 40);
+    dh_list_select(r, 0);
+    dh_focus_set(r);
+    var rs = sd_surface_new(60, 40);
+    sd_clear(rs, 0x00000000);
+    dh_draw_widget(rs, r, 0, 0, 0, 60, 40);
+    var ink_px = dh_theme_ink();
+    var oac_px = dh_theme_on_accent();
+    # Row 0 is selected AND focused: its glyphs are on-accent, and NONE are plain ink.
+    check(t_gt(count_col(rs, 0, 0, 60, 20, oac_px), 0), 1);
+    check(count_col(rs, 0, 0, 60, 20, ink_px), 0);
+    # ⛔ ROW 1 IS THE CONTROL, AND WITHOUT IT THE CHECK ABOVE PROVES NOTHING — a build that drew
+    # EVERY label in on-accent would pass the first two lines and be just as broken.
+    check(t_gt(count_col(rs, 0, 20, 60, 40, ink_px), 0), 1);
+    check(count_col(rs, 0, 20, 60, 40, oac_px), 0);
+    # ⚠ AND AN UNFOCUSED LIST MUST NOT SWAP THE INK. Its selection is filled with `line`, not accent,
+    # and normal ink reads fine on `line` — so the swap is gated on focus exactly as the fill is.
+    dh_focus_set(0);
+    sd_clear(rs, 0x00000000);
+    dh_draw_widget(rs, r, 0, 0, 0, 60, 40);
+    check(t_gt(count_col(rs, 0, 0, 60, 20, ink_px), 0), 1);
+    check(count_col(rs, 0, 0, 60, 20, oac_px), 0);
+
+    # ---- the theme binding itself ------------------------------------------------------------
+    check(dh_theme_on_accent(), sd_rgb(0x0B, 0x0C, 0x0E));   # mudra-dark: the carbon void
+    rupa_theme_set_active_name("shanta-light");
+    check(dh_theme_on_accent(), sd_rgb(0x2B, 0x26, 0x20));   # ...and it follows the active theme
+    # ⚠ `faint` and `held` were published by rupa and never bound here until 0.9.20.
+    check(dh_theme_faint(), sd_rgb(0xB3, 0xA8, 0x8F));
+    check(dh_theme_held(), sd_rgb(0x6F, 0x7D, 0x5F));
+    rupa_theme_set_active_name("mudra-dark");
 
     return g_fails;
 }

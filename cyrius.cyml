@@ -49,6 +49,7 @@ modules = [
     # ordering error, which is a confusing way to learn it.
     "src/textinput.cyr",
     "src/theme.cyr",
+    "src/table.cyr",
     "src/surface.cyr",
     "src/setu_client.cyr",
     "src/setu_input.cyr",
@@ -94,7 +95,7 @@ git = "https://github.com/MacCracken/rupa.git"
 # ⚠ `path` — every other dep in this stack carries both; without it a local rupa change cannot be
 # built against until it is pushed, which is how a burn ends up testing last week's tokens.
 path = "../rupa"
-tag = "0.1.4"
+tag = "0.1.5"
 modules = ["dist/rupa.cyr"]
 
 [deps.rekha]

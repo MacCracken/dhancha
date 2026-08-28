@@ -1,0 +1,142 @@
+# programs/table_test.cyr — RUN test for dhancha's COLUMN spec (0.9.20).
+#
+# ⭐ THE CLAIM UNDER TEST is alignment: a header and every row must agree on where each column
+# starts. That is a claim about PIXEL GEOMETRY, so the checks are on laid-out bounds, not on the
+# spec's own accessors — a spec that stored the right numbers and laid out wrongly would pass an
+# accessor-only test and be useless.
+# Exit code = failed checks.
+
+include "src/lib.cyr"
+
+var g_fails = 0;
+
+fn check(got, want): i64 {
+    if (got == want) { return 0; }
+    g_fails = g_fails + 1;
+    return 1;
+}
+
+fn main(): i64 {
+    alloc_init();
+    rupa_theme_set_active_name("mudra-dark");
+
+    # ---- the spec itself -------------------------------------------------------------------
+    var spec = dh_cols_new(3);
+    check(dh_cols_count(spec), 3);
+    dh_cols_set_width(spec, 0, 0);      # NAME — the remainder column
+    dh_cols_set_width(spec, 1, 60);     # SIZE
+    dh_cols_set_width(spec, 2, 90);     # MODIFIED
+    check(dh_cols_width(spec, 0), 0);
+    check(dh_cols_width(spec, 1), 60);
+    check(dh_cols_fixed_total(spec), 150);
+    # ⚠ Out-of-range reads answer 0 rather than reading past the record.
+    check(dh_cols_width(spec, 3), 0);
+    check(dh_cols_width(spec, 0 - 1), 0);
+    # ⚠ ...and out-of-range writes are refused, so a caller's off-by-one cannot corrupt the spec.
+    check(dh_cols_set_width(spec, 3, 40), DHANCHA_ERR_BAD_WIDGET);
+    check(dh_cols_fixed_total(spec), 150);
+    # ⚠ The column count is clamped, not trusted.
+    check(dh_cols_count(dh_cols_new(99)), DH_COLS_MAX);
+    check(dh_cols_count(dh_cols_new(0 - 3)), 0);
+
+    # ⛔ A SPEC IS REUSABLE WITHOUT ALLOCATING — a spec per frame is a leak against a bump allocator
+    # with no free(), which is the per-frame allocation 0.9.13-0.9.16 spent four releases removing.
+    var reused = dh_cols_new(2);
+    dh_cols_set_width(reused, 1, 33);
+    dh_cols_reset(reused, 3);
+    check(dh_cols_count(reused), 3);
+    check(dh_cols_width(reused, 1), 0);          # reset clears the widths, it does not keep them
+    check(dh_cols_reset(reused, 99), 0);
+    check(dh_cols_count(reused), DH_COLS_MAX);   # ...and clamps, like dh_cols_new
+
+    # ---- ⭐⭐ ALIGNMENT: the header and the rows must agree ---------------------------------
+    var root = dh_widget_new(DhWidgetKind.BOX);
+    dh_widget_set_layout(root, DhLayout.BOX_V);
+    var hdr = dh_table_header(spec);
+    dh_table_cell(hdr, spec, 0, "NAME");
+    dh_table_cell(hdr, spec, 1, "SIZE");
+    dh_table_cell(hdr, spec, 2, "MODIFIED");
+    store64(hdr + DH_W_PREF_H, 20);
+    store64(hdr + DH_W_FLEX, 0);
+    dh_widget_add_child(root, hdr);
+
+    var lst = dh_list_new(20);
+    var r0 = dh_table_row(spec);
+    dh_table_cell(r0, spec, 0, "aethersafha");
+    dh_table_cell(r0, spec, 1, "4.0K");
+    dh_table_cell(r0, spec, 2, "2026-08-28 11:04");
+    dh_list_add(lst, r0);
+    var r1 = dh_table_row(spec);
+    dh_table_cell(r1, spec, 0, "x");                     # a MUCH shorter name
+    dh_table_cell(r1, spec, 1, "12");
+    dh_table_cell(r1, spec, 2, "2026-01-01 00:00");
+    dh_list_add(lst, r1);
+    dh_widget_add_child(root, lst);
+
+    dh_widget_set_bounds(root, 0, 0, 400, 80);
+    dh_layout_apply(root, 400, 80);
+
+    # ⛔ THE COLUMNS MUST LINE UP ACROSS ROWS OF DIFFERENT CONTENT LENGTH. This is the failure the
+    # spec exists to prevent: independently laid-out rows drift the moment one cell's text changes,
+    # and a reader trusts the alignment to say which value belongs to which heading.
+    var h1 = dh_widget_first_child(hdr);
+    var h2 = dh_widget_next_sibling(h1);
+    var h3 = dh_widget_next_sibling(h2);
+    var a1 = dh_widget_first_child(r0);
+    var a2 = dh_widget_next_sibling(a1);
+    var a3 = dh_widget_next_sibling(a2);
+    var b1 = dh_widget_first_child(r1);
+    var b2 = dh_widget_next_sibling(b1);
+    var b3 = dh_widget_next_sibling(b2);
+    check(dh_widget_x(a2), dh_widget_x(h2));     # SIZE starts at the same x in row 0 as in the header
+    check(dh_widget_x(b2), dh_widget_x(h2));     # ...and in row 1, whose NAME is far shorter
+    check(dh_widget_x(a3), dh_widget_x(h3));     # MODIFIED likewise
+    check(dh_widget_x(b3), dh_widget_x(h3));
+    # ...and the fixed columns keep the width they were given.
+    check(dh_widget_w(a2), 60);
+    check(dh_widget_w(a3), 90);
+    check(dh_widget_w(b2), 60);
+    # ⚠ The 0-width column takes the REMAINDER: 400 - 60 - 90 = 250.
+    check(dh_widget_w(a1), 250);
+    check(dh_widget_w(b1), 250);
+
+    # ---- the header reads as a label, not as another row ------------------------------------
+    # ⛔ A header that looks like a row is a bug, not a style choice: the first line of a file list
+    # reading as a file is the misreading a header exists to prevent.
+    check(dh_widget_fg(hdr), dh_theme_mute());
+    check(dh_widget_fg(r0), 0 - 1);              # a data row inherits
+
+    # ---- ⛔ AND A CELL'S OWN COLOUR MUST NOT DEFEAT THE SELECTION HIGHLIGHT ------------------
+    # A per-widget fg is a PREFERENCE; on-accent on the selected row is a LEGIBILITY GUARANTEE. If a
+    # column could set its own colour on a selected row, a table could reintroduce exactly the
+    # unreadable-highlight defect 0.9.20 fixed.
+    dh_widget_set_fg(r0, dh_theme_alert());
+    dh_list_select(lst, 0);
+    dh_focus_set(lst);
+    dh_layout_apply(root, 400, 80);
+    var ts = sd_surface_new(400, 80);
+    sd_clear(ts, 0x00000000);
+    dh_draw_widget(ts, root, 0, 0, 0, 400, 80);
+    var rowy = dh_widget_y(r0) + 10;
+    check(count_col(ts, 0, rowy - 8, 400, rowy + 8, dh_theme_on_accent()) > 0, 1);
+    check(count_col(ts, 0, rowy - 8, 400, rowy + 8, dh_theme_alert()), 0);
+
+    return g_fails;
+}
+
+fn count_col(sds, x0, y0, x1, y1, col): i64 {
+    var n = 0;
+    var yy = y0;
+    while (yy < y1) {
+        var xx = x0;
+        while (xx < x1) {
+            if (sd_surface_pixel_at(sds, xx, yy) == col) { n = n + 1; }
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+    return n;
+}
+
+var rc = main();
+syscall(60, rc);

@@ -65,6 +65,7 @@ include "src/event.cyr"
 include "src/canvas.cyr"      # app-drawn CANVAS slot — needs widget state, no event deps
 include "src/textinput.cyr"   # editable TEXTINPUT buffer + caret — AFTER event.cyr, which owns DhKey
 include "src/theme.cyr"       # rupa theme tokens → sadish colours (before surface, which draws with them)
+include "src/table.cyr"       # ⚠ AFTER theme.cyr — dh_table_header reads dh_theme_mute()
 include "src/surface.cyr"
 
 # ⛔ THE CLIENT LAYER WAS IN `[lib] modules` (the dist fold) AND NOT HERE, so nothing built from this

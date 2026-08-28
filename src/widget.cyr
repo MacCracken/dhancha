@@ -85,8 +85,14 @@ enum DhWidgetField {
     DH_W_CARET        = 232;   # caret position as a BYTE offset into the buffer, 0..len
     # ⭐ CANVAS DRAW CALLBACK (0.9.9) — `draw(wgt, sds, clx, cly, clw, clh)`, or 0.
     DH_W_DRAW         = 240;
+    # ⭐ PER-WIDGET TEXT COLOUR (0.9.20). -1 = inherit from the parent, which is what every widget
+    # did unconditionally before. Appended at the end so every offset above is unchanged.
+    # ⛔ IT DOES NOT OUTRANK THE SELECTION HIGHLIGHT. A cell's colour is a PREFERENCE; on-accent on a
+    # selected row is a LEGIBILITY GUARANTEE, and a table that let a column set its own colour would
+    # otherwise be able to make the selected row unreadable again — the exact defect 0.9.20 fixed.
+    DH_W_FG           = 248;
 }
-var DH_WIDGET_SIZE = 248;
+var DH_WIDGET_SIZE = 256;
 
 # ============================================================================================
 # ⭐⭐ MOTION — the app's half of "the compositor grants, apps override per widget"
@@ -232,6 +238,7 @@ fn dh_widget_new(kind): i64 {
     store64(wgt + DH_W_TEXT_LEN, 0);
     store64(wgt + DH_W_CARET, 0);
     store64(wgt + DH_W_DRAW, 0);
+    store64(wgt + DH_W_FG, 0 - 1);         # inherit
     store64(wgt + DH_W_X, 0);
     store64(wgt + DH_W_Y, 0);
     store64(wgt + DH_W_W, 0);
@@ -418,6 +425,16 @@ fn dh_widget_is_drop_target(wgt): i64 {
 # ---- flex / box layout properties ---------------------------------
 
 fn dh_widget_flex(wgt): i64    { return load64(wgt + DH_W_FLEX); }
+
+# @public — this widget's own text colour, or -1 to inherit from its parent.
+fn dh_widget_fg(wgt): i64 { if (wgt == 0) { return 0 - 1; } return load64(wgt + DH_W_FG); }
+
+# @public — set this widget's text colour (and its subtree's, unless a child overrides). -1 inherits.
+fn dh_widget_set_fg(wgt, col): i64 {
+    if (wgt == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    store64(wgt + DH_W_FG, col);
+    return 0;
+}
 fn dh_widget_padding(wgt): i64 { return load64(wgt + DH_W_PAD); }
 fn dh_widget_gap(wgt): i64     { return load64(wgt + DH_W_GAP); }
 fn dh_widget_align(wgt): i64   { return load64(wgt + DH_W_ALIGN); }

@@ -5,6 +5,94 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.20] - 2026-08-28 — real columns, and the selected row's text survives its own highlight
+
+### Added — COLUMNS: a shared width spec so a header and its rows line up (`src/table.cyr`)
+
+dhancha could already draw a row of cells — a `BOX_H` of fixed-width labels lays out fine on its own.
+What it could **not** do is guarantee that the header and every row agree on where column 2 starts.
+Rows laid out independently drift the moment one cell's content changes, and a table whose columns
+drift is worse than no columns: the reader trusts the alignment to say which value belongs to which
+heading.
+
+- **`dh_cols_new(n)` / `dh_cols_set_width` / `dh_cols_width` / `dh_cols_count` /
+  `dh_cols_fixed_total`** — one spec, read by the header and by every row. Up to 4 columns.
+- **`dh_table_row(spec)` / `dh_table_cell(row, spec, i, text)` / `dh_table_header(spec)`** — rows are
+  ordinary `BOX_H` widgets and cells ordinary labels; `table.cyr` owns no pixels, like `list.cyr`.
+- **A 0-width column takes the remainder** (flex 1), so a caller need not know the container's pixel
+  width at build time — which for a resizable pane it does not.
+- **The header is drawn in the theme's secondary ink.** ⛔ A header that looks like a row is a bug,
+  not a style choice: the first line of a file list reading as a file is the misreading a header
+  exists to prevent.
+- ⛔ **Fixed widths, not content-measured.** Measuring the widest cell needs every row's text before
+  the first row can be placed — a second full pass over a directory that may hold thousands of
+  entries — and it makes column geometry depend on what is on screen, so scrolling would shift the
+  columns. Auto-sizing is a real feature; it is not this one.
+
+### Added — per-widget text colour
+
+- **`DH_W_FG` (offset 248, `DH_WIDGET_SIZE` 248 → 256)**, `dh_widget_set_fg` / `dh_widget_fg`.
+  `-1` inherits, which is what every widget did unconditionally before. Appended, so every existing
+  offset is unchanged.
+- ⛔ **It does NOT outrank the selection highlight.** A cell's colour is a *preference*; on-accent on
+  a selected row is a *legibility guarantee*. Without that precedence a table could set a column's
+  colour and make the selected row unreadable again — the exact defect fixed below.
+
+### Fixed — the highlight was erasing the row it highlighted
+
+`dh_draw_list_selection` fills the focused selection with `accent`, and every row's label was then
+drawn in the theme's primary `ink`. On MUDRA dark that is `0xE7E9EF` on `0x00E5FF` — a contrast ratio
+of **1.27:1**. The one row the operator is looking at was the one row that could not be read.
+
+- **`dh_theme_on_accent()`** — binds rupa 0.1.5's new `on-accent` token (the ink to use *on* an
+  accent fill).
+- **`dh_draw_widget_ink` / `dh_draw_text_ink`** carry a text colour down the widget tree; the focused
+  list's selected row gets `on-accent`, and it propagates to that row's own children (a row is not
+  always a leaf).
+- ⚠ **`dh_draw_widget` and `dh_draw_text` keep their existing signatures** and default to
+  `dh_theme_ink()`. puka calls `dh_draw_widget` directly, as do dhancha's test programs.
+- ⚠ **Gated on focus, exactly as the fill is.** An unfocused list fills its selection with `line`
+  instead, where normal ink reads fine — so the two cannot drift apart.
+
+### Fixed — the scalable-font path ignored the theme entirely
+
+`dh_draw_text`'s rekha branch (`font != 0`) blitted **hardcoded `sd_rgb(255, 255, 255)`**. White
+glyphs on MUDRA light's `0xFBF8F0` paper is white-on-white: that path was unreadable on both light
+grounds and had been since it was written. The bitmap path (`font == 0`, what everything actually
+ships with) always honoured the theme, which is why nothing caught it. It now uses the same `ink`.
+
+### Added — the theme binding is complete
+
+- **`dh_theme_faint()`** and **`dh_theme_held()`**. rupa published both and dhancha never bound
+  them, so a consumer wanting either had to reach past the toolkit into rupa directly — the coupling
+  `theme.cyr` exists to prevent.
+
+### Changed
+
+- **`[deps.rupa]` 0.1.4 → 0.1.5**.
+
+### Testing
+
+- `programs/list_test.cyr` gains a pixel test: the focused+selected row's glyphs are `on-accent` and
+  **none** are plain ink, while an unselected row in the same render is the reverse. ⛔ That control
+  row is what makes the assertion mean something — a build that drew *every* label in on-accent
+  would pass without it.
+- ⚠ The oracle **counts** glyph pixels rather than probing one coordinate, so it does not depend on
+  the exact bitmap of a CP437 glyph.
+- ⚠ Expected values are bare `0xRRGGBB`: glyph pixels really are stored with alpha `0xFF`, but
+  `sd_surface_pixel_at` rebuilds its answer from b/g/r and drops the alpha byte.
+- Mutation-proven five ways: the swap reverted (2 failed checks), applied to every row (4), not
+  gated on focus (2), `dh_draw_text` ignoring its ink parameter (2), and `on_accent` bound to rupa's
+  `ink` token (4).
+- **`programs/table_test.cyr`** — a new RUN suite. ⭐ The claim under test is **alignment**, so the
+  checks are on laid-out **bounds**, not on the spec's accessors: a spec that stored the right
+  numbers and laid out wrongly would pass an accessor-only test and still be useless. Two rows of
+  very different content length must put SIZE and MODIFIED at the same x as the header.
+- Mutation-proven four ways: cells ignoring the spec width (5 failed checks), the header not muted
+  (1), a cell's own fg defeating the selection highlight (2), and out-of-range width writes accepted
+  (1).
+- All 12 RUN suites pass; puka builds unchanged against the new toolkit.
+
 ## [0.9.18] - 2026-08-27 — `POINTER_SCROLL`: the wheel reaches apps
 
 ### Added

@@ -136,5 +136,11 @@ modules = ["src/font_data.cyr"]
 # `docs/development/planning/ipc.md` §9/§10.
 [deps.setu]
 git = "https://github.com/MacCracken/setu.git"
+# ⚠ `path` added 2026-08-27, for the reason crab added one to this very dep in August: without it
+# dhancha can only build against a PUBLISHED setu tag, so a protocol kind cannot be mapped until it is
+# pushed — and the wheel needed setu, dhancha and crab moving together. ⛔ `path` WINS over `tag`, so a
+# green build here is NOT evidence the declared graph resolves; re-verify the tag against setu's
+# VERSION at every cut, and prefer disabling `path` and re-resolving over trusting the local tree.
+path = "../setu"
 tag = "0.8.7"
 modules = ["dist/setu.cyr"]

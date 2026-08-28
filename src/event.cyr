@@ -47,6 +47,15 @@ enum DhEventKind {
     # crash, it FREEZES at its old extent. Before aethersafha 0.16.8 there was no clamp and no ask:
     # the blit read `win_w x win_h` out of the smaller slot and took a page fault.
     WINDOW_CONFIGURE = 13;
+    # ⭐ 0.9.18 — the wheel. `a` = signed delta, POSITIVE = wheel-up (away from the user). Summed by
+    # the compositor since its last forward, so one event may carry several detents.
+    # ⛔ NOT A `POINTER_BTN` WITH A MAGIC BUTTON CODE. X11 spends buttons 4/5 on wheel detents; a
+    # toolkit that copied that would make `POINTER_BTN`'s `a` mean two things and turn a scroll into a
+    # click in every consumer that range-checks buttons rather than enumerating them.
+    # ⚠ NO POSITION. A scroll carries none on the wire (setu `SETU_INPUT_PTR_SCROLL` is id + delta),
+    # for the same reason `POINTER_BTN` carries none: the pointer is wherever the last `POINTER_MOVE`
+    # left it, and `dh_dispatch` already tracks that in `_dh_ptr_x`/`_dh_ptr_y`.
+    POINTER_SCROLL = 14;
 }
 
 # Well-known key codes the toolkit acts on itself (values are ASCII /

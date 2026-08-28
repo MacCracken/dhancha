@@ -5,6 +5,37 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.18] - 2026-08-27 — `POINTER_SCROLL`: the wheel reaches apps
+
+### Added
+
+- **`POINTER_SCROLL` (`DhEventKind` 14)** — `a` = signed wheel delta, **positive = wheel-up** (away
+  from the user). Mapped from setu's `SETU_INPUT_PTR_SCROLL` (kind 12, setu 0.8.8).
+
+⛔ **NOT a `POINTER_BTN` with a magic button code.** X11 spends buttons 4/5 on wheel detents; copying
+that would make `POINTER_BTN`'s `a` mean two different things and turn a scroll into a click in every
+consumer that range-checks buttons rather than enumerating them.
+
+⚠ **No position, deliberately.** setu carries id + delta only. The pointer is wherever the last
+`POINTER_MOVE` left it, and `dh_dispatch` already tracks that in `_dh_ptr_x`/`_dh_ptr_y` — the same
+reason `POINTER_BTN` carries no coordinates either.
+
+⚠ **The whole chain has to be present for this to fire**: agnos >= 1.56.49 reads the wheel byte,
+bhumi >= 1.4.3 carries it, setu >= 0.8.8 defines the kind, and the compositor must send it.
+
+### Changed
+
+- **`[deps.setu]` gains `path = "../setu"`.** Without it dhancha can only build against a published
+  setu tag, so a new protocol kind cannot be mapped until it is pushed. ⛔ `path` WINS over `tag`, so
+  a green local build is not evidence the declared graph resolves — re-verify against setu's VERSION
+  at every cut.
+
+### Testing
+
+`poll_test` gains 7 checks: the kind maps, the sign survives (a wheel-down arriving as a large
+positive would scroll a list to its end), it is not confusable with `POINTER_BTN`, and it does not
+displace input already queued ahead of it.
+
 ## [0.9.17] - 2026-08-27 — `dh_surface_resize`: the entry point `WINDOW_CONFIGURE` has waited five releases for
 
 ### Added — `dh_surface_resize(surf, w, h)`

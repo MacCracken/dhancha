@@ -138,6 +138,26 @@ fn main(): i64 {
     check(ev_kind(c2), WINDOW_CONFIGURE);
     check(ev_a(c2), 800);
 
+    # ---- ⭐ THE WHEEL REACHES A CLIENT AS ITS OWN KIND (0.9.18) ------------------------------
+    # ⛔ IT MUST NOT ARRIVE AS A BUTTON. That is the X11 convention this deliberately does not copy —
+    # a consumer range-checking `POINTER_BTN`'s code would treat a detent as a click.
+    var scr = mk_client();
+    seed(scr, setu_input_ptr_scroll(7, 3));
+    var se = dh_setu_poll_event(scr);
+    check(ev_kind(se), POINTER_SCROLL);
+    check(ev_a(se), 3);
+    check(ev_kind(se) == POINTER_BTN, 0);
+    # ⚠ SIGN SURVIVES. A wheel-down arriving as a large positive would scroll a list to its end.
+    var scr2 = mk_client();
+    seed(scr2, setu_input_ptr_scroll(7, 0 - 2));
+    check(ev_a(dh_setu_poll_event(scr2)), 0 - 2);
+    # ⚠ ...and it does not displace input that was already queued.
+    var scr3 = mk_client();
+    seed(scr3, setu_input_key(7, 65, 1));
+    seed(scr3, setu_input_ptr_scroll(7, 1));
+    check(ev_kind(dh_setu_poll_event(scr3)), KEY);
+    check(ev_kind(dh_setu_poll_event(scr3)), POINTER_SCROLL);
+
     # ---- ⭐⭐ AN IDLE POLL ALLOCATES NOTHING (0.9.16) ---------------------------------------
     # ⛔ THE DEFECT THIS GATES: `dh_setu_poll_event` called `setu_msg_new()` — 80 B — **before** it
     # knew whether anything was pending. `lib/alloc.cyr` has no `free()`, so an idle desktop grew the

@@ -12,6 +12,7 @@
 #   INPUT_KEY(id,keysym,mods) → KEY(a=keysym, b=mods)
 #   INPUT_PTR_MOVE(id,x,y)    → POINTER_MOVE(a=x, b=y)
 #   INPUT_PTR_BTN(id,btn,st)  → POINTER_BTN(a=btn, b=st)
+#   INPUT_PTR_SCROLL(id,d)    → POINTER_SCROLL(a=delta, + = up/away)
 #   INPUT_FOCUS(id,focused)   → FOCUS(a=focused, b=0)
 fn dh_setu_map_input(m): i64 {
     var k = setu_msg_kind(m);
@@ -21,6 +22,7 @@ fn dh_setu_map_input(m): i64 {
     if (k == SETU_INPUT_KEY)        { dk = KEY;          a = setu_msg_arg(m, 1); b = setu_msg_arg(m, 2); }
     elif (k == SETU_INPUT_PTR_MOVE) { dk = POINTER_MOVE; a = setu_msg_arg(m, 1); b = setu_msg_arg(m, 2); }
     elif (k == SETU_INPUT_PTR_BTN)  { dk = POINTER_BTN;  a = setu_msg_arg(m, 1); b = setu_msg_arg(m, 2); }
+    elif (k == SETU_INPUT_PTR_SCROLL) { dk = POINTER_SCROLL; a = setu_msg_arg(m, 1); b = 0; }
     elif (k == SETU_INPUT_FOCUS)    { dk = FOCUS;        a = setu_msg_arg(m, 1); b = 0; }
     elif (k == SETU_CLOSE)          { dk = WINDOW_CLOSE; a = 0; b = 0; }
     elif (k == SETU_CONFIGURE)      { dk = WINDOW_CONFIGURE; a = setu_msg_arg(m, 1); b = setu_msg_arg(m, 2); }

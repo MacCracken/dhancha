@@ -142,5 +142,13 @@ git = "https://github.com/MacCracken/setu.git"
 # green build here is NOT evidence the declared graph resolves; re-verify the tag against setu's
 # VERSION at every cut, and prefer disabling `path` and re-resolving over trusting the local tree.
 path = "../setu"
-tag = "0.8.7"
+# ⛔⛔ 0.8.8 IS A HARD FLOOR, NOT A PREFERENCE — `SETU_INPUT_PTR_SCROLL` (kind 12) is an ENUM CONSTANT,
+# and `cyrius distlib` compiles the generated bundle: an undefined *function* is downgraded to a
+# warning (dhancha calls setu functions it does not carry), but an undefined *variable* is a hard
+# error. So a stale tag here does not degrade — it fails the bundle build outright.
+# ⚠ AND THAT IS EXACTLY HOW IT WAS FOUND. Locally `path` wins and `../setu` was already 0.8.8, so
+# every build and every test was green while this line still said 0.8.7; CI has no `../setu`, resolved
+# the tag, and `dist/dhancha.cyr` would not compile. The manifest note below said a green local build
+# is not evidence the declared graph resolves — this is that, measured.
+tag = "0.8.8"
 modules = ["dist/setu.cyr"]

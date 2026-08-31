@@ -5,6 +5,70 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.21] - 2026-08-30 — drag stops half-working under a frame arena
+
+### Fixed — `DRAG_START` fired where `DRAG_END` never could
+
+⛔⛔ **dhancha's drag API and its frame-arena API are mutually exclusive, and until now the failure
+was silent and one-sided.** A drag is inherently multi-frame — press, one or more moves, release —
+and its source is held as a raw widget pointer in `_dh_drag_src`. `dh_frame_begin` clears that
+pointer on **every** frame, and it must: after `arena_reset` it addresses memory the arena is about
+to hand out again. So with a frame arena installed, a drag begun on one frame had no source by the
+next pointer event.
+
+The symptom was the worst possible shape: **`DRAG_START` was delivered exactly as documented, and
+`DRAG_MOVE` / `DRAG_DROP` / `DRAG_END` never arrived.** An app that set a "dragging" flag on START
+was never told the drag ended, and the first event arriving correctly is what made it hard to
+diagnose — a capability that half-works reads as an app bug, not a toolkit one.
+
+⇒ **`dh_drag_progress` now refuses to begin a drag it cannot finish.** Under a frame arena, a press
+on a draggable widget is simply a **click**: no `DRAG_START`, and `ACTIVATE` still synthesizes on
+release — the behaviour the widget had before it was marked draggable. Nothing half-fires.
+
+### Added — `dh_drag_available()`
+
+The capability, made callable: `1` when drags can complete, `0` when a frame arena is installed.
+⚠ **This is a capability question, not a policy one.** The 0.9.15 note on `dh_frame_begin` already
+said cross-frame widget identity and a per-frame arena are exclusive *by construction*; drag **is**
+cross-frame widget identity, so it was always on the wrong side of that line. This makes the
+consequence observable up front instead of leaving it to be discovered at the drop that never came.
+That note now names drag explicitly rather than leaving the reader to derive it.
+
+⚠ **A fuller fix was considered and deliberately not built.** Drag could survive a rewind if identity
+were an app-supplied opaque payload re-resolved against the current tree each frame, rather than a
+pointer. That is a real API and it has **no consumer**: `dh_frame_begin` is a no-op without an arena,
+so the defect only reaches apps using both — and dhancha's own position is that you pick one.
+Building a speculative API to serve nobody is how a toolkit grows surface it cannot test.
+
+### Reported by
+
+crab **0.7.1**, the first client to want both APIs — and the client the frame arena was built for
+(0.9.13–0.9.15). crab's M4 *drag between panes* is what surfaced it; crab already tracks its own
+`(pane, row)` model rather than widget pointers, for this same reason, under a standing ruling from
+2026-08-27 that it does not use `dh_dispatch` at all.
+
+### Changed — toolchain pin 6.5.35 → 6.5.36
+
+Matches crab, which moved at its own 0.7.1. `lib/` re-vendored by `cyrius lib sync`.
+
+### Verified
+
+All six `programs/*_test.cyr` pass on 6.5.36 — event (routing, hover, activate, tab, capture,
+drag-drop, clip, refusal, motion), layout, list, draw, canvas, arena.
+⭐ **The new behaviour is mutation-proven**: removing the guard, and making `dh_drag_available`
+ignore the arena, each fail `event_test`.
+⛔ **`cyrius distlib` REGENERATES `dist/dhancha.deps` WRONGLY AND IT BREAKS EVERY CONSUMER.** Raw
+distlib emits `kashi_font_data` as a stdlib leaf; it is a **vendored** module, so `cyrius deps` then
+fails in every downstream repo with *"dep dhancha requires 'kashi_font_data' but it is not in the
+cyrius stdlib"*. crab's build broke exactly this way during this change. ⇒ **After any `distlib`,
+run `sh scripts/sync-deps-sidecar.sh`** to restore the sidecar. The file's own header says so, and
+setu carries the same defect in the other direction
+(`docs/development/issues/2026-08-07-distlib-deps-sidecar-under-reports.md`).
+
+⚠ The new sub-test pins `g_dmove` at **3, not 2** — sub-test Q above it drags over a non-target and
+emits a `DRAG_MOVE` it never asserts, so the running total is already 3. Pinning the wrong baseline
+there would have read as "the guard failed" when the guard was working.
+
 ## [0.9.20] - 2026-08-28 — real columns, and the selected row's text survives its own highlight
 
 ### Added — COLUMNS: a shared width spec so a header and its rows line up (`src/table.cyr`)

@@ -481,6 +481,43 @@ fn main(): i64 {
     check(g_ddrop, 1);                          # unchanged: root4 is not a drop target
     check(g_dend, 2);                           # drag still ended
 
+    # --- Q2: WITH A FRAME ARENA INSTALLED, A DRAG DOES NOT START AT ALL (0.9.21) ---
+    # ⛔⛔ THE REGRESSION THIS PINS. `dh_frame_begin` clears `_dh_drag_src` every frame — it must,
+    # because after `arena_reset` that pointer addresses memory about to be reused — and a drag spans
+    # press → move → release, i.e. several frames. So under an arena `DRAG_START` fired and
+    # `DRAG_MOVE` / `DRAG_DROP` / `DRAG_END` never could. An app that set a "dragging" flag on START
+    # was never told the drag ended. Reported by crab 0.7.1, the first client to want both APIs.
+    # ⇒ A press on a draggable widget under an arena is now an ordinary CLICK. Nothing half-fires.
+    # ⚠ The arena is installed and then REMOVED again, so every later sub-test still runs unarena'd.
+    var qa = arena_new_growable(4096);
+    dh_frame_arena_set(qa);
+    check(dh_drag_available(), 0);              # the capability answers honestly...
+    dh_reset_input();
+    var sm0 = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(sm0, 20, 7);          # over src
+    dh_dispatch(root4, sm0);
+    var sp = dh_event_new(POINTER_BTN);
+    dh_event_set_payload(sp, 272, 1);          # press src
+    dh_dispatch(root4, sp);
+    var sm1 = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(sm1, 20, 13);         # +6: would have been DRAG_START
+    dh_dispatch(root4, sm1);
+    check(g_dstart, 2);                         # ...and NO new drag began
+    var sm2 = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(sm2, 20, 22);         # would have been DRAG_MOVE
+    dh_dispatch(root4, sm2);
+    # ⚠ THREE, NOT TWO — sub-test Q above drags over a non-target and emits a `DRAG_MOVE` it never
+    # asserts, so the running total is already 3 when this block starts. Pinning the wrong baseline
+    # here would have read as "the guard failed" when the guard was working.
+    check(g_dmove, 3);                          # unchanged
+    var srl = dh_event_new(POINTER_BTN);
+    dh_event_set_payload(srl, 272, 0);         # release over dst
+    dh_dispatch(root4, srl);
+    check(g_ddrop, 1);                          # no drop
+    check(g_dend, 2);                           # and no END — because no START
+    dh_frame_arena_set(0);
+    check(dh_drag_available(), 1);              # removing the arena restores the capability
+
     # ── R) HIT-TESTING IS CLIPPED TO THE PARENT ──
     # ⛔ Until 0.9.5 `dh_hit_test` recursed into children EVEN WHEN THE POINT WAS OUTSIDE THE PARENT, so
     # a child laid out past its container answered clicks at coordinates where it is not drawn —

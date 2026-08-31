@@ -67,6 +67,8 @@ include "src/canvas.cyr"      # app-drawn CANVAS slot — needs widget state, no
 include "src/textinput.cyr"   # editable TEXTINPUT buffer + caret — AFTER event.cyr, which owns DhKey
 include "src/theme.cyr"       # rupa theme tokens → sadish colours (before surface, which draws with them)
 include "src/table.cyr"       # ⚠ AFTER theme.cyr — dh_table_header reads dh_theme_mute()
+include "src/menu.cyr"        # MENU policy over LIST — needs table + theme, no draw deps
+include "src/overlay.cyr"     # overlay layer + sheet panel + placement — needs theme, no draw deps
 include "src/surface.cyr"
 
 # ⛔ THE CLIENT LAYER WAS IN `[lib] modules` (the dist fold) AND NOT HERE, so nothing built from this

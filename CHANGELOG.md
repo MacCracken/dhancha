@@ -5,6 +5,131 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.23] - 2026-08-31 — MENU and SHEET, without a new kind
+
+### ⭐⭐ The headline: this release adds NO `DhWidgetKind`
+
+`README.md`'s kind roster is **unchanged**, and that unchanged line is the release's own proof it did
+the smaller thing. crab's gate was never two widgets — it was **three sentences of arithmetic in
+`dh_layout_none`**, a **general border**, and a **scrim that admits what it is**. Everything else is
+composition over `LIST`, `BOX` and `DhCols`, which crab already calls.
+
+`progress.cyr`'s header set the bar: a kind earns itself only when composing it would force the APP
+to name a theme colour (crab's ADR 0001), or when it expresses state no existing kind can hold.
+MENU and SHEET clear neither. The counter-precedent is decisive — **`table.cyr` is a whole table
+feature with no kind**, keeping colour out of the app by naming it in the module. These take that
+shape. Reusing LIST also inherits six things a MENU kind would have re-derived and re-tested: the
+negative-scroll clamp, the bottom-edge fix, keep-selected-visible's no-op branch, the focused/muted
+highlight split, the on-accent guarantee, and the paint/hit clip agreement.
+
+### Added — the overlay offset (`dh_widget_set_offset`)
+
+⛔ **The one change everything else rests on.** `dh_hit_test` prunes any subtree whose root does not
+contain the point, and the painter culls identically — so a popup parented to the row that spawned it
+becomes **invisible and unclickable together**, which looks half-drawn rather than dead. `event.cyr`
+already said the fix: an overlay "needs its own root, NOT a relaxation here". A child of a `NONE`
+container now sits at the padded content origin **plus its own offset**, so a menu goes to the pointer
+and a sheet pins to an edge without either escaping the tree.
+⚠ **0,0 is exactly where every child sat before**, so every `NONE` container that predates this lays
+out bit-identically. ⛔ **NONE only** — in a BOX the same field would be a margin the flex
+distributor does not know about, so the child would overlap its neighbour and the measured size would
+be a lie. Set on a BOX child it is stored and ignored.
+
+### Added — a border on any widget, and `DhBorder`'s two sentinels
+
+Until now `dh_rect_clip` had exactly **one** call site in the whole repo, hardcoded to `BUTTON` and
+to `dh_theme_line()`. With no translucency available for a backdrop, the border does all the work of
+saying *this is a layer, not part of the page*.
+⛔ **Two sentinels, not one.** `-1` cannot mean "none", because `-1` is also what a BUTTON has by
+default and a BUTTON's default is `line` — a single sentinel would make `set_border(btn, -1)` mean
+"restore the border" when the caller plainly meant "remove it". `DH_BORDER_INHERIT` takes the kind's
+default; `DH_BORDER_NONE` draws nothing whatever the kind.
+⛔ **Resolved at draw time, never stored at construction** — a widget that captured `dh_theme_line()`
+when it was built would keep the old colour across a theme switch. The menu test asserts exactly that
+by re-reading under a second palette.
+
+### Added — `DH_FLAG_INERT`: rows the keyboard skips and the mouse misses
+
+A separator that could be selected is a menu that highlights a horizontal line when you press Down;
+one that could be hit is a menu that closes on a click that pointed at nothing. `dh_list_select`
+refuses an inert row, `dh_list_move_sel` steps **over** it in the direction of travel, and
+`dh_list_index_at` returns -1 on it rather than the neighbouring row.
+⚠ Additive: no widget that exists today sets the bit, so every shipped LIST is unchanged.
+⚠ The step scan is capped by the row count and reverses at an edge, so a menu whose last row is a
+separator does not trap the cursor and a menu of only separators terminates rather than spinning.
+
+### Added — `DH_FLAG_SCRIM`: a scanline dim, and it is not translucency
+
+⛔ **sadish does not blend.** `sd_hline` writes four bytes per pixel and never reads the destination,
+and `sd_alpha_of` maps alpha 0 to **opaque** — so `sd_rgba(0, 0, 0, 128)` handed to a fill paints
+**solid black**. There is no colour value that produces a 50 % veil, and pretending otherwise is how
+a "dimmed" backdrop ships as a black rectangle nobody notices until it is on screen.
+⇒ What IS available is 50 % coverage at scanline granularity: every other row in `dh_theme_bg()`,
+the rows between untouched. The content stays legible in outline — the entire job a scrim does — at
+the cost of a visible line texture.
+⚠ The phase is on **absolute y**, so a layer that moves by one pixel does not invert the pattern and
+strobe.
+⛔ **The real fix is in two other repos** and is recorded rather than approximated: `sd_fill_rect_blend`
+in **sadish** (a fill that reads its destination) and a **`scrim` token in rupa** — without the token
+the caller would be naming a colour, which is ADR 0001's whole subject.
+
+### Added — `src/menu.cyr` (4 functions) and `src/overlay.cyr` (5)
+
+`dh_menu_new` / `_item` / `_sep` / `_pref_h`; `dh_overlay_new`, `dh_sheet_new`,
+`dh_place_at_point`, `dh_place_pinned`, plus `DhPin`.
+
+⛔ **A menu's index space IS the LIST's child index space.** There is deliberately no second index —
+two index spaces is how a click lands on a different item than the one under the cursor.
+⛔ **`dh_menu_pref_h` sums the children** rather than calling `dh_list_content_h`, which assumes
+uniform rows and is wrong by the separator's extra height for every separator present.
+⛔ **A separator's height is set AFTER `dh_list_add`**, and that ordering is the whole function:
+`dh_list_add` stamps the list's row height onto every child it takes, so a separator sized before the
+add is silently resized to a full row. Found by the test, not by reading.
+⚠ **Placement FLIPS, it does not slide.** A menu that slid to fit would sit under the pointer that
+opened it, so the first thing the operator sees is their own cursor on an item they did not choose.
+Order is flip → clamp → shrink, and a shrink is **reported** (`DHANCHA_ERR_BAD_ARG`) while still
+writing a usable rect — `dh_progress_set`'s discipline, not `dh_list_select`'s.
+⚠ `DH_PIN_BOTTOM` is full-bleed and always leaves a strip of layer showing above the panel; that
+strip is what the scrim is drawn on, and a sheet covering its own scrim is a screen with no way to
+say what it is covering.
+⚠ **No radius, no shadow.** `rupa_theme_radius` is published and dhancha has never read it, and
+sadish has no shadow primitive. The canvas draws 14px corners and a 40px shadow; neither is
+expressible. Said rather than approximated.
+
+### ⭐⭐ Modality: dhancha holds nothing, and the TREE is the state
+
+Nothing named `modal` was added, and that is the design rather than an omission. **A full-window
+overlay layer is the last sibling, so it wins every hit the popup does not take** — the page beneath
+becomes genuinely unreachable for exactly as long as the layer is in the tree. An app reads
+"hit == the layer" as *clicked outside*, and a menu that should not be modal simply sizes its layer
+to the popup instead of the window.
+
+⛔ **A `_dh_modal` widget pointer would have died at `dh_frame_begin`** — the identical failure to
+0.9.21's drag, where `DRAG_START` fired and nothing else could. Refused for that reason, and
+`dh_menu_open` / `_close` / `dh_sheet_show` refused with it: each would retain "which popup is open".
+⚠ **Modality gating inside `dh_dispatch` is a real gap and the wrong release** — it is a behaviour
+change to shipped routing with **no consumer in this repo's orbit to verify it against**, because
+crab bypasses dispatch entirely. Deferred deliberately.
+
+### Changed — `DH_WIDGET_SIZE` 264 → 288 (`DH_W_OFF_X`/`_OFF_Y`/`_BORDER`)
+
+⛔ Same blast radius as 0.9.22, one release later: a consumer with a **fixed-size** arena now spills
+to the global allocator, and `dh_falloc` degrades to a **leak**, never a null. crab is safe
+(`arena_new_growable`). ⭐ `programs/progress_test.cyr`'s literal size pin **fired**, which is exactly
+what it is for — it forces a human to confirm the change was meant.
+⚠ Also corrected: `programs/arena_test.cyr` read `236 x 264 B = 58,528`. 236 × 264 is **62,304**;
+58,528 was 236 × 248, the pre-0.9.22 figure — the multiplicand was updated at 0.9.22 and the product
+was not. Now `236 x 288 B = 67,968`.
+
+### Verified
+
+All **nine** `programs/*_test.cyr` pass: event, layout, list, draw, canvas, arena, progress, **menu**,
+**overlay**. `fmt --check` clean, `lint` 0 warnings on every touched module, `dist/` regenerated with
+`sh scripts/sync-deps-sidecar.sh` after `distlib` (sidecar verified byte-unchanged).
+
+⚠ **Not asserted:** how any of it looks on a real display; the scrim's texture at a real DPI; and
+modality under `dh_dispatch`, which is not implemented.
+
 ## [0.9.22] - 2026-08-31 — PROGRESS: a bar that can admit it does not know
 
 ### Added — `DhWidgetKind.PROGRESS` and `src/progress.cyr`

@@ -41,6 +41,8 @@ modules = [
     "src/widget.cyr",
     "src/layout.cyr",
     "src/list.cyr",
+    "src/menu.cyr",
+    "src/overlay.cyr",
     "src/progress.cyr",
     "src/event.cyr",
     "src/canvas.cyr",

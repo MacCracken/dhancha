@@ -1,0 +1,125 @@
+# @public — dhancha MENU: a popup menu, which is a LIST wearing a panel.
+# menu.cyr — the POLICY over "a list of commands". Like list.cyr, table.cyr and progress.cyr this
+# file owns no pixels and no state of its own.
+#
+# ⭐⭐ WHY THIS IS NOT A NEW `DhWidgetKind`, AND THE TEST IT HAD TO PASS. `src/progress.cyr`'s header
+# sets the bar: a kind earns itself only when composing it would force the APP to name a theme colour
+# (crab's ADR 0001), or when it expresses state no existing kind can hold. A menu clears NEITHER.
+# LIST already holds the selection in `DH_W_SEL` and already paints the highlight from
+# `dh_theme_accent()` / `dh_theme_line()` inside surface.cyr — so no app names a colour — and every
+# function below is arithmetic over parts that shipped in 0.9.7 and 0.9.19.
+# ⇒ The counter-precedent is `table.cyr`: a whole table feature with no kind, keeping colour out of
+# the app by naming it HERE, in the module. This file takes that shape.
+# ⚠ Reusing LIST also inherits six things a MENU kind would have to re-derive and re-test: the
+# negative-scroll clamp, the bottom-edge fix, keep-selected-visible's no-op branch, the focused vs
+# muted highlight split, the on-accent legibility guarantee, and the paint/hit clip agreement.
+#
+# ⛔ A MENU'S INDEX SPACE **IS** THE LIST'S CHILD INDEX SPACE. There is deliberately no second index:
+# `dh_list_select` / `dh_list_move_sel` / `dh_list_index_at` are the menu's selection API, and
+# separators simply occupy indices that `DH_FLAG_INERT` makes unselectable and unhittable. Two index
+# spaces is how a click lands on a different item than the one under the cursor.
+
+enum DhMenu {
+    DH_MENU_PAD    = 5;
+    DH_MENU_GAP    = 1;
+    DH_MENU_SEP_H  = 9;
+    DH_MENU_SEP_IN = 4;    # the rule is inset this far on each side, so it reads as a divider
+}
+
+# @public — a menu panel: a LIST with the panel background, a 1px `line` border, padding and a 1px
+# gap between items. `row_h` is every ITEM's height.
+#
+# ⛔ ITS WIDTH AND HEIGHT ARE LEFT 0 AND THE CALLER MUST SET THEM. `dh_list_new` smuggles `row_h`
+# into `DH_W_PREF_H`, and layout treats a non-zero pref as an EXACT size — so a menu handed to the
+# layout engine unsized collapses to exactly ONE ROW TALL. Use `dh_menu_pref_h`.
+fn dh_menu_new(row_h): i64 {
+    var m = dh_list_new(row_h);
+    if (m == 0) { return 0; }
+    dh_widget_set_bg(m, dh_theme_panel());
+    dh_widget_set_border(m, dh_theme_line());
+    dh_widget_set_padding(m, DH_MENU_PAD);
+    dh_widget_set_gap(m, DH_MENU_GAP);
+    return m;
+}
+
+# @public — append a command row: `label` on the left, `shortcut` right-aligned in the secondary ink.
+# `spec` is a 2-column DhCols. `shortcut` may be 0 for an item with no accelerator; the column is
+# still reserved so every label starts at the same x. -> the row widget, or 0.
+#
+# ⚠ ONE SPEC FOR THE WHOLE MENU, for exactly the reason `table.cyr` exists: rows laid out
+# independently drift the moment one string changes width, and a menu whose shortcut column drifts
+# reads as broken.
+# ⛔ ALLOCATE THE SPEC ONCE AND `dh_cols_reset` IT. `dh_cols_new` draws on the GLOBAL allocator, so a
+# spec built inside a per-frame render function is a 40-byte-per-frame leak — the exact gate crab
+# spent four releases closing.
+fn dh_menu_item(menu, spec, label, shortcut): i64 {
+    if (menu == 0) { return 0; }
+    var row = dh_table_row(spec);
+    if (row == 0) { return 0; }
+    dh_widget_set_bg(row, 0 - 1);          # no background: the LIST paints the highlight
+    dh_table_cell(row, spec, 0, label);
+    if (shortcut != 0) {
+        var c = dh_table_cell(row, spec, 1, shortcut);
+        # ⚠ The accelerator is SECONDARY ink — it labels the row rather than being the row.
+        if (c != 0) { dh_widget_set_fg(c, dh_theme_mute()); }
+    }
+    dh_list_add(menu, row);
+    return row;
+}
+
+# @public — append a separator: an INERT row carrying a 1px `line` rule, inset on each side.
+# -> the separator widget, or 0.
+#
+# ⛔ IT IS A ROW, NOT A GAP, AND IT IS INERT RATHER THAN MERELY UNPAINTED. A separator that could be
+# selected is a menu that highlights a horizontal line when you press Down; one that could be hit is
+# a menu that closes on a click that pointed at nothing.
+# ⛔ AND IT BREAKS SCROLLING, WHICH IS SAID HERE RATHER THAN DISCOVERED. `dh_list_scroll_to_sel` and
+# `dh_list_max_scroll` derive content height from `n * row_h` — uniform rows. A menu WITHOUT
+# separators scrolls exactly like any LIST; a menu WITH them must be given its full `dh_menu_pref_h`
+# and must not scroll. That is the contract, and it is why `dh_menu_pref_h` exists.
+fn dh_menu_sep(menu): i64 {
+    if (menu == 0) { return 0; }
+    var s = dh_widget_new(BOX);
+    if (s == 0) { return 0; }
+    dh_widget_set_bg(s, 0 - 1);
+    dh_widget_set_pref(s, 0, DH_MENU_SEP_H);
+    dh_widget_set_inert(s, 1);
+    var rule = dh_widget_new(BOX);
+    dh_widget_set_bg(rule, dh_theme_line());
+    dh_widget_set_pref(rule, 0, 1);
+    dh_widget_set_inert(rule, 1);
+    dh_widget_set_layout(s, BOX_V);
+    dh_widget_set_padding(s, DH_MENU_SEP_IN);
+    dh_widget_add_child(s, rule);
+    dh_list_add(menu, s);
+    # ⛔ THE HEIGHT IS SET **AFTER** `dh_list_add`, AND THAT ORDERING IS THE WHOLE FUNCTION.
+    # `dh_list_add` stamps the LIST's row height onto every child it takes — that is what makes rows
+    # uniform without each one being told — so a separator sized before the add is silently resized
+    # to a full row and the menu grows by 13px per separator with nothing to show for it. Setting it
+    # afterwards is the only order that survives.
+    dh_widget_set_pref(s, 0, DH_MENU_SEP_H);
+    return s;
+}
+
+# @public — the menu's natural height: every child's pref height, plus the gaps, plus 2x padding.
+#
+# ⚠ SUMS THE CHILDREN rather than calling `dh_list_content_h`, which assumes uniform rows and is
+# wrong by the separator's extra height for every separator present. Two derivations of one number
+# is the bug this replaces.
+fn dh_menu_pref_h(menu): i64 {
+    if (menu == 0) { return 0; }
+    var total = 0;
+    var n = 0;
+    var c = dh_widget_first_child(menu);
+    while (c != 0) {
+        var ph = dh_widget_pref_h(c);
+        # ⚠ A child with no pref of its own takes the LIST's row height, which is what `dh_list_add`
+        # stamps on it — so this reads the stamped value rather than re-deriving it.
+        if (ph <= 0) { ph = dh_widget_pref_h(menu); }
+        total = total + ph;
+        n = n + 1;
+        c = dh_widget_next_sibling(c);
+    }
+    if (n > 1) { total = total + (n - 1) * dh_widget_gap(menu); }
+    return total + 2 * dh_widget_padding(menu);
+}

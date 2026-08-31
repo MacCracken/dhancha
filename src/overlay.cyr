@@ -1,0 +1,117 @@
+# @public — dhancha OVERLAY: the layer a popup lives in, and where a popup goes inside it.
+# overlay.cyr — geometry and paint. No routing, no retained state, no dismissal policy.
+#
+# ⛔⛔ THE LAYER MUST BE THE LAST CHILD OF THE ROOT, AND THAT IS NOT A STYLE PREFERENCE.
+# `dh_hit_test` prunes on `dh_widget_contains(root, ...)` at EVERY level, and the painter culls and
+# intersects identically — no level can widen what an ancestor narrowed. A popup parented to the row
+# that spawned it therefore overflows its parent and becomes invisible AND unclickable together,
+# which looks half-drawn rather than dead: the more confusing of the two. `event.cyr` says it
+# outright — an overlay layer that must escape its parent "needs its own root, NOT a relaxation here".
+# ⇒ Sibling order IS z-order in BOTH passes: children are walked first-to-last and a later match
+# overwrites, matching the paint order. A full-window layer added LAST wins the click and the pixel
+# together, by construction.
+#
+# ⛔ AND AN OFFSET IS MEASURED FROM THE LAYER'S PADDED CONTENT ORIGIN. `dh_overlay_new` sets pad 0
+# and leaves both prefs 0, so in a NONE root at (0,0) with pad 0 the layer's content origin IS (0,0)
+# and an offset is a window coordinate. Any other root, and the caller subtracts.
+
+enum DhPin {
+    DH_PIN_BOTTOM = 0;
+    DH_PIN_TOP    = 1;
+    DH_PIN_CENTER = 2;
+}
+
+# @public — a full-window overlay layer: a NONE container with no background and no padding.
+# ⚠ NO BACKGROUND BY DEFAULT — an overlay that dimmed unconditionally could not be used for a menu,
+# which dims nothing. Call `dh_widget_set_scrim(layer, 1)` for a sheet's backdrop.
+fn dh_overlay_new(): i64 {
+    var l = dh_widget_new(BOX);
+    if (l == 0) { return 0; }
+    dh_widget_set_layout(l, NONE);
+    dh_widget_set_bg(l, 0 - 1);
+    dh_widget_set_padding(l, 0);
+    return l;
+}
+
+# @public — a sheet panel: a BOX with the panel background, a 1px `line` border and padding. The
+# caller sets the layout mode and adds children; `dh_place_pinned` sizes and positions it.
+#
+# ⚠ NO RADIUS AND NO SHADOW, SAID RATHER THAN APPROXIMATED. `rupa_theme_radius` is published and
+# dhancha has never read it, and sadish has no shadow primitive. The design canvas draws 14px corners
+# and a 40px shadow and neither is expressible today. The BORDER is what says "this is a layer".
+fn dh_sheet_new(): i64 {
+    var s = dh_widget_new(BOX);
+    if (s == 0) { return 0; }
+    dh_widget_set_bg(s, dh_theme_panel());
+    dh_widget_set_border(s, dh_theme_line());
+    dh_widget_set_padding(s, 10);
+    return s;
+}
+
+# @public — where a popup goes when it is anchored to a POINT (a context menu at the pointer).
+# Writes x/y/w/h into `out32` (a 32-byte DhRect).
+# -> DHANCHA_OK, or DHANCHA_ERR_BAD_ARG when the popup had to be SHRUNK to fit — in which case
+#    `out32` still holds a usable rect rather than nothing.
+#
+# ⚠ SHRINKING IS REPORTED, NOT REFUSED — `dh_progress_set`'s discipline, not `dh_list_select`'s. A
+# window smaller than the menu is a real situation an operator creates by dragging an edge, so the
+# DISPLAY never lies and the CALLER is still told.
+# ⛔ THE ORDER IS FLIP, THEN CLAMP, THEN SHRINK — and it FLIPS rather than merely sliding. A menu
+# that slid up to fit would sit UNDER the pointer that opened it, so the first thing the operator
+# sees is their own cursor on top of an item they did not choose. Flipping to the other side of the
+# point keeps the anchor outside the menu.
+fn dh_place_at_point(out32, px, py, pw, ph, aw, ah, margin): i64 {
+    var w = pw;
+    var h = ph;
+    var shrunk = 0;
+    var maxw = aw - margin - margin;
+    var maxh = ah - margin - margin;
+    if (maxw < 1) { maxw = 1; }
+    if (maxh < 1) { maxh = 1; }
+    if (w > maxw) { w = maxw; shrunk = 1; }
+    if (h > maxh) { h = maxh; shrunk = 1; }
+    var x = px;
+    var y = py;
+    if (x + w > aw - margin) { x = px - w; }          # flip to the left of the point
+    if (y + h > ah - margin) { y = py - h; }          # flip above the point
+    if (x < margin) { x = margin; }
+    if (y < margin) { y = margin; }
+    if (x + w > aw - margin) { x = aw - margin - w; }
+    if (y + h > ah - margin) { y = ah - margin - h; }
+    if (x < 0) { x = 0; }
+    if (y < 0) { y = 0; }
+    store64(out32 + 0, x);
+    store64(out32 + 8, y);
+    store64(out32 + 16, w);
+    store64(out32 + 24, h);
+    if (shrunk == 1) { return DHANCHA_ERR_BAD_ARG; }
+    return DHANCHA_OK;
+}
+
+# @public — where a popup goes when it is anchored to an EDGE (a sheet). Same rect + return contract.
+#
+# ⚠ DH_PIN_BOTTOM IS FULL-BLEED: x = 0, w = aw, and `h` is clamped so a strip of the layer ALWAYS
+# shows above the panel. That strip is what the scrim is drawn on — and a sheet that covered its own
+# scrim would be a screen with no way to say what it is covering.
+fn dh_place_pinned(out32, pw, ph, aw, ah, edge, margin): i64 {
+    var h = ph;
+    var shrunk = 0;
+    var maxh = ah - margin;
+    if (maxh < 1) { maxh = 1; }
+    if (h > maxh) { h = maxh; shrunk = 1; }
+    var w = pw;
+    var x = (aw - w) / 2;
+    if (edge != DH_PIN_CENTER) { w = aw; x = 0; }     # BOTTOM and TOP are full-bleed
+    if (w > aw) { w = aw; shrunk = 1; }
+    if (x < 0) { x = 0; }
+    var y = ah - h;                                   # DH_PIN_BOTTOM
+    if (edge == DH_PIN_TOP) { y = 0; }
+    if (edge == DH_PIN_CENTER) { y = (ah - h) / 2; }
+    if (y < 0) { y = 0; }
+    store64(out32 + 0, x);
+    store64(out32 + 8, y);
+    store64(out32 + 16, w);
+    store64(out32 + 24, h);
+    if (shrunk == 1) { return DHANCHA_ERR_BAD_ARG; }
+    return DHANCHA_OK;
+}

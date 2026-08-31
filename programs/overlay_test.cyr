@@ -1,0 +1,267 @@
+# programs/overlay_test.cyr — RUN test for the 0.9.23 overlay primitives: the NONE offset, the
+# general border, the scrim, and the two placement functions.
+# Exit code = failed checks.
+#
+# ⚠ THE INTERESTING CASES ARE ALL EDGES — a menu at the bottom-right corner, a popup wider than its
+# window, a sheet taller than the screen. The middle of the window is the case that always works.
+
+include "src/lib.cyr"
+
+var g_fails = 0;
+
+fn check(got, want): i64 {
+    if (got == want) { return 0; }
+    g_fails = g_fails + 1;
+    return 1;
+}
+
+fn count_col(sds, x0, y0, x1, y1, col): i64 {
+    var n = 0;
+    var yy = y0;
+    while (yy < y1) {
+        var xx = x0;
+        while (xx < x1) {
+            if (sd_surface_pixel_at(sds, xx, yy) == col) { n = n + 1; }
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+    return n;
+}
+
+fn rx(r): i64 { return load64(r + 0); }
+fn ry(r): i64 { return load64(r + 8); }
+fn rw(r): i64 { return load64(r + 16); }
+fn rh(r): i64 { return load64(r + 24); }
+
+fn main(): i64 {
+    alloc_init();
+    rupa_theme_set_active_name("mudra-dark");
+
+    # ---- A: the NONE offset, through LAYOUT ------------------------------------------------------
+    # ⛔ 0,0 MUST BE EXACTLY WHERE A CHILD SAT BEFORE THIS EXISTED, or every NONE container in every
+    # consumer moves. This is the compatibility check, and it comes first.
+    var r0 = dh_widget_new(WINDOW);
+    dh_widget_set_layout(r0, NONE);
+    var c0 = dh_widget_new(BOX);
+    dh_widget_set_pref(c0, 20, 10);
+    dh_widget_add_child(r0, c0);
+    dh_layout_apply(r0, 100, 100);
+    check(dh_widget_x(c0), 0);
+    check(dh_widget_y(c0), 0);
+    # ...and an offset moves it by exactly that much.
+    var r1 = dh_widget_new(WINDOW);
+    dh_widget_set_layout(r1, NONE);
+    var c1 = dh_widget_new(BOX);
+    dh_widget_set_pref(c1, 20, 10);
+    dh_widget_set_offset(c1, 30, 40);
+    dh_widget_add_child(r1, c1);
+    dh_layout_apply(r1, 100, 100);
+    check(dh_widget_x(c1), 30);
+    check(dh_widget_y(c1), 40);
+    check(dh_widget_w(c1), 20);                       # the offset does not change the SIZE
+    check(dh_widget_h(c1), 10);
+    # ⚠ The offset is from the PADDED content origin, not the widget origin.
+    var r2 = dh_widget_new(WINDOW);
+    dh_widget_set_layout(r2, NONE);
+    dh_widget_set_padding(r2, 5);
+    var c2 = dh_widget_new(BOX);
+    dh_widget_set_pref(c2, 20, 10);
+    dh_widget_set_offset(c2, 30, 40);
+    dh_widget_add_child(r2, c2);
+    dh_layout_apply(r2, 100, 100);
+    check(dh_widget_x(c2), 35);
+    check(dh_widget_y(c2), 45);
+    # ⛔ IN A BOX THE OFFSET IS STORED AND IGNORED — it would be a margin the flex distributor does
+    # not know about, so the child would overlap its neighbour and the measured size would be a lie.
+    var r3 = dh_widget_new(WINDOW);
+    dh_widget_set_layout(r3, BOX_V);
+    var c3 = dh_widget_new(BOX);
+    dh_widget_set_pref(c3, 20, 10);
+    dh_widget_set_offset(c3, 30, 40);
+    dh_widget_add_child(r3, c3);
+    dh_layout_apply(r3, 100, 100);
+    check(dh_widget_x(c3), 0);
+    check(dh_widget_y(c3), 0);
+    check(dh_widget_off_x(c3), 30);                   # ...stored, though
+    check(dh_widget_off_y(c3), 40);
+
+    # ---- B: a popup in a layer is HIT, which is the whole point ----------------------------------
+    # ⛔ A popup parented to the row that spawned it would be clipped away by `dh_hit_test`'s prune
+    # AND by the painter, together — invisible and unclickable at once. A layer that is the LAST
+    # child of the root escapes both, because sibling order is z-order in both passes.
+    var root = dh_widget_new(WINDOW);
+    dh_widget_set_layout(root, NONE);
+    var page = dh_widget_new(BOX);
+    dh_widget_set_pref(page, 0, 0);
+    dh_widget_add_child(root, page);
+    var layer = dh_overlay_new();
+    var pop = dh_widget_new(BOX);
+    dh_widget_set_pref(pop, 40, 20);
+    dh_widget_set_offset(pop, 50, 60);
+    dh_widget_add_child(layer, pop);
+    dh_widget_add_child(root, layer);
+    dh_layout_apply(root, 200, 200);
+    check(dh_widget_x(pop), 50);
+    check(dh_widget_y(pop), 60);
+    # A point inside the popup resolves to the popup, not to the page beneath it.
+    check(dh_hit_test(root, 60, 70), pop);
+    # ⭐⭐ AND A POINT OUTSIDE IT RESOLVES TO THE **LAYER**, NOT TO THE PAGE — WHICH IS THE MODALITY
+    # MECHANISM, IN THE APP'S HANDS. A full-window layer is the last sibling, so it wins every hit
+    # the popup does not take: the page underneath becomes unreachable for exactly as long as the
+    # layer is in the tree, and dhancha holds no "modal" state to do it. That is the whole answer to
+    # modality for an app that rebuilds its tree every frame — the tree IS the state.
+    # ⇒ An app reads this as "clicked outside": hit == the layer means dismiss; hit == a menu row
+    # means activate. A menu that should NOT be modal simply sizes its layer to the popup instead of
+    # the window.
+    check(dh_hit_test(root, 10, 10), layer);
+    # ⚠ The page is genuinely unreachable while the layer is present — not merely painted over.
+    check(dh_hit_test(root, 10, 10) == page, 0);
+
+    # ---- C: the general border --------------------------------------------------------------------
+    # ⚠ GUARD THE GUARD: line and panel must differ or every count below passes vacuously.
+    check(dh_theme_line() == dh_theme_panel(), 0);
+    var br = dh_widget_new(WINDOW);
+    dh_widget_set_layout(br, NONE);
+    var bx = dh_widget_new(BOX);
+    dh_widget_set_pref(bx, 20, 20);
+    dh_widget_set_bg(bx, dh_theme_panel());
+    dh_widget_set_border(bx, dh_theme_line());
+    dh_widget_add_child(br, bx);
+    dh_layout_apply(br, 40, 40);
+    var bs = sd_surface_new(40, 40);
+    dh_draw_widget(bs, br, 0, 0, 0, 40, 40);
+    # A 20x20 rect outline is 20+20+18+18 = 76 pixels.
+    check(count_col(bs, 0, 0, 40, 40, dh_theme_line()), 76);
+    # ⛔ DH_BORDER_NONE ON A BUTTON REALLY REMOVES IT — this is why there are two sentinels and not
+    # one. With a single sentinel, -1 would mean "restore the default" and a BUTTON could never lose
+    # its border at all.
+    var nb = dh_widget_new(WINDOW);
+    dh_widget_set_layout(nb, NONE);
+    var btn = dh_widget_new(BUTTON);
+    dh_widget_set_pref(btn, 20, 20);
+    dh_widget_set_bg(btn, dh_theme_panel());
+    dh_widget_set_border(btn, DH_BORDER_NONE);
+    dh_widget_add_child(nb, btn);
+    dh_layout_apply(nb, 40, 40);
+    var nbs = sd_surface_new(40, 40);
+    dh_draw_widget(nbs, nb, 0, 0, 0, 40, 40);
+    check(count_col(nbs, 0, 0, 40, 40, dh_theme_line()), 0);
+    # ...and INHERIT still gives a BUTTON its default border.
+    var ib = dh_widget_new(WINDOW);
+    dh_widget_set_layout(ib, NONE);
+    var btn2 = dh_widget_new(BUTTON);
+    dh_widget_set_pref(btn2, 20, 20);
+    dh_widget_set_bg(btn2, dh_theme_panel());
+    dh_widget_add_child(ib, btn2);
+    dh_layout_apply(ib, 40, 40);
+    var ibs = sd_surface_new(40, 40);
+    dh_draw_widget(ibs, ib, 0, 0, 0, 40, 40);
+    check(count_col(ibs, 0, 0, 40, 40, dh_theme_line()), 76);
+    # ⚠ ...and a plain BOX still has none, so the generalisation did not give every widget an edge.
+    check(dh_widget_border(dh_widget_new(BOX)), DH_BORDER_INHERIT);
+
+    # ---- D: the scrim is EVERY OTHER ROW, and it is not translucency -------------------------------
+    # ⛔ sadish cannot blend — `sd_rgba(0,0,0,128)` paints SOLID BLACK. 50 % coverage at scanline
+    # granularity is what is actually available, and this pins that it is what is drawn.
+    var sr = dh_widget_new(WINDOW);
+    dh_widget_set_layout(sr, NONE);
+    dh_widget_set_bg(sr, dh_theme_panel());
+    var sc = dh_overlay_new();
+    dh_widget_set_scrim(sc, 1);
+    dh_widget_add_child(sr, sc);
+    dh_layout_apply(sr, 20, 20);
+    var scs = sd_surface_new(20, 20);
+    dh_draw_widget(scs, sr, 0, 0, 0, 20, 20);
+    # 10 of 20 rows dimmed, 20 px wide.
+    check(count_col(scs, 0, 0, 20, 20, dh_theme_bg()), 200);
+    # ⛔ AND HALF THE ROWS SURVIVE — a scrim that covered everything is option (A), an opaque panel,
+    # which hides rather than dims and loses the context the sheet is asking about.
+    check(count_col(scs, 0, 0, 20, 20, dh_theme_panel()), 200);
+    # ⚠ The phase is on ABSOLUTE y, so row 1 is dimmed and row 0 is not — a layer that moved by one
+    # pixel must not invert the whole pattern.
+    check(count_col(scs, 0, 0, 20, 1, dh_theme_bg()), 0);
+    check(count_col(scs, 0, 1, 20, 2, dh_theme_bg()), 20);
+
+    # ---- E: placement at a point — flip, clamp, then shrink ----------------------------------------
+    var r = alloc(32);
+    # The easy case: down-right of the point, untouched.
+    check(dh_place_at_point(r, 10, 10, 50, 40, 200, 200, 4), DHANCHA_OK);
+    check(rx(r), 10); check(ry(r), 10); check(rw(r), 50); check(rh(r), 40);
+    # ⛔ NEAR THE RIGHT EDGE IT FLIPS, IT DOES NOT SLIDE. Sliding would leave the menu under the
+    # pointer that opened it, so the first thing the operator sees is their cursor on an item they
+    # did not choose.
+    check(dh_place_at_point(r, 190, 10, 50, 40, 200, 200, 4), DHANCHA_OK);
+    check(rx(r), 140);                                # 190 - 50, to the LEFT of the point
+    # ...and the same at the bottom.
+    check(dh_place_at_point(r, 10, 190, 50, 40, 200, 200, 4), DHANCHA_OK);
+    check(ry(r), 150);
+    # A popup bigger than the window is SHRUNK and the caller is TOLD — the display never lies.
+    check(dh_place_at_point(r, 10, 10, 500, 400, 200, 200, 4), DHANCHA_ERR_BAD_ARG);
+    check(rw(r), 192);                                # 200 - 4 - 4
+    check(rh(r), 192);
+    check(rx(r), 4);                                  # clamped inside the margin
+    check(ry(r), 4);
+
+    # ---- F: pinned placement ----------------------------------------------------------------------
+    # ⚠ BOTTOM IS FULL-BLEED and always leaves a strip of layer above it — that strip is what the
+    # scrim is drawn on, and a sheet covering its own scrim is a screen that cannot say what it
+    # covers.
+    check(dh_place_pinned(r, 0, 60, 200, 200, DH_PIN_BOTTOM, 8), DHANCHA_OK);
+    check(rx(r), 0); check(rw(r), 200);
+    check(ry(r), 140); check(rh(r), 60);
+    check(dh_place_pinned(r, 0, 500, 200, 200, DH_PIN_BOTTOM, 8), DHANCHA_ERR_BAD_ARG);
+    check(rh(r), 192);                                # clamped to ah - margin
+    check(ry(r), 8);                                  # ...so 8 px of layer still shows
+    check(dh_place_pinned(r, 0, 60, 200, 200, DH_PIN_TOP, 8), DHANCHA_OK);
+    check(ry(r), 0);
+    # CENTER honours the requested width rather than going full-bleed.
+    check(dh_place_pinned(r, 80, 60, 200, 200, DH_PIN_CENTER, 8), DHANCHA_OK);
+    check(rx(r), 60); check(rw(r), 80);
+    check(ry(r), 70); check(rh(r), 60);
+
+    # ---- G: the arena still converges with the new fields ------------------------------------------
+    var ar = arena_new_growable(65536);
+    dh_frame_arena_set(ar);
+    var warm = 0;
+    while (warm < 4) {
+        dh_frame_begin();
+        var wl = dh_overlay_new();
+        var wi = 0;
+        while (wi < 10) {
+            var wp = dh_widget_new(BOX);
+            dh_widget_set_offset(wp, wi, wi);
+            dh_widget_add_child(wl, wp);
+            wi = wi + 1;
+        }
+        dh_layout_apply(wl, 100, 100);
+        warm = warm + 1;
+    }
+    var before = alloc_used();
+    var fr = 0;
+    while (fr < 20) {
+        dh_frame_begin();
+        var fl = dh_overlay_new();
+        var fi = 0;
+        while (fi < 10) {
+            var fp = dh_widget_new(BOX);
+            dh_widget_set_offset(fp, fi, fi);
+            dh_widget_add_child(fl, fp);
+            fi = fi + 1;
+        }
+        dh_layout_apply(fl, 100, 100);
+        fr = fr + 1;
+    }
+    check(alloc_used() - before, 0);
+    dh_frame_arena_set(0);
+
+    if (g_fails == 0) {
+        println("overlay_test: PASS (offset, layer hit, border, scrim, placement, arena)");
+        return 0;
+    }
+    println("overlay_test: FAIL");
+    return g_fails;
+}
+
+var rc = main();
+syscall(60, rc);

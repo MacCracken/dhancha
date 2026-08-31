@@ -3,7 +3,7 @@
 # ⭐⭐ WHAT THIS EXISTS TO PROVE. dhancha is immediate-mode: an app rebuilds its widget tree every
 # frame, and the allocator underneath (`lib/alloc.cyr`) is a bump allocator with **no `free()`**. So
 # before 0.9.15 every frame's tree was retained for the life of the process — measured against crab
-# at 380x220, ~236 widgets x 264 B = 58,528 B per frame, permanently. `dh_frame_arena_set` routes the
+# at 380x220, ~236 widgets x 288 B = 67,968 B per frame, permanently. `dh_frame_arena_set` routes the
 # per-frame allocations onto a caller-supplied arena; `dh_frame_begin` rewinds it.
 #
 # ⚠ THE HEADLINE ASSERTION IS CONVERGENCE, NOT "IT USES AN ARENA". An arena that grew a fresh chunk
@@ -113,7 +113,7 @@ fn main(): i64 {
     # ── E) THE GROW PATH: A FRAME BIGGER THAN THE CHUNK CHAINS ONCE, THEN COSTS NOTHING ──
     # ⛔ THE FIRST DRAFT OF THIS GROUP DID NOT TEST WHAT ITS COMMENT CLAIMED. It rendered a
     # 120-row frame against a 256 KiB arena and said "forces the chain to extend" — ~244 widgets
-    # x 264 B is ~60 KiB, so it never came close and the GROW path was never executed. Caught by
+    # x 288 B is ~60 KiB, so it never came close and the GROW path was never executed. Caught by
     # asserting `arena_capacity_total`, which the draft did not do. ⇒ Use an arena deliberately
     # too small, and PROVE the chain grew before claiming anything about what it costs.
     var small = arena_new_growable(8192);
@@ -121,7 +121,7 @@ fn main(): i64 {
     dh_frame_arena_set(small);
     check(arena_capacity_total(small), 8192);
     dh_frame_begin();
-    at_frame(60);                                 # ~124 widgets x 264 B — far past 8 KiB
+    at_frame(60);                                 # ~124 widgets x 288 B — far past 8 KiB
     check(arena_capacity_total(small) > 8192, 1); # the chain really extended
     var grown = arena_capacity_total(small);
 

@@ -161,7 +161,14 @@ fn dh_layout_none(wgt, x, y, w, h): i64 {
         var ph = dh_widget_pref_h(child);
         if (pw == 0) { pw = cw; }
         if (ph == 0) { ph = chh; }
-        dh_layout_at(child, cx, cy, pw, ph);
+        # ⭐ THE OVERLAY OFFSET (0.9.23) — the three lines the whole popup layer rests on. A child of
+        # a NONE container sits at the padded content origin PLUS its own offset, so a menu can be
+        # placed at the pointer and a sheet pinned to an edge without either escaping the tree.
+        # ⚠ 0,0 is the origin, which is exactly where every child sat before this existed, so every
+        # NONE container that predates 0.9.23 lays out bit-identically.
+        # ⛔ NONE ONLY. In a BOX the same field would be a MARGIN the flex distributor does not know
+        # about, so the child would overlap its neighbour and the measured size would be a lie.
+        dh_layout_at(child, cx + dh_widget_off_x(child), cy + dh_widget_off_y(child), pw, ph);
         child = dh_widget_next_sibling(child);
     }
     return DHANCHA_OK;

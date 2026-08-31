@@ -325,8 +325,25 @@ fn dh_draw_widget_ink(sds, wgt, font, clx, cly, clw, clh, ink, forced): i64 {
     if (bg != (0 - 1)) {
         dh_fill_rect_clip(sds, x, y, w, h, bg, clx, cly, clw, clh);
     }
-    if (dh_widget_kind(wgt) == BUTTON) {
-        dh_rect_clip(sds, x, y, w, h, dh_theme_line(), clx, cly, clw, clh);
+    # ⭐ A BORDER ON ANY WIDGET (0.9.23). Until now `dh_rect_clip` had exactly ONE call site in the
+    # whole repo and it was hardcoded to BUTTON and to `dh_theme_line()`. A menu panel and a sheet
+    # are both defined visually by their EDGE — and with no translucency available for a backdrop
+    # (see `dh_draw_scrim`), the border is doing all the work of saying *this is a layer, not part of
+    # the page*.
+    # ⛔ RESOLVED HERE, AT DRAW TIME, NEVER STORED AT CONSTRUCTION. A widget that captured
+    # `dh_theme_line()` when it was built would keep the old colour across a theme switch.
+    var bcol = dh_widget_border(wgt);
+    if (bcol == DH_BORDER_INHERIT) {
+        bcol = DH_BORDER_NONE;
+        if (dh_widget_kind(wgt) == BUTTON) { bcol = dh_theme_line(); }
+    }
+    if (bcol != DH_BORDER_NONE) {
+        dh_rect_clip(sds, x, y, w, h, bcol, clx, cly, clw, clh);
+    }
+    # ⚠ AFTER the border and BEFORE the children, so a sheet's backdrop dims what is under it without
+    # dimming the sheet itself — the sheet is a SIBLING in the layer, not a child of the scrim.
+    if ((dh_widget_flags(wgt) & DH_FLAG_SCRIM) != 0) {
+        dh_draw_scrim(sds, x, y, w, h, clx, cly, clw, clh);
     }
     # ⚠ BEFORE the text below, so a text set on a bar lands ON TOP of it rather than under it — the
     # same ordering reason the CANVAS arm sits before its children.
@@ -432,6 +449,36 @@ fn dh_draw_widget_ink(sds, wgt, font, clx, cly, clw, clh, ink, forced): i64 {
 # which paints a CHILD's rect and therefore needs the narrower one. A PROGRESS has no children.
 # ⚠ `dh_fill_rect_clip`, never `sd_fill_rect`: a bar inside a scrolled list must be cut by the
 # viewport like everything else, and the bare sadish call does not know about the clip.
+# ⭐⭐ THE SCRIM (0.9.23) — a SCREEN-DOOR DIM, and it is called that because that is what it is.
+#
+# ⛔ THIS IS NOT TRANSLUCENCY AND WILL NEVER LOOK LIKE IT. sadish does not blend: `sd_hline` writes
+# four bytes per pixel and never reads the destination, and `sd_alpha_of` maps alpha 0 to OPAQUE — so
+# `sd_rgba(0, 0, 0, 128)` handed to a fill paints SOLID BLACK. There is no colour value that produces
+# a 50 % veil, and pretending otherwise is how a "dimmed" backdrop ships as a black rectangle nobody
+# notices until it is on screen.
+# ⇒ What IS available is 50 % COVERAGE at scanline granularity: paint every other row in
+# `dh_theme_bg()` and leave the rows between untouched. The content underneath stays legible in
+# outline — the entire job a scrim does — at the cost of a visible line texture.
+# ⚠ THE PHASE IS ON ABSOLUTE y, NOT ON THE WIDGET'S OWN TOP EDGE. A layer that moved by one pixel
+# would otherwise invert the whole pattern, and the backdrop would strobe as a sheet animates in.
+# ⚠ `dh_theme_bg()` — the desktop void the content already sits against, so the dim reads as the page
+# receding rather than as a new colour dhancha invented.
+# ⛔ THE REAL FIX IS IN TWO OTHER REPOS: a true scrim needs `sd_fill_rect_blend` in SADISH (a fill
+# that reads its destination) and a `scrim` token in RUPA — without the token the caller would be
+# naming a colour, which is ADR 0001's whole subject. Both are recorded as deferrals rather than
+# approximated here.
+fn dh_draw_scrim(sds, x, y, w, h, clx, cly, clw, clh): i64 {
+    var col = dh_theme_bg();
+    var yy = y;
+    if ((yy & 1) == 0) { yy = yy + 1; }
+    var end = y + h;
+    while (yy < end) {
+        dh_fill_rect_clip(sds, x, yy, w, 1, col, clx, cly, clw, clh);
+        yy = yy + 2;
+    }
+    return 0;
+}
+
 fn dh_draw_progress(sds, wgt, x, y, w, h, clx, cly, clw, clh): i64 {
     var p = dh_progress_permille(wgt);
     if (p < 0) {

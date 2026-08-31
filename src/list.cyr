@@ -122,6 +122,11 @@ fn dh_list_select(lst, idx): i64 {
     }
     if (idx < 0) { return 0 - 1; }
     if (idx >= dh_list_count(lst)) { return 0 - 1; }
+    # ⛔ AN INERT ROW CANNOT BE SELECTED (0.9.23). A menu separator that could be selected is a menu
+    # that highlights a horizontal line when you press Down. Refused rather than nudged to a
+    # neighbour, for the same reason an out-of-range index is refused: quietly handing back a
+    # DIFFERENT row hides the caller's bug behind a plausible highlight.
+    if (dh_widget_inert(dh_list_row_at(lst, idx)) == 1) { return 0 - 1; }
     store64(lst + DH_W_SEL, idx);
     return idx;
 }
@@ -138,14 +143,35 @@ fn dh_list_move_sel(lst, delta): i64 {
     if (n == 0) { return 0 - 1; }
     var cur = dh_widget_sel(lst);
     if (cur < 0) {
-        store64(lst + DH_W_SEL, 0);
-        return 0;
+        # ⚠ From no selection either direction lands on the first SELECTABLE row, which with no inert
+        # rows present is row 0 exactly as before.
+        var f = 0;
+        while (f < n) {
+            if (dh_widget_inert(dh_list_row_at(lst, f)) == 0) { store64(lst + DH_W_SEL, f); return f; }
+            f = f + 1;
+        }
+        return 0 - 1;
     }
     var nx = cur + delta;
     if (nx < 0) { nx = 0; }
     if (nx > n - 1) { nx = n - 1; }
-    store64(lst + DH_W_SEL, nx);
-    return nx;
+    # ⛔ STEP OVER INERT ROWS (0.9.23), IN THE DIRECTION OF TRAVEL. A separator the cursor can land on
+    # is a menu where Down sometimes appears to do nothing — the highlight vanishes onto a rule and
+    # the next press is needed to escape it.
+    # ⚠ The scan is CAPPED by the row count, so a menu made entirely of separators terminates and
+    # leaves the selection where it was rather than spinning.
+    var dir = 1;
+    if (delta < 0) { dir = 0 - 1; }
+    var guard = 0;
+    while (guard < n) {
+        if (dh_widget_inert(dh_list_row_at(lst, nx)) == 0) { store64(lst + DH_W_SEL, nx); return nx; }
+        nx = nx + dir;
+        # ⚠ At an edge, reverse rather than stop: an inert LAST row must not trap the cursor there.
+        if (nx < 0) { nx = 0; dir = 1; }
+        if (nx > n - 1) { nx = n - 1; dir = 0 - 1; }
+        guard = guard + 1;
+    }
+    return cur;
 }
 
 # @public — scroll the minimum distance that brings the selected row fully into view. -> the offset.
@@ -217,7 +243,13 @@ fn dh_list_index_at(lst, px, py): i64 {
     var i = 0;
     var c = dh_widget_first_child(lst);
     while (c != 0) {
-        if (dh_widget_contains(c, px, py) == 1) { return i; }
+        if (dh_widget_contains(c, px, py) == 1) {
+            # ⛔ AN INERT ROW IS NOT HIT (0.9.23). A separator that answered a click is a menu that
+            # closes on a press that pointed at nothing. -1 here, not the neighbouring row: the
+            # operator pointed at a gap, and acting on the item above it is worse than not acting.
+            if (dh_widget_inert(c) == 1) { return 0 - 1; }
+            return i;
+        }
         i = i + 1;
         c = dh_widget_next_sibling(c);
     }

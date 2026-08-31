@@ -7,7 +7,7 @@
 # Layout (layout.cyr) walks the tree to assign bounds; event dispatch
 # (event.cyr) hit-tests it; the surface (surface.cyr) draws it.
 #
-# DhWidget struct layout (264 bytes, 33 u64 slots — see `DH_WIDGET_SIZE` below):
+# DhWidget struct layout (288 bytes, 36 u64 slots — see `DH_WIDGET_SIZE` below):
 # ⚠ THIS HEADER READ "144 bytes, 18 u64 slots" UNTIL 0.9.22 while the field list below it already
 # ran past +168. It contradicted itself and understated the record by 112 bytes, which is exactly
 # how a reader sizing a NEW field off the header picks an offset that collides with a live one.
@@ -105,12 +105,34 @@ enum DhWidgetField {
     # under the frame arena the memory is RECYCLED from a previous frame's widgets, so an unseeded
     # field carries a *plausible* stale permille instead of an obvious zero.
     DH_W_FILL         = 256;
+    # ⭐ OVERLAY OFFSET (0.9.23). How far this child sits from its NONE container's PADDED CONTENT
+    # ORIGIN, in px. 0,0 is the origin — exactly where every child sat before — so every existing
+    # NONE container is bit-identical.
+    # ⛔ NONE CONTAINERS ONLY, DELIBERATELY. An offset honoured inside a BOX_H/BOX_V would be a
+    # MARGIN wearing the wrong name: the flex distributor does not account for it, so the child would
+    # overlap its neighbour and the container's measured size would be a lie. Same reasoning that
+    # keeps `DH_W_SCROLL_Y` vertical-only — a field that means one thing.
+    # ⛔ SEEDED EXPLICITLY EVEN THOUGH 0 IS THE DEFAULT. Under the frame arena the memory is
+    # RECYCLED, so an unseeded offset carries a previous frame's value — and that value is a SMALL
+    # PLAUSIBLE NUMBER, which is the worst kind of wrong: a popup 40 px from where it was asked for
+    # reads as a design decision, not a fault.
+    DH_W_OFF_X        = 264;
+    DH_W_OFF_Y        = 272;
+    # ⭐ PER-WIDGET BORDER (0.9.23). A sadish colour, or one of the two sentinels in `DhBorder`.
+    # ⛔ WHY TWO SENTINELS. -1 cannot mean "none", because -1 is also what a BUTTON has by default and
+    # a BUTTON's default is `line`. A single sentinel would make `set_border(btn, -1)` mean "restore
+    # the border" when the caller plainly meant "remove it".
+    # ⛔ THE COLOUR IS RESOLVED AT DRAW TIME, NEVER AT CONSTRUCTION. Storing `dh_theme_line()` here
+    # would freeze the palette into every widget, so a theme switch would leave already-built widgets
+    # on the old colour — and it would make widget.cyr call into theme.cyr, which sits AFTER it in
+    # the fold.
+    DH_W_BORDER       = 280;
 }
 # ⚠ 256 -> 264 at 0.9.22. A consumer with a FIXED-size arena sized against the old footprint will
 # now spill to the global allocator, and `dh_falloc` degrades to a leak rather than to a null — so
 # it passes every functional test and shows up only in an `alloc_used()` convergence check. crab is
 # safe (`arena_new_growable`, which chains); check any other consumer before shipping.
-var DH_WIDGET_SIZE = 264;
+var DH_WIDGET_SIZE = 288;
 
 # ============================================================================================
 # ⭐⭐ MOTION — the app's half of "the compositor grants, apps override per widget"
@@ -154,6 +176,20 @@ fn dh_widget_motion_at(w, elapsed_ms): i64 {
 enum DhWidgetFlag {
     DH_FLAG_DRAGGABLE   = 1;    # a press + drag on this widget starts a drag
     DH_FLAG_DROP_TARGET = 2;    # a drag released over this widget drops onto it
+    # ⭐ 0.9.23 — PAINT ONLY, no input meaning. This widget's rect is SCANLINE-DIMMED with
+    # `dh_theme_bg()` before its children draw. See `dh_draw_scrim`, and the ⛔ there about what
+    # sadish can and cannot actually do.
+    DH_FLAG_SCRIM       = 4;
+    # ⭐ 0.9.23 — INPUT + SELECTION ONLY, no paint. A container child that cannot be selected and
+    # cannot be hit AS A ROW: a menu separator, a section heading inside a list.
+    # ⚠ Additive — no widget that exists today sets this bit, so every shipped LIST is unchanged.
+    DH_FLAG_INERT       = 8;
+}
+
+# Border sentinels. ⛔ TWO, NOT ONE — see the ⛔ at `DH_W_BORDER`.
+enum DhBorder {
+    DH_BORDER_INHERIT = -1;      # take this KIND's default (BUTTON -> line; everything else -> none)
+    DH_BORDER_NONE    = -2;      # draw nothing, whatever the kind
 }
 
 # Cross-axis alignment of a child within its BOX container's cross size
@@ -174,7 +210,7 @@ enum DhAlign {
 # objects with it. So an app that rebuilds its widget tree every frame — which is what immediate-mode
 # means, and what makes toolkit-owned selection and scroll work at all — retains every widget it has
 # ever built, for the life of the process. Measured against crab at 380x220 with 114 entries per pane:
-# **~236 widgets x 264 B = 62,304 B per frame**, permanently. (248 B until 0.9.22; the figure moves
+# **~236 widgets x 288 B = 67,968 B per frame**, permanently. (248 B until 0.9.22; the figure moves
 # with `DH_WIDGET_SIZE` and has been stale before — re-derive it rather than trusting it.)
 #
 # ⇒ Route the PER-FRAME allocations through a caller-supplied arena. `arena_reset` is a bump back to
@@ -279,6 +315,9 @@ fn dh_widget_new(kind): i64 {
     store64(wgt + DH_W_GAP, 0);            # no gap
     store64(wgt + DH_W_ALIGN, 0);          # ALIGN_STRETCH
     store64(wgt + DH_W_FILL, 0 - 1);       # -1 = indeterminate (see the ⛔ at the field)
+    store64(wgt + DH_W_OFF_X, 0);          # ⛔ seeded: arena memory is RECYCLED, not zero
+    store64(wgt + DH_W_OFF_Y, 0);
+    store64(wgt + DH_W_BORDER, DH_BORDER_INHERIT);
     return wgt;
 }
 
@@ -426,6 +465,42 @@ fn dh_widget_set_flag(wgt, flag, on): i64 {
     store64(wgt + DH_W_FLAGS, f);
     return DHANCHA_OK;
 }
+
+# @public — place this child `dx, dy` px from its NONE container's padded content origin.
+# ⚠ NONE CONTAINERS ONLY (see the ⛔ at `DH_W_OFF_X`). Set on a BOX child it is stored and ignored —
+# deliberately: silently ignoring beats a half-honoured margin, and refusing would mean the setter
+# had to know the parent, which a child may not have yet.
+fn dh_widget_set_offset(wgt, dx, dy): i64 {
+    if (wgt == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    store64(wgt + DH_W_OFF_X, dx);
+    store64(wgt + DH_W_OFF_Y, dy);
+    return DHANCHA_OK;
+}
+
+fn dh_widget_off_x(wgt): i64 { if (wgt == 0) { return 0; } return load64(wgt + DH_W_OFF_X); }
+fn dh_widget_off_y(wgt): i64 { if (wgt == 0) { return 0; } return load64(wgt + DH_W_OFF_Y); }
+
+# @public — border colour, `DH_BORDER_INHERIT`, or `DH_BORDER_NONE`.
+fn dh_widget_set_border(wgt, col): i64 {
+    if (wgt == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    store64(wgt + DH_W_BORDER, col);
+    return DHANCHA_OK;
+}
+
+fn dh_widget_border(wgt): i64 {
+    if (wgt == 0) { return DH_BORDER_INHERIT; }
+    return load64(wgt + DH_W_BORDER);
+}
+
+# @public — is this widget inert (unselectable, unhittable as a row)? 1 = yes.
+fn dh_widget_inert(wgt): i64 {
+    if (wgt == 0) { return 0; }
+    if ((load64(wgt + DH_W_FLAGS) & DH_FLAG_INERT) != 0) { return 1; }
+    return 0;
+}
+
+fn dh_widget_set_inert(wgt, on): i64 { return dh_widget_set_flag(wgt, DH_FLAG_INERT, on); }
+fn dh_widget_set_scrim(wgt, on): i64 { return dh_widget_set_flag(wgt, DH_FLAG_SCRIM, on); }
 
 fn dh_widget_set_draggable(wgt, on): i64   { return dh_widget_set_flag(wgt, DH_FLAG_DRAGGABLE, on); }
 fn dh_widget_set_drop_target(wgt, on): i64 { return dh_widget_set_flag(wgt, DH_FLAG_DROP_TARGET, on); }

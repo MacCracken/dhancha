@@ -53,9 +53,11 @@ fn main(): i64 {
     # widget's `DH_W_ID` — silent corruption in a bump allocator with no guard pages, not a fault.
     # This check is a literal pin, not a memory-safety proof; the two-bar check below catches gross
     # overlap and nothing here catches subtle overlap. Said plainly rather than implied away.
-    # ⚠ 264 -> 288 at 0.9.23 (DH_W_OFF_X / _OFF_Y / _BORDER). This pin FIRED when the size moved,
-    # which is the whole reason it is a literal — it forces a human to confirm the change was meant.
-    check(DH_WIDGET_SIZE, 288);
+    # ⚠ 264 -> 288 at 0.9.23 (DH_W_OFF_X / _OFF_Y / _BORDER), 288 -> 296 at 0.9.24 (DH_W_KEY).
+    # **This pin has now FIRED at both of those releases**, which is the whole reason it is a
+    # literal — it forces a human to confirm the growth was meant rather than letting a struct
+    # quietly widen. Two for two on a check that costs one line.
+    check(DH_WIDGET_SIZE, 296);
 
     # ---- B: a fresh bar is INDETERMINATE, not 0 % -----------------------------------------------
     # ⛔ 0 is a VALID fill. A bar that boots claiming a real 0 % is lying about having been told.

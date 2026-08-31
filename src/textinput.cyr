@@ -102,6 +102,45 @@ fn dh_text_new(cap): i64 {
     return w;
 }
 
+# @public — make an EXISTING widget an editable field over a buffer the CALLER owns.
+#
+# ⛔⛔ `dh_text_new` IS UNUSABLE FROM AN IMMEDIATE-MODE APP, AND THIS IS THE ENTRY POINT THAT FIXES
+# IT. `dh_text_new` calls `alloc(cap)` — the GLOBAL allocator, deliberately, so the buffer outlives
+# the frame — but the widget holding it is `dh_falloc`'d and dies at the next `dh_frame_begin`. An
+# app that rebuilds its tree every frame must therefore call `dh_text_new` every frame, and every
+# call leaks a fresh buffer into an allocator with no `free()`. A 256-byte field edited for ten
+# seconds at 60 Hz is ~150 KB gone, permanently.
+# ⇒ The buffer is the one piece of a text field that is genuinely APP state — it holds what the
+# operator typed, which must outlive the tree that displays it. So the app should own it.
+# ⭐ Pair with `dh_widget_set_key` and the caret survives the rewind too: the app allocates one
+# buffer for the process, calls this each frame on the freshly built widget, and every editing
+# operation below works unchanged.
+#
+# ⚠ `len` IS TAKEN FROM THE CALLER, NOT SCANNED. The caller already knows it, and a `strlen` here
+# would make re-attaching an O(n) rescan on every frame — the cost this entry point exists to avoid.
+# ⛔ THE CARET IS CLAMPED TO `len`, NOT TRUSTED. Re-attaching a SHORTER buffer than last frame is an
+# ordinary thing for an app to do — the operator pressed Backspace — and a caret past the end would
+# let `dh_text__prev` walk before the start of the buffer.
+# ⚠ dhancha never frees this buffer. It did not allocate it.
+fn dh_text_attach(w, buf, cap, len): i64 {
+    if (w == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    if (dh_widget_kind(w) != TEXTINPUT) { return DHANCHA_ERR_BAD_WIDGET; }
+    if (buf == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    if (cap < 2) { return DHANCHA_ERR_BAD_WIDGET; }
+    var n = len;
+    if (n < 0) { n = 0; }
+    if (n > cap - 1) { n = cap - 1; }
+    store8(buf + n, 0);
+    store64(w + DH_W_TEXT, buf);
+    store64(w + DH_W_TEXT_CAP, cap);
+    store64(w + DH_W_TEXT_LEN, n);
+    var c = load64(w + DH_W_CARET);
+    if (c > n) { c = n; }
+    if (c < 0) { c = 0; }
+    store64(w + DH_W_CARET, c);
+    return DHANCHA_OK;
+}
+
 fn dh_text_len(w): i64   { if (w == 0) { return 0; } return load64(w + DH_W_TEXT_LEN); }
 fn dh_text_caret(w): i64 { if (w == 0) { return 0; } return load64(w + DH_W_CARET); }
 fn dh_text_cap(w): i64   { if (w == 0) { return 0; } return load64(w + DH_W_TEXT_CAP); }

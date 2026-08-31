@@ -127,12 +127,36 @@ enum DhWidgetField {
     # on the old colour — and it would make widget.cyr call into theme.cyr, which sits AFTER it in
     # the fold.
     DH_W_BORDER       = 280;
+    # ⭐⭐ THE STABLE KEY (0.9.24) — a caller-supplied identity that survives a frame arena rewind.
+    #
+    # ⛔⛔ THE PROBLEM IT SOLVES: dhancha identified a widget by its POINTER, and a per-frame arena
+    # invalidates every pointer at `dh_frame_begin`. Four features are built on retained widget
+    # pointers — focus, hover, press and drag — so all four were unreachable from an immediate-mode
+    # app that rebuilds its tree each frame. `dh_dispatch`, drag and `TEXTINPUT` were each worked
+    # around separately in crab before anyone noticed the three had **one** cause.
+    # ⇒ A key is an ordinary integer, so `arena_reset` cannot invalidate it. The app labels the
+    # widgets it wants remembered, dhancha remembers KEYS instead of pointers, and
+    # `dh_surface_set_root` re-resolves key → widget against the newly built tree each frame.
+    #
+    # ⚠ **0 MEANS "NO STABLE IDENTITY", AND THAT IS WHY THIS IS ADDITIVE.** Every widget that exists
+    # today has key 0, retained state falls back to raw pointers exactly as before, and no shipped
+    # app changes behaviour. A key is opt-in per widget, not per app.
+    # ⚠ KEYS ARE THE APP'S NAMESPACE, NOT dhancha's. `DH_W_ID` is a monotonic counter minted per
+    # allocation — it is *fresh every frame* under an arena and therefore useless as identity. The
+    # key is whatever the app can re-derive: a pane index, a row index, a hash of a path.
+    # ⛔ UNIQUENESS IS THE APP'S CONTRACT. `dh_widget_find_key` returns the FIRST match in
+    # depth-first order; two widgets sharing a key is a bug in the app and dhancha cannot detect it
+    # cheaply. Said here rather than enforced, because the check is O(n²) on every frame.
+    DH_W_KEY          = 288;
 }
 # ⚠ 256 -> 264 at 0.9.22. A consumer with a FIXED-size arena sized against the old footprint will
 # now spill to the global allocator, and `dh_falloc` degrades to a leak rather than to a null — so
 # it passes every functional test and shows up only in an `alloc_used()` convergence check. crab is
 # safe (`arena_new_growable`, which chains); check any other consumer before shipping.
-var DH_WIDGET_SIZE = 288;
+# ⚠ 296 as of 0.9.24 (was 288) — `DH_W_KEY` is the added slot. ⛔ This constant and the layout above
+# must move together; the header comment has been stale before, so re-derive it from the last field
+# rather than trusting either.
+var DH_WIDGET_SIZE = 296;
 
 # ============================================================================================
 # ⭐⭐ MOTION — the app's half of "the compositor grants, apps override per widget"
@@ -267,6 +291,42 @@ fn dh_falloc(size): i64 {
 # reliable 8-byte cell accessed directly.
 var _dh_next_widget_id = 0;
 
+# @public — give this widget a stable identity that survives a frame-arena rewind. See `DH_W_KEY`.
+# ⚠ `key == 0` clears it, which is the default and means "not remembered across frames".
+fn dh_widget_set_key(w, key): i64 {
+    if (w == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    store64(w + DH_W_KEY, key);
+    return DHANCHA_OK;
+}
+
+# @public — this widget's stable key, or 0 if it has none.
+fn dh_widget_key(w): i64 {
+    if (w == 0) { return 0; }
+    return load64(w + DH_W_KEY);
+}
+
+# @public — find the widget carrying `key` in the subtree rooted at `root`. -> DhWidget*, or 0.
+#
+# ⛔ DEPTH-FIRST, FIRST MATCH WINS, AND IT DOES NOT PRUNE. This is deliberately unlike
+# `dh_hit_test`, which prunes any subtree whose root does not contain the point: a key is an
+# identity, not a location, so a keyed widget laid out anywhere — scrolled out of view, offset into
+# an overlay, sized to nothing — must still be findable. Pruning here would make focus silently
+# unrecoverable for exactly the widgets an app is most likely to key.
+# ⚠ `key == 0` finds nothing, because 0 is the "no identity" sentinel and every unkeyed widget in
+# the tree carries it. Answering with the first unkeyed widget would be worse than answering none.
+fn dh_widget_find_key(root, key): i64 {
+    if (root == 0) { return 0; }
+    if (key == 0) { return 0; }
+    if (load64(root + DH_W_KEY) == key) { return root; }
+    var c = load64(root + DH_W_FIRST_CHILD);
+    while (c != 0) {
+        var hit = dh_widget_find_key(c, key);
+        if (hit != 0) { return hit; }
+        c = load64(c + DH_W_NEXT_SIBLING);
+    }
+    return 0;
+}
+
 # Allocate + zero-init a widget of the given kind. Returns a DhWidget*.
 # All bounds start at 0 (layout fills them in); tree links start null.
 fn dh_widget_new(kind): i64 {
@@ -318,6 +378,10 @@ fn dh_widget_new(kind): i64 {
     store64(wgt + DH_W_OFF_X, 0);          # ⛔ seeded: arena memory is RECYCLED, not zero
     store64(wgt + DH_W_OFF_Y, 0);
     store64(wgt + DH_W_BORDER, DH_BORDER_INHERIT);
+    # ⛔ SEEDED, LIKE EVERY FIELD ABOVE, BECAUSE ARENA MEMORY IS RECYCLED AND NOT ZERO. A widget that
+    # inherited the previous frame's key at this address would be silently adopted as the focused or
+    # dragged widget — the exact failure this field exists to prevent, caused by the field itself.
+    store64(wgt + DH_W_KEY, 0);
     return wgt;
 }
 

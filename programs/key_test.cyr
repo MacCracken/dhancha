@@ -1,0 +1,321 @@
+# programs/key_test.cyr — RUN test for stable widget keys (0.9.24).
+#
+# ⛔⛔ WHAT THIS EXISTS TO PIN. dhancha identified a widget by its POINTER, and a per-frame arena
+# invalidates every pointer at `dh_frame_begin`. Focus, hover, press and drag are all built on
+# retained widget pointers, so **all four were unreachable from an immediate-mode app** — one that
+# rebuilds its whole tree every frame. crab worked around `dh_dispatch`, drag and `TEXTINPUT`
+# separately before anyone noticed the three had one cause.
+#
+# A key is an integer, so `arena_reset` cannot invalidate it. This suite drives the full immediate-
+# mode cycle — build tree, dispatch, `dh_frame_begin`, REBUILD FROM SCRATCH, `dh_surface_set_root` —
+# and asserts what survives and what does not:
+#   A. `dh_widget_find_key` — nested, missing, key 0, and the no-prune rule;
+#   B. a KEYED widget keeps focus across a frame boundary; an UNKEYED one does not (the old contract);
+#   C. a key that leaves the tree is DROPPED, pointer and key together;
+#   D. `dh_drag_available_for` — the capability question, per widget;
+#   E. a full drag press -> move -> REBUILD -> release under an arena delivers all four drag events;
+#   F. `dh_text_attach` — a caller-owned buffer, and editing works through it;
+#   G. the whole cycle costs the GLOBAL heap zero bytes per frame.
+# Exit code = failed checks.
+
+include "src/lib.cyr"
+
+var g_fails = 0;
+var g_checks = 0;
+var g_dstart = 0;
+var g_dmove = 0;
+var g_ddrop = 0;
+var g_dend = 0;
+
+# ⛔ `print` TAKES A LENGTH, AND HAND-COUNTING IT IS A READ PAST THE LITERAL. A first draft of this
+# file passed 22 for a 19-byte string and printed three bytes of whatever followed it in the binary.
+# One helper, one `strlen`, no counting.
+fn say(s2): i64 { return print(s2, strlen(s2)); }
+
+fn check(got, want): i64 {
+    g_checks = g_checks + 1;
+    if (got == want) { return 0; }
+    g_fails = g_fails + 1;
+    # ⚠ NAME THE FAILING CHECK. A suite that reports only a count makes the reader bisect by hand,
+    # and this one drives a long stateful sequence where "check 40" is far more useful than "FAIL".
+    say("  key_test: check #");
+    fmt_int(g_checks);
+    say(" failed: got ");
+    fmt_int(got);
+    say(" want ");
+    fmt_int(want);
+    say("\n");
+    return 1;
+}
+
+fn h_drag(w, ev): i64 {
+    var k = dh_event_kind(ev);
+    if (k == DRAG_START) { g_dstart = g_dstart + 1; }
+    if (k == DRAG_MOVE) { g_dmove = g_dmove + 1; }
+    if (k == DRAG_DROP) { g_ddrop = g_ddrop + 1; }
+    if (k == DRAG_END) { g_dend = g_dend + 1; }
+    return 0;
+}
+
+# Build the scene from scratch, exactly as an immediate-mode app does every frame.
+# `keyed` selects whether the two leaves carry stable keys.
+# ⚠ Returns the root; the two leaves are found again by key, which is the point.
+fn build(keyed, include_b): i64 {
+    var root = dh_widget_new(WINDOW);
+    dh_widget_set_layout(root, BOX_V);
+    dh_widget_set_pref(root, 200, 100);
+    var a = dh_widget_new(BUTTON);
+    dh_widget_set_pref(a, 200, 40);
+    if (keyed == 1) { dh_widget_set_key(a, 1001); }
+    dh_widget_set_draggable(a, 1);
+    dh_widget_set_handler(a, &h_drag);
+    dh_widget_add_child(root, a);
+    if (include_b == 1) {
+        # ⚠ NESTED ONE LEVEL DEEPER THAN `a`, so the finder is really walking rather than scanning
+        # the root's immediate children — a flat fixture would pass against a one-level search.
+        var box = dh_widget_new(BOX);
+        dh_widget_set_layout(box, BOX_V);
+        dh_widget_set_pref(box, 200, 40);
+        var b = dh_widget_new(BUTTON);
+        dh_widget_set_pref(b, 200, 40);
+        if (keyed == 1) { dh_widget_set_key(b, 2002); }
+        dh_widget_set_drop_target(b, 1);
+        dh_widget_set_handler(b, &h_drag);
+        dh_widget_add_child(box, b);
+        dh_widget_add_child(root, box);
+    }
+    dh_layout_apply(root, 200, 100);
+    return root;
+}
+
+fn main(): i64 {
+    alloc_init();
+    rupa_theme_set_active_name("mudra-dark");
+
+    # ---- A: the finder --------------------------------------------------------------------------
+    var r1 = build(1, 1);
+    var fa = dh_widget_find_key(r1, 1001);
+    var fb = dh_widget_find_key(r1, 2002);
+    check(fa != 0, 1);
+    check(fb != 0, 1);
+    check(dh_widget_key(fa), 1001);
+    check(dh_widget_key(fb), 2002);
+    # ⚠ `b` is a grandchild, so finding it proves the walk recurses.
+    check(dh_widget_parent(fb) != r1, 1);
+    # A key nobody set finds nothing — not the nearest widget, not the root.
+    check(dh_widget_find_key(r1, 9999), 0);
+    # ⛔ KEY 0 IS THE "no identity" SENTINEL AND MUST FIND NOTHING, even though every unkeyed widget
+    # in the tree literally carries 0. Answering with the first of them would be worse than none.
+    check(dh_widget_find_key(r1, 0), 0);
+    check(dh_widget_find_key(0, 1001), 0);
+    # ⛔ NO PRUNING BY GEOMETRY, unlike `dh_hit_test`. A key is an identity, not a location: a widget
+    # scrolled out of view or sized to nothing must still be findable, or focus becomes silently
+    # unrecoverable for exactly the widgets an app is most likely to key.
+    dh_widget_set_pref(fb, 0, 0);
+    dh_layout_apply(r1, 200, 100);
+    check(dh_widget_find_key(r1, 2002), fb);
+
+    # ---- B: focus survives a frame boundary when keyed ------------------------------------------
+    # ⛔ THE ARENA IS THE POINT. Without one, `dh_frame_begin` is a no-op and this would pass for the
+    # wrong reason — the old pointers would still be valid because nothing recycled them.
+    var arena = arena_new_growable(65536);
+    check(arena != 0, 1);
+    dh_frame_arena_set(arena);
+
+    var surf = dh_surface_new(200, 100);
+    check(surf != 0, 1);
+
+    dh_frame_begin();
+    var r2 = build(1, 1);
+    dh_surface_set_root(surf, r2);
+    var a2 = dh_widget_find_key(r2, 1001);
+    dh_focus_set(a2);
+    check(dh_focus_get(), a2);
+
+    # A whole frame passes: the arena rewinds, the tree is rebuilt at recycled addresses.
+    dh_frame_begin();
+    check(dh_focus_get(), 0);              # the POINTER is dropped, as it must be
+    var r3 = build(1, 1);
+    dh_surface_set_root(surf, r3);
+    var a3 = dh_widget_find_key(r3, 1001);
+    # ⭐ THE HEADLINE: focus came back, bound to the NEW widget carrying the same key.
+    check(dh_focus_get(), a3);
+    check(dh_focus_get() != 0, 1);
+
+    # ⛔ AND THE OLD CONTRACT IS UNCHANGED FOR AN UNKEYED WIDGET — this is what makes the release
+    # additive. Without a key there is no identity to restore, so focus is lost at the frame
+    # boundary exactly as it was before 0.9.24.
+    dh_frame_begin();
+    var r4 = build(0, 1);
+    dh_surface_set_root(surf, r4);
+    var a4 = dh_widget_find_key(r4, 1001);
+    check(a4, 0);                          # nothing is keyed in this tree
+    dh_focus_set(dh_widget_first_child(r4));
+    check(dh_focus_get() != 0, 1);
+    dh_frame_begin();
+    var r5 = build(0, 1);
+    dh_surface_set_root(surf, r5);
+    check(dh_focus_get(), 0);              # gone, as before
+
+    # ---- C: a key that leaves the tree is dropped, pointer AND key -------------------------------
+    # ⛔ KEEPING THE KEY WOULD MEAN A WIDGET REAPPEARING UNDER IT THREE FRAMES LATER SILENTLY
+    # INHERITS FOCUS — or worse, a drag the operator abandoned. Absence is an answer.
+    dh_frame_begin();
+    var r6 = build(1, 1);
+    dh_surface_set_root(surf, r6);
+    dh_focus_set(dh_widget_find_key(r6, 2002));
+    check(dh_focus_get() != 0, 1);
+    dh_frame_begin();
+    var r7 = build(1, 0);                  # `b` is gone from the scene entirely
+    dh_surface_set_root(surf, r7);
+    check(dh_focus_get(), 0);
+    # ...and it stays gone when the widget comes back, because the key was dropped with the pointer.
+    dh_frame_begin();
+    var r8 = build(1, 1);
+    dh_surface_set_root(surf, r8);
+    check(dh_focus_get(), 0);
+
+    # ---- D: the drag capability question, per widget ---------------------------------------------
+    # ⚠ `dh_drag_available()` still answers the CONFIGURATION question and is unchanged: under an
+    # arena, an unkeyed widget cannot be dragged. `dh_drag_available_for` answers the useful one.
+    check(dh_drag_available(), 0);                        # arena installed
+    var ka = dh_widget_find_key(r8, 1001);
+    check(dh_drag_available_for(ka), 1);                  # ...but this one has identity
+    var plain = dh_widget_new(BUTTON);
+    check(dh_drag_available_for(plain), 0);               # ...and this one does not
+    check(dh_drag_available_for(0), 0);
+    dh_frame_arena_set(0);
+    check(dh_drag_available(), 1);                        # no arena: everything can drag
+    check(dh_drag_available_for(plain), 1);
+    dh_frame_arena_set(arena);
+
+    # ---- E: a whole drag, across a frame rebuild, under an arena ---------------------------------
+    # ⛔⛔ THIS IS THE REGRESSION 0.9.21 COULD ONLY REFUSE. Before keys, DRAG_START fired and
+    # DRAG_MOVE / DROP / END never did, so an app set a "dragging" flag and was never told the drag
+    # ended. 0.9.21 made that honest by refusing to start. This makes it WORK.
+    g_dstart = 0; g_dmove = 0; g_ddrop = 0; g_dend = 0;
+    dh_frame_begin();
+    var d1 = build(1, 1);
+    dh_surface_set_root(surf, d1);
+
+    var mv = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(mv, 20, 10);                     # inside `a`
+    dh_dispatch(d1, mv);
+    var bt = dh_event_new(POINTER_BTN);
+    dh_event_set_payload(bt, 272, 1);                     # press
+    dh_dispatch(d1, bt);
+
+    var mv2 = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(mv2, 20, 60);                    # past the threshold, into `b`
+    dh_dispatch(d1, mv2);
+    check(g_dstart, 1);
+
+    # ⭐ THE FRAME BOUNDARY, MID-DRAG — the exact point where every drag used to die.
+    dh_frame_begin();
+    var d2 = build(1, 1);
+    dh_surface_set_root(surf, d2);
+
+    var mv3 = dh_event_new(POINTER_MOVE);
+    dh_event_set_payload(mv3, 21, 61);
+    dh_dispatch(d2, mv3);
+    check(g_dmove >= 1, 1);                               # the drag is still live after the rebuild
+
+    var up = dh_event_new(POINTER_BTN);
+    dh_event_set_payload(up, 272, 0);                     # release over `b`, a drop target
+    dh_dispatch(d2, up);
+    check(g_ddrop, 1);
+    check(g_dend, 1);
+    # ⚠ AND THE STATE IS CLEAN AFTERWARDS — a drag that ended must not leave a key behind to rebind.
+    check(dh_drag_active(), 0);
+
+    # ---- F: a caller-owned text buffer ------------------------------------------------------------
+    # ⛔ `dh_text_new` ALLOCATES GLOBALLY, so an immediate-mode app calling it per frame leaks a
+    # buffer per frame into an allocator with no `free()`. `dh_text_attach` lets the app own it once.
+    var mybuf = alloc(64);
+    store8(mybuf, 0);
+    dh_frame_begin();
+    var tr = dh_widget_new(WINDOW);
+    var fld = dh_widget_new(TEXTINPUT);
+    dh_widget_set_key(fld, 3003);
+    check(dh_text_attach(fld, mybuf, 64, 0), DHANCHA_OK);
+    check(dh_text_editable(fld), 1);
+    dh_widget_add_child(tr, fld);
+    dh_surface_set_root(surf, tr);
+    # ⚠ FOCUS IT EXPLICITLY. The drag section above left focus on `a` (key 1001), and this tree does
+    # not contain that key — so `dh_rebind_input` correctly DROPPED it. A first draft of this section
+    # assumed focus carried over and asserted it had; the implementation was right and the test was
+    # wrong, which is the good direction for that mistake to run.
+    dh_focus_set(fld);
+    dh_text_insert(fld, 104);                             # 'h'
+    dh_text_insert(fld, 105);                             # 'i'
+    check(dh_text_len(fld), 2);
+    check(load8(mybuf), 104);                             # the caller's buffer really holds it
+    check(load8(mybuf + 1), 105);
+
+    # A frame passes; the widget is rebuilt and re-attached to the SAME buffer.
+    dh_frame_begin();
+    var tr2 = dh_widget_new(WINDOW);
+    var fld2 = dh_widget_new(TEXTINPUT);
+    dh_widget_set_key(fld2, 3003);
+    check(dh_text_attach(fld2, mybuf, 64, 2), DHANCHA_OK);
+    dh_widget_add_child(tr2, fld2);
+    dh_surface_set_root(surf, tr2);
+    check(dh_text_len(fld2), 2);                          # what the operator typed survived
+    check(dh_focus_get() != 0, 1);                        # ...and so did focus, by key
+
+    # ⛔ THE CARET IS CLAMPED, NOT TRUSTED. Re-attaching a SHORTER buffer than last frame is ordinary
+    # (the operator pressed Backspace); a caret past the end would let `dh_text__prev` walk before
+    # the buffer.
+    dh_text_end(fld2);
+    check(dh_text_caret(fld2), 2);
+    check(dh_text_attach(fld2, mybuf, 64, 1), DHANCHA_OK);
+    check(dh_text_caret(fld2), 1);
+    # Refusals, rather than a field that looks editable and is not.
+    check(dh_text_attach(0, mybuf, 64, 0), DHANCHA_ERR_BAD_WIDGET);
+    check(dh_text_attach(fld2, 0, 64, 0), DHANCHA_ERR_BAD_WIDGET);
+    check(dh_text_attach(fld2, mybuf, 1, 0), DHANCHA_ERR_BAD_WIDGET);
+    check(dh_text_attach(tr2, mybuf, 64, 0), DHANCHA_ERR_BAD_WIDGET);   # not a TEXTINPUT
+
+    # ---- G: the whole cycle still costs the global heap nothing -----------------------------------
+    # ⛔ THE KEYS MUST NOT REINTRODUCE A PER-FRAME ALLOCATION — that would trade one leak for
+    # another. `dh_widget_find_key` is a tree walk with no scratch, and the shadows are four
+    # module-level integers.
+    # ⚠ WARM UP FIRST: the first frame at this shape may extend the arena's chunk chain, which IS a
+    # global `alloc`. `arena_reset` then reuses it forever. Measuring across it would report a leak
+    # that is really a first-frame cost.
+    dh_frame_begin();
+    var wr = build(1, 1);
+    dh_surface_set_root(surf, wr);
+    dh_focus_set(dh_widget_find_key(wr, 1001));
+    var a0 = alloc_used();
+    var i = 0;
+    while (i < 20) {
+        dh_frame_begin();
+        var fr = build(1, 1);
+        dh_surface_set_root(surf, fr);
+        i = i + 1;
+    }
+    check(alloc_used() - a0, 0);
+    # ⛔ NON-VACUITY: the loop must really have been re-binding, or the assertion above is about a
+    # cycle that never happened.
+    check(dh_focus_get() != 0, 1);
+    check(dh_widget_key(dh_focus_get()), 1001);
+
+    # ⚠ REPORT THE COUNT, not just the verdict — a suite that silently skipped half its checks
+    # exits 0 exactly like one that ran them all.
+    say("key_test: ");
+    fmt_int(g_checks);
+    say(" checks, ");
+    fmt_int(g_fails);
+    say(" failed\n");
+    if (g_fails == 0) {
+        println("key_test: PASS (finder, keyed focus, drop-on-absence,");
+        println("                drag across a rebuild, attached buffer, zero-alloc)");
+        return 0;
+    }
+    println("key_test: FAIL");
+    return g_fails;
+}
+
+fn _entry(): i64 { syscall(SYS_EXIT, main()); return 0; }
+_entry();

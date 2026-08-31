@@ -5,6 +5,130 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.24] - 2026-08-31 — stable widget keys: the retained-tree assumption, fixed at its cause
+
+### ⭐⭐ The headline: four features had one bug, and it was identity
+
+dhancha identified a widget by its **pointer**. A per-frame arena invalidates every pointer at
+`dh_frame_begin`. Focus, hover, press and drag are all built on retained widget pointers — so **all
+four were unreachable from an immediate-mode app**, one that rebuilds its whole tree every frame.
+
+That was diagnosed three separate times, as three separate features, before anyone noticed it was
+one cause. crab worked around `dh_dispatch` (a press held as a widget pointer, operator ruling
+2026-08-27), then drag (`_dh_drag_src`, which 0.9.21 fixed by *refusing to start*), then `TEXTINPUT`
+(a per-widget buffer on an arena'd widget, 0.7.5). Reported as a pattern by crab on 2026-08-31, with
+the observation that GRID, COLUMNS and TREE — the next three widgets, all stateful by nature — were
+about to make it a fifth, sixth and seventh.
+
+⇒ **A key is an integer, and `arena_reset` cannot invalidate an integer.** The app labels the widgets
+it wants remembered; dhancha remembers keys instead of pointers; `dh_surface_set_root` re-resolves
+key → widget against the freshly built tree each frame.
+
+⛔ **0.9.15's rule is NOT relaxed and must not be.** *Cross-frame widget identity and a per-frame
+arena are mutually exclusive by construction* — that is still true of **pointers**, and it is why a
+crab frame costs the global heap zero bytes, which took four dhancha releases to achieve. Keys do not
+make a pointer survive; they make it **reconstructible**, which is a different thing and the only
+one available.
+
+### Added — `DH_W_KEY`, and the three calls around it
+
+- `dh_widget_set_key(w, key)` / `dh_widget_key(w)` — a caller-supplied stable identity.
+- `dh_widget_find_key(root, key)` — depth-first, first match wins.
+
+⚠ **`key == 0` means "no stable identity", which is what makes this release additive.** Every widget
+that exists today has key 0, retained state falls back to raw pointers exactly as before, and no
+shipped app changes behaviour. A key is opt-in per widget, not per app.
+⛔ **Keys are the APP's namespace, not dhancha's.** `DH_W_ID` is a monotonic counter minted per
+allocation — *fresh every frame* under an arena, and therefore useless as identity. A key is whatever
+the app can re-derive: a pane index, a row index, a hash of a path.
+⛔ **`dh_widget_find_key` does NOT prune by geometry, unlike `dh_hit_test`.** A key is an identity,
+not a location: a widget scrolled out of view, offset into an overlay or sized to nothing must still
+be findable, or focus becomes silently unrecoverable for exactly the widgets an app is most likely to
+key. ⚠ Uniqueness is the app's contract — the finder returns the first match and dhancha cannot check
+it cheaply, so the constraint is documented rather than enforced.
+
+### Changed — `dh_frame_begin` drops the pointers and KEEPS the keys
+
+It used to call `dh_reset_input`, which cleared both — and that is precisely what made focus, press
+and drag unreachable. The pointers must still go (after the reset they address memory about to be
+handed out again); the keys are integers and nothing has happened to them.
+
+`dh_reset_input` is unchanged and still clears everything, because it is the *"swapping the widget
+tree for a different scene"* entry point and identity does not carry across scenes.
+
+### Changed — `dh_surface_set_root` re-binds the retained state
+
+⛔ **This is the one moment in a frame when the new tree exists and the old pointers are known to be
+dead**, so it is where keyed focus, hover, press and drag come back to life. Done here rather than
+left to the app for the same reason `crab_render` owns its arena: **a step the caller must remember
+is a step that gets forgotten**, and forgetting this one restores exactly the bug the keys exist to
+fix — silently, with a green suite.
+⚠ No-op for an app that keys nothing: every shadow is 0, every branch is skipped.
+
+⛔ **A key that no longer resolves is DROPPED, pointer and key together.** The widget genuinely left
+the tree — the row was deleted, the pane closed, the menu dismissed. Keeping the key would mean a
+widget reappearing under it three frames later silently inheriting focus, or worse, a drag the
+operator had abandoned. **Absence is an answer.**
+
+### Added — `dh_drag_available_for(w)`, and drag now works under an arena
+
+0.9.21 made drag-under-an-arena *honest* by refusing to start one. **0.9.24 makes it work.**
+
+`dh_drag_available()` answers a question about the **configuration**, and under an arena its answer
+was an unconditional no. But the arena was never the real obstacle — identity was. A widget with a
+key keeps its identity across the rewind, so a drag begun on one frame still has a source on the
+next, and DRAG_START / MOVE / DROP / END are all delivered.
+⚠ `dh_drag_available()` is **kept and unchanged**, because its answer is still correct for the
+question it asks: *can an unkeyed widget be dragged here.* Callers wanting the useful answer ask
+`dh_drag_available_for`.
+- `dh_drag_active()` — is a drag in progress? The honest answer after a drag source is destroyed
+  mid-drag, which an app can poll instead of waiting for a DRAG_END that has nowhere to be sent.
+
+### Added — `dh_text_attach(w, buf, cap, len)`: a caller-owned text buffer
+
+⛔ **`dh_text_new` is unusable from an immediate-mode app.** It calls `alloc(cap)` — the *global*
+allocator, deliberately, so the buffer outlives the frame — but the widget holding it is `dh_falloc`'d
+and dies at the next `dh_frame_begin`. So the app must call it every frame, and every call leaks a
+fresh buffer into an allocator with no `free()`. **A 256-byte field edited for ten seconds at 60 Hz
+is ~150 KB gone, permanently.**
+⇒ The buffer is the one piece of a text field that is genuinely *app* state — it holds what the
+operator typed, which must outlive the tree that displays it. So the app owns it.
+⛔ **The caret is clamped, not trusted.** Re-attaching a shorter buffer than last frame is ordinary
+(the operator pressed Backspace); a caret past the end would let `dh_text__prev` walk before the
+start of the buffer.
+⚠ `len` is taken from the caller rather than scanned — a `strlen` here would make re-attaching an
+O(n) rescan every frame, which is the cost this entry point exists to avoid.
+
+### Changed — `DH_WIDGET_SIZE` 288 → 296
+
+One slot, for `DH_W_KEY`. ⭐ **`progress_test`'s literal size pin FIRED, for the second release
+running** (264 → 288 at 0.9.23, 288 → 296 here) — which is the whole reason it is a literal: it
+forces a human to confirm the growth was meant rather than letting a struct quietly widen.
+⛔ The field is **explicitly seeded to 0** in `dh_widget_new` like every field around it, because
+arena memory is recycled and not zero. A widget inheriting the previous frame's key at that address
+would be silently adopted as the focused or dragged widget — the exact failure the field exists to
+prevent, caused by the field itself.
+
+### Tests — `programs/key_test.cyr`, 50 checks
+
+Drives the full immediate-mode cycle (build → dispatch → `dh_frame_begin` → **rebuild from scratch**
+→ `dh_surface_set_root`) and asserts what survives and what does not: the finder's nested/missing/
+key-0/no-prune behaviour; keyed focus surviving a frame boundary **and unkeyed focus still being
+lost**, which is the additive guarantee; drop-on-absence; the per-widget drag capability; a **full
+drag across a mid-drag rebuild** delivering all four events; the attached buffer and its caret clamp;
+and the whole cycle costing the global heap **zero bytes over twenty frames**, with a non-vacuity arm.
+
+⭐ **Six mutations, each producing a named failure**: `dh_frame_begin` clearing the keys (the old
+behaviour), `dh_surface_set_root` not re-binding, the finder not walking children, key 0 treated as
+real, a vanished key kept, the drag capability ignoring the key, and `DH_WIDGET_SIZE` left at 288.
+⚠ **And the suite reports its own check count**, so a run that silently skipped assertions is visible
+rather than exiting 0 like a complete one.
+
+⚠ **One bug found in the test rather than the code, recorded because the direction matters**: the
+text-field section asserted focus had carried over from the drag section, when that tree contained no
+widget with the earlier key — so `dh_rebind_input` had correctly dropped it. The implementation was
+right and the test was wrong, which is the good direction for that mistake to run.
+
 ## [0.9.23] - 2026-08-31 — MENU and SHEET, without a new kind
 
 ### ⭐⭐ The headline: this release adds NO `DhWidgetKind`

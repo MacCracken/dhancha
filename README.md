@@ -69,6 +69,16 @@ compositor composites onto the screen over the native display protocol.
   with a UTF-8 buffer and a caret that steps whole characters. The painter now **clips** to each
   widget's box, closing a standing disagreement in which `dh_hit_test` rejected points outside a
   widget while `dh_draw_widget` happily drew there. RUN-tested (`list_test`, `textinput_test`).
+- **v0.9.24 — the toolkit works for an IMMEDIATE-MODE app (shipped).** dhancha identified a widget by
+  its **pointer**, and a per-frame arena invalidates every pointer at `dh_frame_begin` — so focus,
+  hover, press and drag were all unreachable from an app that rebuilds its tree every frame. That was
+  diagnosed three times as three separate features before it was recognised as **one** cause.
+  `dh_widget_set_key` gives a widget a caller-supplied identity that is an *integer*, so
+  `arena_reset` cannot invalidate it; `dh_surface_set_root` re-resolves key → widget against the
+  freshly built tree each frame. **Drag now works under a frame arena** (0.9.21 could only refuse it),
+  and `dh_text_attach` lets an app own the edit buffer instead of leaking one per frame.
+  ⚠ **Additive**: key 0 means "no identity", every existing widget has it, and nothing shipped
+  changes behaviour. RUN-tested (`key_test`, 50 checks, six mutations).
 - **v0.6+ — next.** The compositor-fd input source (decode the native display
   protocol's input wire bytes into events + block on its transport), real hmtx
   text advances, and the present path (CPU buffer submit over the native

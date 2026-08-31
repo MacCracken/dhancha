@@ -122,6 +122,15 @@ fn dh_surface_set_root(surf, root): i64 {
     if (surf == 0) { return DHANCHA_ERR_NO_SURFACE; }
     store64(surf + DH_S_ROOT, root);
     store64(surf + DH_S_DIRTY, 1);
+    # ⭐⭐ RE-BIND THE RETAINED INPUT STATE (0.9.24). This is the one moment in a frame when the new
+    # tree exists and the pointers `dh_frame_begin` dropped are known to be dead — so it is where
+    # keyed focus, hover, press and drag come back to life. See `dh_rebind_input`.
+    # ⛔ HERE RATHER THAN IN THE APP, for the same reason `crab_render` owns its arena: a step the
+    # caller must remember is a step that gets forgotten, and forgetting this one restores exactly
+    # the bug the keys exist to fix — silently, with a green suite.
+    # ⚠ NO-OP FOR AN APP THAT KEYS NOTHING. Every shadow is 0, every branch is skipped, and the
+    # function returns having touched nothing.
+    dh_rebind_input(root);
     return DHANCHA_OK;
 }
 

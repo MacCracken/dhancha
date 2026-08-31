@@ -328,6 +328,11 @@ fn dh_draw_widget_ink(sds, wgt, font, clx, cly, clw, clh, ink, forced): i64 {
     if (dh_widget_kind(wgt) == BUTTON) {
         dh_rect_clip(sds, x, y, w, h, dh_theme_line(), clx, cly, clw, clh);
     }
+    # ⚠ BEFORE the text below, so a text set on a bar lands ON TOP of it rather than under it — the
+    # same ordering reason the CANVAS arm sits before its children.
+    if (dh_widget_kind(wgt) == PROGRESS) {
+        dh_draw_progress(sds, wgt, x, y, w, h, clx, cly, clw, clh);
+    }
     var text = dh_widget_text(wgt);
     if (text != 0) {
         dh_draw_text_ink(sds, font, text, x, y, h, clx, cly, clw, clh, ink);
@@ -414,6 +419,33 @@ fn dh_draw_widget_ink(sds, wgt, font, clx, cly, clw, clh, ink, forced): i64 {
 # ⚠ ACCENT WHEN FOCUSED, MUTED OTHERWISE. Two panes both showing an accented row is a display that
 # cannot answer "which one do my arrow keys drive" — the single question a two-pane file manager
 # exists to make obvious. This is the rule crab, puka and the launcher had each written separately.
+# ⭐⭐ THE BAR (0.9.22) — two rects, and the second one's WIDTH is the information.
+#
+# ⛔ INDETERMINATE IS PAINTED, NOT OMITTED. An empty track and a 0%-full track are the same picture,
+# and the whole reason `den <= 0` exists is that "I do not know" and "nothing has happened yet" are
+# different facts. `held` is rupa's own token for exactly this state — its field comment reads
+# "pending / sandbox / held" — so the bar says *pending* in the palette's own vocabulary rather than
+# in a colour dhancha invented. It also puts `held` to work: rupa published it and 0.9.20 bound it
+# with nothing in the toolkit using it.
+#
+# ⚠ HANDED THE INHERITED CLIP, not an intersected child clip — unlike `dh_draw_list_selection`,
+# which paints a CHILD's rect and therefore needs the narrower one. A PROGRESS has no children.
+# ⚠ `dh_fill_rect_clip`, never `sd_fill_rect`: a bar inside a scrolled list must be cut by the
+# viewport like everything else, and the bare sadish call does not know about the clip.
+fn dh_draw_progress(sds, wgt, x, y, w, h, clx, cly, clw, clh): i64 {
+    var p = dh_progress_permille(wgt);
+    if (p < 0) {
+        return dh_fill_rect_clip(sds, x, y, w, h, dh_theme_held(), clx, cly, clw, clh);
+    }
+    dh_fill_rect_clip(sds, x, y, w, h, dh_theme_line(), clx, cly, clw, clh);
+    # ⚠ MULTIPLY THEN DIVIDE, the house convention the flex distributor already uses. At p == 1000
+    # this is EXACTLY `w`, so a finished bar leaves no track pixel at the right edge — the off-by-one
+    # that would otherwise make "done" and "nearly done" look the same.
+    var fw = w * p / 1000;
+    if (fw <= 0) { return 0; }
+    return dh_fill_rect_clip(sds, x, y, fw, h, dh_theme_accent(), clx, cly, clw, clh);
+}
+
 fn dh_draw_list_selection(sds, wgt, clx, cly, clw, clh): i64 {
     var sel = dh_widget_sel(wgt);
     if (sel < 0) { return 0; }

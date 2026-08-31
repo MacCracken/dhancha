@@ -7,7 +7,11 @@
 # Layout (layout.cyr) walks the tree to assign bounds; event dispatch
 # (event.cyr) hit-tests it; the surface (surface.cyr) draws it.
 #
-# DhWidget struct layout (144 bytes, 18 u64 slots):
+# DhWidget struct layout (264 bytes, 33 u64 slots — see `DH_WIDGET_SIZE` below):
+# ⚠ THIS HEADER READ "144 bytes, 18 u64 slots" UNTIL 0.9.22 while the field list below it already
+# ran past +168. It contradicted itself and understated the record by 112 bytes, which is exactly
+# how a reader sizing a NEW field off the header picks an offset that collides with a live one.
+# ⇒ Re-derive it from the enum, not from this line, and update it when the enum grows.
 #   +0:   id            — monotonic widget id (debug / focus routing)
 #   +8:   kind          — one of DhWidgetKind
 #   +16:  x             — resolved x (layout output)
@@ -39,6 +43,7 @@ enum DhWidgetKind {
     TEXTINPUT = 4;
     LIST      = 5;   # ⭐ 0.9.7 — a SCROLLING, SELECTABLE container. See list.cyr.
     CANVAS    = 6;   # ⭐ 0.9.9 — APP-DRAWN content in a widget-tree slot. See canvas.cyr.
+    PROGRESS  = 7;   # ⭐ 0.9.22 — a DETERMINATE-or-INDETERMINATE bar. See progress.cyr.
 }
 
 # Field offsets (bytes) into a DhWidget record.
@@ -91,8 +96,21 @@ enum DhWidgetField {
     # selected row is a LEGIBILITY GUARANTEE, and a table that let a column set its own colour would
     # otherwise be able to make the selected row unreadable again — the exact defect 0.9.20 fixed.
     DH_W_FG           = 248;
+    # ⭐ PROGRESS FILL (0.9.22). How full the bar is, in PERMILLE (0..1000), or -1 = INDETERMINATE.
+    # Appended at the end so every offset above is unchanged — consumers read these offsets straight
+    # out of the fold, and inserting in the middle would silently re-point every field after it.
+    # ⛔ SEEDED TO -1, NOT 0, AND IT IS THE SAME TRAP AS `DH_W_SEL`: 0 is a VALID fill ("started,
+    # nothing done yet"), so a zeroed field would make every bar in the system claim a real 0%
+    # rather than admit it has not been told anything. And the allocation is NOT guaranteed zeroed:
+    # under the frame arena the memory is RECYCLED from a previous frame's widgets, so an unseeded
+    # field carries a *plausible* stale permille instead of an obvious zero.
+    DH_W_FILL         = 256;
 }
-var DH_WIDGET_SIZE = 256;
+# ⚠ 256 -> 264 at 0.9.22. A consumer with a FIXED-size arena sized against the old footprint will
+# now spill to the global allocator, and `dh_falloc` degrades to a leak rather than to a null — so
+# it passes every functional test and shows up only in an `alloc_used()` convergence check. crab is
+# safe (`arena_new_growable`, which chains); check any other consumer before shipping.
+var DH_WIDGET_SIZE = 264;
 
 # ============================================================================================
 # ⭐⭐ MOTION — the app's half of "the compositor grants, apps override per widget"
@@ -156,7 +174,8 @@ enum DhAlign {
 # objects with it. So an app that rebuilds its widget tree every frame — which is what immediate-mode
 # means, and what makes toolkit-owned selection and scroll work at all — retains every widget it has
 # ever built, for the life of the process. Measured against crab at 380x220 with 114 entries per pane:
-# **~236 widgets x 248 B = 58,528 B per frame**, permanently.
+# **~236 widgets x 264 B = 62,304 B per frame**, permanently. (248 B until 0.9.22; the figure moves
+# with `DH_WIDGET_SIZE` and has been stale before — re-derive it rather than trusting it.)
 #
 # ⇒ Route the PER-FRAME allocations through a caller-supplied arena. `arena_reset` is a bump back to
 # base with no free list, and a GROW arena keeps its chunks across resets — so a render loop converges
@@ -259,6 +278,7 @@ fn dh_widget_new(kind): i64 {
     store64(wgt + DH_W_PAD, 0);            # no padding
     store64(wgt + DH_W_GAP, 0);            # no gap
     store64(wgt + DH_W_ALIGN, 0);          # ALIGN_STRETCH
+    store64(wgt + DH_W_FILL, 0 - 1);       # -1 = indeterminate (see the ⛔ at the field)
     return wgt;
 }
 

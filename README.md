@@ -34,7 +34,7 @@ compositor composites onto the screen over the native display protocol.
     `_ERR_UNSUPPORTED` / `_ERR_OTHER`), a 16-byte record, and
     `dhancha_err_name`.
   - `src/widget.cyr` — `DhWidget` (first-child / next-sibling tree),
-    `DhWidgetKind { WINDOW / BOX / LABEL / BUTTON / TEXTINPUT }`,
+    `DhWidgetKind { WINDOW / BOX / LABEL / BUTTON / TEXTINPUT / LIST / CANVAS / PROGRESS }`,
     `dh_widget_new` / `dh_widget_add_child` + bounds accessors.
   - `src/layout.cyr` — `DhRect`, `DhLayout { NONE / BOX_H / BOX_V /
     FLEX }`, and a `dh_layout_apply` tree-walk skeleton.

@@ -5,6 +5,113 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.22] - 2026-08-31 — PROGRESS: a bar that can admit it does not know
+
+### Added — `DhWidgetKind.PROGRESS` and `src/progress.cyr`
+
+Three public functions, and that is the whole surface:
+
+| | |
+|---|---|
+| `dh_progress_new(thickness)` | a bar `thickness` px tall, starting **indeterminate** |
+| `dh_progress_set(bar, num, den)` | set fullness from an integer pair; **`den <= 0` = indeterminate** |
+| `dh_progress_permille(bar)` | 0..1000, or -1 = indeterminate |
+
+⭐ **Why a kind and not a BOX with a coloured child.** A bar *can* be built from existing parts — a
+`BOX` with `bg = line` holding two flex children weighted `done` and `remaining` lands on exactly the
+right pixel, because the flex distributor already hands its **last** share the exact remainder. That
+was built out and rejected: the **app** would then be naming `dh_theme_accent()` itself, which crab's
+ADR 0001 forbids outright, and every app that hand-rolls a bar picks its own track colour — the same
+three-implementations-of-one-thing that made `LIST` a kind. A kind also costs one widget per bar
+instead of three, and it is the only form that can express indeterminate at all.
+
+⛔ **INDETERMINATE IS NOT A CONVENIENCE.** Callers really do have no denominator: crab's size array
+carries **-2 (pending)** and **-1 (unstattable)** as distinct first-class values and refuses to
+conflate them; a rename moves zero bytes; a recursive delete has no byte total at all, only a count
+discovered while walking. A determinate-only bar forces those callers to invent a denominator — and
+a bar reading 40 % because someone guessed is strictly worse than one that admits it does not know.
+It paints in **`held`**, rupa's own token for "pending / sandbox / held", so the bar says *pending*
+in the palette's vocabulary rather than in a colour dhancha invented. ⭐ That also puts `held` to
+work: rupa published it and 0.9.20 bound it with nothing in the toolkit using it.
+
+⚠ **Permille, not percent, and multiply before dividing.** Percent is one step per 3 px on a 300 px
+bar, visibly steppy; and `num * (1000 / den)` written the other way round truncates to **zero** for
+every value below `den`, so a bar would sit at 0 until the final chunk. `num` is clamped to `den`
+first, so the product cannot overflow below nine petabytes.
+
+⚠ **Out-of-range is CLAMPED and REPORTED, which is the opposite of `dh_list_select`.** Refusing is
+right for a selection — naming row 12 of a 4-row list is a bug, and quietly handing back row 3 hides
+it behind a plausible highlight. A transfer is not that case: a size stat taken before a copy can
+legitimately disagree with the bytes written, and a bar frozen at its last value while the operation
+is visibly running is worse than one pinned at full. So the **display never lies** and the **caller
+is still told** (`DHANCHA_ERR_BAD_ARG`).
+
+⚠ **The bar carries no text, deliberately.** One centred "68 %" straddling the fill edge cannot be
+legible in a single ink — `on-accent` over the track and plain `ink` over the fill both fall near
+**1.3:1** on the dark grounds. Put the percentage in a sibling label. A text set on a bar is still
+drawn, on top of it, and inherits that problem.
+
+### Changed — `DH_WIDGET_SIZE` 256 → 264 (`DH_W_FILL` at +256)
+
+⛔ **This changes the per-widget footprint for every consumer.** A consumer with a **fixed-size**
+arena sized against the old footprint now spills to the global allocator — and `dh_falloc` degrades
+to a **leak**, never to a null, so it passes every functional test and surfaces only in an
+`alloc_used()` convergence check. **crab is safe** (`arena_new_growable`, which chains); check any
+other consumer before adopting. Cost to crab: ~236 widgets × 8 B ≈ **1,888 B** of additional arena
+high-water mark per frame (+3.1 %) — rewound memory, not a leak.
+
+⛔ **Seeded to -1, not 0**, for the same reason as `DH_W_SEL`: 0 is a *valid* fill, so a zeroed field
+would make every bar claim a real 0 % rather than admit it had not been told. Under the frame arena
+the memory is **recycled**, so an unseeded field carries a plausible stale permille, not an obvious
+zero.
+
+⚠ **The struct-layout header comment said "144 bytes, 18 u64 slots"** while the field list below it
+already ran past +168 — it contradicted itself and understated the record by 112 bytes, which is
+exactly how a reader sizing a new field picks a colliding offset. Corrected, along with the
+per-frame figure in `widget.cyr` and `programs/arena_test.cyr` (248 B → 264 B, already one field
+stale before this change).
+
+### Verified — `programs/progress_test.cyr`, and ten mutations that must break it
+
+The pixel checks count rather than probe, so no glyph bitmap has to be right for them to be exact.
+
+1. clamp removed · 2. `w * (p / 1000)` instead of `w * p / 1000` · 3. `DH_W_FILL` seeded to 0 ·
+4. indeterminate collapsed to an empty track · 5. `dh_theme_accent()` replaced with the mockup's
+literal · 6. the draw arm moved after the text draw · 7. `dh_fill_rect_clip` → `sd_fill_rect` ·
+8. `PROGRESS` made focusable · 9. `dh_falloc` → `alloc` · 10. `DH_WIDGET_SIZE` left at 256.
+**Each one fails the suite.**
+
+⭐ **The theme check is the 0.9.20 scar made a gate.** A hardcoded colour lifted from a mockup passes
+every other pixel check, because they all read `dh_theme_*` too. Only re-rendering under a second
+palette catches it, so the suite renders at `mudra-dark` and again at `shanta-light` and asserts the
+fill followed — plus that the two palettes' accents actually differ, or the check proves nothing.
+
+### ⛔ Not asserted, and said plainly rather than implied
+
+- **Fill/track legibility.** A 3:1 floor on `accent`/`line` would **fail against the shipped
+  palette** on both light grounds (~2.37 and ~1.88 by rupa's own approximation, which reads high).
+  Asserting it here would be asserting a bug. The suite asserts token **identity** — the fill *is*
+  `accent`, the track *is* `line` — and the number is recorded here as an upstream **rupa** ask.
+- **"The bar carries no `on-accent` pixels."** Unwritable in either direction: `on_accent == bg` on
+  both dark grounds and `on_accent == ink` on both light ones, so the scan finds background on dark
+  and the sibling label's glyphs on light. Same class as the trap crab's `render_test.cyr` records.
+- **Determinate vs indeterminate as a *contrast* claim.** `accent`/`held` measures 1.34–1.55: the two
+  states differ by **hue**, not luminance, and rupa has no hue metric. Pixel identity carries it.
+- **The `DH_WIDGET_SIZE` bump is only weakly covered.** With the size left at 256 the write lands on
+  the next widget's `DH_W_ID` — silent corruption in a bump allocator with no guard pages, not a
+  fault. The literal pin and the two-bar check catch the gross cases; neither is a memory-safety
+  proof.
+- **How it looks on a real display.** Nothing here blits to a framebuffer.
+
+### Reported by / for
+
+crab's M4 **transfer tray**. ⛔ **And the widget was never the real gate** — crab's roadmap records
+the tray as "gated on a dhancha PROGRESS widget", which sends the work to the wrong repo. crab's
+`crab_fs_copy` runs its whole read/write loop **synchronously inside the keypress branch**, so the
+event loop draws no frames while it executes: a bar dropped into crab today renders once at 0 %,
+never repaints, and vanishes. The real work is crab-side — stepping the copy off the idle tick that
+already drives `crab_stat_batch`. This widget is necessary and not sufficient.
+
 ## [0.9.21] - 2026-08-30 — drag stops half-working under a frame arena
 
 ### Fixed — `DRAG_START` fired where `DRAG_END` never could

@@ -1,0 +1,226 @@
+# programs/progress_test.cyr — RUN test for the PROGRESS bar (0.9.22): the permille arithmetic, the
+# fill/track boundary at the pixel, the three distinct pictures, and the theme-following guarantee.
+# Exit code = failed checks.
+#
+# ⚠ THE INTERESTING CASE IS THE BOUNDARY. "A bar draws something" is easy and proves almost nothing;
+# the bugs live at 0 %, at 100 %, at the exact column where fill becomes track, and in the difference
+# between "0 % done" and "I have no idea how much is done".
+
+include "src/lib.cyr"
+
+var g_fails = 0;
+
+fn check(got, want): i64 {
+    if (got == want) { return 0; }
+    g_fails = g_fails + 1;
+    return 1;
+}
+
+# Count pixels of exactly `col` in a rectangle. ⚠ THE ORACLE COUNTS RATHER THAN PROBES — copied from
+# list_test.cyr for the same reason it exists there: for a solid rect the count is exact and does not
+# depend on any glyph bitmap being right.
+fn count_col(sds, x0, y0, x1, y1, col): i64 {
+    var n = 0;
+    var yy = y0;
+    while (yy < y1) {
+        var xx = x0;
+        while (xx < x1) {
+            if (sd_surface_pixel_at(sds, xx, yy) == col) { n = n + 1; }
+            xx = xx + 1;
+        }
+        yy = yy + 1;
+    }
+    return n;
+}
+
+# A `w` x `h` bar, laid out and drawn into a fresh surface. -> the surface.
+fn draw_bar(bar, w, h): i64 {
+    var root = dh_widget_new(WINDOW);
+    dh_widget_set_layout(root, BOX_V);
+    dh_widget_add_child(root, bar);
+    dh_layout_apply(root, w, h);
+    var s = sd_surface_new(w, h);
+    dh_draw_widget(s, root, 0, 0, 0, w, h);
+    return s;
+}
+
+fn main(): i64 {
+    alloc_init();
+    rupa_theme_set_active_name("mudra-dark");
+
+    # ---- A: the record grew with the field ------------------------------------------------------
+    # ⛔ IF THE SIZE WERE LEFT AT 256 WHILE THE FIELD SITS AT 256, the write lands on the NEXT
+    # widget's `DH_W_ID` — silent corruption in a bump allocator with no guard pages, not a fault.
+    # This check is a literal pin, not a memory-safety proof; the two-bar check below catches gross
+    # overlap and nothing here catches subtle overlap. Said plainly rather than implied away.
+    check(DH_WIDGET_SIZE, 264);
+
+    # ---- B: a fresh bar is INDETERMINATE, not 0 % -----------------------------------------------
+    # ⛔ 0 is a VALID fill. A bar that boots claiming a real 0 % is lying about having been told.
+    var b0 = dh_progress_new(4);
+    check(dh_progress_permille(b0), 0 - 1);
+
+    # ---- C: the arithmetic, and what each call RETURNS -------------------------------------------
+    var b = dh_progress_new(4);
+    check(dh_progress_set(b, 68, 100), DHANCHA_OK);
+    check(dh_progress_permille(b), 680);
+    check(dh_progress_set(b, 1, 3), DHANCHA_OK);
+    check(dh_progress_permille(b), 333);              # truncating, not rounding
+    check(dh_progress_set(b, 0, 100), DHANCHA_OK);
+    check(dh_progress_permille(b), 0);
+    check(dh_progress_set(b, 100, 100), DHANCHA_OK);
+    check(dh_progress_permille(b), 1000);
+    # ⚠ OUT OF RANGE IS CLAMPED **AND** REPORTED — the display never lies and the caller is still told.
+    check(dh_progress_set(b, 150, 100), DHANCHA_ERR_BAD_ARG);
+    check(dh_progress_permille(b), 1000);
+    check(dh_progress_set(b, 0 - 5, 100), DHANCHA_ERR_BAD_ARG);
+    check(dh_progress_permille(b), 0);
+    # ⛔ `den <= 0` IS NOT AN ERROR — it is how a caller says "no denominator". crab's -2 (pending)
+    # and -1 (unstattable) both flow through here as indeterminate rather than as a guessed number.
+    check(dh_progress_set(b, 5, 0), DHANCHA_OK);
+    check(dh_progress_permille(b), 0 - 1);
+    check(dh_progress_set(b, 5, 0 - 2), DHANCHA_OK);
+    check(dh_progress_permille(b), 0 - 1);
+    check(dh_progress_set(0, 1, 2), DHANCHA_ERR_BAD_WIDGET);
+    check(dh_progress_permille(0), 0 - 1);
+    # ⚠ Two bars must not share a field — the cheapest test for a colliding offset.
+    var bx = dh_progress_new(4);
+    var by = dh_progress_new(4);
+    dh_progress_set(bx, 1, 4);
+    dh_progress_set(by, 3, 4);
+    check(dh_progress_permille(bx), 250);
+    check(dh_progress_permille(by), 750);
+
+    # ---- D: geometry through LAYOUT, never by reading the field back ------------------------------
+    # ⚠ The field being set proves nothing about anything on screen.
+    var bg2 = dh_progress_new(4);
+    dh_progress_set(bg2, 1, 2);
+    var gs = draw_bar(bg2, 100, 40);
+    check(dh_widget_h(bg2), 4);                       # pref_h is the MAIN axis in a BOX_V — exact
+    check(dh_widget_w(bg2), 100);                     # ...and the cross axis stretches
+
+    # ---- E: THE FILL BOUNDARY — the headline check ------------------------------------------------
+    # ⚠ GUARD THE GUARD FIRST. On a palette where accent and line collided, every count below would
+    # pass vacuously.
+    check(dh_theme_accent() == dh_theme_line(), 0);
+    check(dh_theme_accent() == dh_theme_held(), 0);
+    var e = dh_progress_new(8);
+    dh_progress_set(e, 25, 100);
+    var es = draw_bar(e, 100, 8);
+    check(count_col(es, 0, 0, 25, 8, dh_theme_accent()), 200);    # 25 x 8, exactly
+    check(count_col(es, 25, 0, 100, 8, dh_theme_accent()), 0);    # ⛔ THE CONTROL — nothing past the edge
+    check(count_col(es, 25, 0, 100, 8, dh_theme_line()), 600);    # 75 x 8, exactly
+
+    # ---- F: 0 % and 100 % as a MATCHED PAIR ------------------------------------------------------
+    # ⛔ This is what proves the width TRACKS THE VALUE rather than being a constant that happens to
+    # look right at 25 %.
+    var z = dh_progress_new(8);
+    dh_progress_set(z, 0, 100);
+    var zs = draw_bar(z, 100, 8);
+    check(count_col(zs, 0, 0, 100, 8, dh_theme_accent()), 0);     # not one accent pixel
+    check(count_col(zs, 0, 0, 100, 8, dh_theme_line()), 800);     # all track
+    var f = dh_progress_new(8);
+    dh_progress_set(f, 100, 100);
+    var fs = draw_bar(f, 100, 8);
+    check(count_col(fs, 0, 0, 100, 8, dh_theme_accent()), 800);   # all fill
+    # ⚠ AND NO TRACK PIXEL SURVIVES AT THE RIGHT EDGE. `w * 1000 / 1000` is exactly `w`; an
+    # off-by-one here is what would make "done" and "nearly done" the same picture.
+    check(count_col(fs, 0, 0, 100, 8, dh_theme_line()), 0);
+
+    # ---- G: INDETERMINATE is a THIRD picture, not the absence of one ------------------------------
+    # ⛔ This is the check that fails if someone "simplifies" indeterminate to an empty track.
+    var i2 = dh_progress_new(8);
+    dh_progress_set(i2, 0, 0);
+    var is2 = draw_bar(i2, 100, 8);
+    check(count_col(is2, 0, 0, 100, 8, dh_theme_held()), 800);
+    check(count_col(is2, 0, 0, 100, 8, dh_theme_accent()), 0);
+    check(count_col(is2, 0, 0, 100, 8, dh_theme_line()), 0);
+    # ⚠ The mirror control: a DETERMINATE bar paints no `held` at all.
+    check(count_col(es, 0, 0, 100, 8, dh_theme_held()), 0);
+
+    # ---- H: the fill respects the CLIP ------------------------------------------------------------
+    # ⛔ Fails if either fill is swapped to a bare `sd_fill_rect`, which does not know about the clip
+    # and would paint a bar inside a scrolled list straight through the viewport edge.
+    var c2 = dh_progress_new(8);
+    dh_progress_set(c2, 50, 100);
+    var croot = dh_widget_new(WINDOW);
+    dh_widget_set_layout(croot, BOX_V);
+    dh_widget_add_child(croot, c2);
+    dh_layout_apply(croot, 100, 8);
+    var cs = sd_surface_new(100, 8);
+    dh_draw_widget(cs, croot, 0, 0, 0, 25, 8);        # clip to the left 25 px
+    check(count_col(cs, 0, 0, 100, 8, dh_theme_accent()), 200);   # 25 x 8, not 50 x 8
+
+    # ---- I: the bar FOLLOWS THE THEME ------------------------------------------------------------
+    # ⛔ THE 0.9.20 SCAR, MADE A GATE. A hardcoded colour lifted from a mockup passes every check
+    # above — they all read `dh_theme_*` too. Only re-rendering under a different palette catches it.
+    rupa_theme_set_active_name("shanta-light");
+    var l2 = dh_progress_new(8);
+    dh_progress_set(l2, 50, 100);
+    var ls = draw_bar(l2, 100, 8);
+    check(count_col(ls, 0, 0, 50, 8, dh_theme_accent()), 400);    # the LIGHT theme's accent
+    check(count_col(ls, 50, 0, 100, 8, dh_theme_line()), 400);
+    rupa_theme_set_active_name("mudra-dark");
+    # ⚠ And the two palettes really are different, or the check above proves nothing.
+    var darkacc = dh_theme_accent();
+    rupa_theme_set_active_name("shanta-light");
+    check(darkacc == dh_theme_accent(), 0);
+    rupa_theme_set_active_name("mudra-dark");
+
+    # ---- J: a bar takes no focus -----------------------------------------------------------------
+    # ⚠ Pins a DELIBERATE non-arm. A bar has no keys and no sub-elements; Tab landing on it is a dead
+    # stop, and opting in would also change how it paints via `dh_focus_within`.
+    check(dh_widget_focusable(dh_progress_new(4)), 0);
+
+    # ---- K: the draw arm sits BEFORE the text draw ------------------------------------------------
+    # ⚠ A text set on a bar must land ON TOP of it. Fails if the arm is moved after the text.
+    var k2 = dh_progress_new(16);
+    dh_progress_set(k2, 100, 100);
+    dh_widget_set_text(k2, "X");
+    var ks = draw_bar(k2, 100, 16);
+    check(count_col(ks, 0, 0, 100, 16, dh_theme_ink()) > 0, 1);
+
+    # ---- L: the arena converges — a bar costs the global heap nothing per frame -------------------
+    # ⛔ THE STANDING ACCEPTANCE GATE. ⚠ WARM UP FIRST: measuring from cold reports one-time costs as
+    # per-frame ones, which is how a converging arena gets mistaken for a leak.
+    var ar = arena_new_growable(65536);
+    dh_frame_arena_set(ar);
+    var warm = 0;
+    while (warm < 4) {
+        dh_frame_begin();
+        var wroot = dh_widget_new(WINDOW);
+        dh_widget_set_layout(wroot, BOX_V);
+        var wi = 0;
+        while (wi < 10) { dh_widget_add_child(wroot, dh_progress_new(4)); wi = wi + 1; }
+        dh_layout_apply(wroot, 100, 100);
+        warm = warm + 1;
+    }
+    var before = alloc_used();
+    var fr = 0;
+    while (fr < 20) {
+        dh_frame_begin();
+        var froot = dh_widget_new(WINDOW);
+        dh_widget_set_layout(froot, BOX_V);
+        var fi = 0;
+        while (fi < 10) {
+            var fb = dh_progress_new(4);
+            dh_progress_set(fb, fi, 10);
+            dh_widget_add_child(froot, fb);
+            fi = fi + 1;
+        }
+        dh_layout_apply(froot, 100, 100);
+        fr = fr + 1;
+    }
+    check(alloc_used() - before, 0);
+    dh_frame_arena_set(0);
+
+    if (g_fails == 0) {
+        println("progress_test: PASS (permille, fill boundary, 0/100, indeterminate, clip, theme, arena)");
+        return 0;
+    }
+    println("progress_test: FAIL");
+    return g_fails;
+}
+
+var rc = main();
+syscall(60, rc);

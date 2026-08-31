@@ -41,6 +41,7 @@ modules = [
     "src/widget.cyr",
     "src/layout.cyr",
     "src/list.cyr",
+    "src/progress.cyr",
     "src/event.cyr",
     "src/canvas.cyr",
     # ⚠ AFTER event.cyr — textinput.cyr reads `DhKey`, which event.cyr declares. The fold is a

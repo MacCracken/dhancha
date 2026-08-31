@@ -1,0 +1,90 @@
+# @public — dhancha PROGRESS: a determinate-or-indeterminate bar.
+# progress.cyr — the POLICY over "how full". Like list.cyr and table.cyr this file owns no pixels and
+# no state of its own: the number lives on the widget (`DH_W_FILL`), and surface.cyr paints it.
+#
+# ⭐ WHY A KIND AND NOT A BOX WITH A COLOURED CHILD. A bar CAN be built from parts that already
+# exist — a BOX with `bg = line` holding two flex children weighted `done` and `remaining` lays out
+# to exactly the right pixel, because the distributor hands its LAST flex share the exact remainder
+# (layout.cyr). It was rejected because the APP would then be naming `dh_theme_accent()` itself, and
+# crab's ADR 0001 forbids that outright: an app that names one colour will name the next one to work
+# around a missing token instead of asking for it. Every app that hand-rolls a bar also picks its own
+# track colour — the same three-implementations-of-one-thing that made LIST a kind. A kind costs one
+# widget per bar instead of three, and it is the only form that can express INDETERMINATE at all.
+#
+# ⛔ INDETERMINATE IS NOT A CONVENIENCE, AND `den <= 0` IS NOT AN ERROR. Callers really do have no
+# denominator: crab's size array carries -2 (pending) and -1 (unstattable) as DISTINCT first-class
+# values and refuses to conflate them; a rename moves zero bytes and has no total; a recursive delete
+# has no byte total at all, only a count discovered while walking. A determinate-only bar forces
+# those callers to invent a denominator — and a bar reading 40% because someone guessed is strictly
+# worse than one that admits it does not know.
+#
+# ⚠ THE BAR CARRIES NO TEXT, DELIBERATELY. One centred "68%" straddling the fill edge cannot be
+# legible in a single ink: `on-accent` over the `line` track and plain `ink` over the `accent` fill
+# both fall near 1.3:1 on the dark grounds. Put the percentage in a SIBLING label, outside the bar,
+# in `ink`. The generic text path still draws a text set on a PROGRESS — it is drawn ON TOP of the
+# bar rather than refused — but it inherits that contrast problem and nothing here can fix it.
+#
+# ⚠ HIT-TESTING IS KIND-BLIND AND THERE IS NO OPT-OUT. A PROGRESS with non-zero bounds is hittable
+# like anything else, and a later sibling beats an earlier one. A bar overlapping a button in a NONE
+# container will take the click. Not new, not fixable here, and worth knowing before you overlap one.
+
+# @public — a new PROGRESS bar `thickness` px tall, starting INDETERMINATE.
+#
+# ⚠ `thickness` is a PLAIN `DH_W_PREF_H`, not payload smuggled into a layout field the way
+# `dh_list_new` stores its row height. A bar's preferred height IS its height, so layout treating it
+# as an exact size is the INTENT here rather than the hazard it is for LIST. It follows that a bar is
+# a fixed-height child.
+# ⛔ ITS WIDTH IS LEFT 0. Set `dh_widget_set_flex(bar, 1)` or a `pref_w`, or the bar measures 0 wide
+# and the draw path culls it before painting anything. That is the first thing to check on a bar that
+# renders nothing.
+# ⚠ In a BOX_V the bar's `pref_h` is the MAIN axis and is honoured exactly. In a BOX_H it is the
+# CROSS axis, where ALIGN_STRETCH (the default) fills the row height and ignores `pref_h` — use
+# ALIGN_CENTER there, or put the bar in a BOX_V.
+fn dh_progress_new(thickness): i64 {
+    var t = thickness;
+    if (t < 1) { t = 1; }                  # a 0-px bar is an invisible control, not a thin one
+    var w = dh_widget_new(DhWidgetKind.PROGRESS);
+    store64(w + DH_W_PREF_H, t);
+    return w;
+}
+
+# @public — set how full the bar is, from an integer numerator/denominator pair.
+# `den <= 0` means INDETERMINATE (see the ⛔ in the header) and is NOT an error.
+# -> DHANCHA_OK; DHANCHA_ERR_BAD_WIDGET on a null bar; DHANCHA_ERR_BAD_ARG when `num` was out of
+#    range — in which case the bar is still CLAMPED to something sane rather than left stale.
+#
+# ⚠ OUT-OF-RANGE IS CLAMPED HERE, NOT REFUSED, WHICH IS THE OPPOSITE OF `dh_list_select`. Refusing is
+# right for a selection: selecting row 12 of a 4-row list names a row that does not exist, and
+# quietly handing back row 3 hides the bug behind a plausible highlight. A transfer is not that case
+# — a size stat taken before a copy can legitimately disagree with the bytes actually written — and a
+# bar frozen at its last value while the operation is visibly running is worse than one pinned at
+# full. So the DISPLAY never lies and the CALLER is still told.
+#
+# ⚠ PERMILLE, NOT PERCENT, AND MULTIPLY BEFORE DIVIDING. Percent is one step per 3 px on a 300 px
+# bar, which is visibly steppy; and `num * (1000 / den)` written the other way round truncates to
+# ZERO for every value below `den`, so the bar would sit at 0 until the very last chunk.
+# ⛔ `num` is clamped to `den` FIRST, so the product is bounded by `den * 1000` — `den` would have to
+# exceed nine petabytes before it overflows i64. Byte counts will not.
+fn dh_progress_set(bar, num, den): i64 {
+    if (bar == 0) { return DHANCHA_ERR_BAD_WIDGET; }
+    if (den <= 0) {
+        store64(bar + DH_W_FILL, 0 - 1);
+        return DHANCHA_OK;
+    }
+    var bad = 0;
+    var n = num;
+    if (n < 0) { n = 0; bad = 1; }
+    if (n > den) { n = den; bad = 1; }
+    store64(bar + DH_W_FILL, n * 1000 / den);
+    if (bad == 1) { return DHANCHA_ERR_BAD_ARG; }
+    return DHANCHA_OK;
+}
+
+# @public — how full the bar is, in PERMILLE (0..1000), or -1 = indeterminate.
+# ⚠ -1 for a null widget too. It is the same "no answer" this getter already has a value for, and it
+# matches `dh_widget_fg` and `dh_widget_sel`, which both return a neutral sentinel rather than an
+# error code a caller would have to tell apart from a real reading.
+fn dh_progress_permille(bar): i64 {
+    if (bar == 0) { return 0 - 1; }
+    return load64(bar + DH_W_FILL);
+}

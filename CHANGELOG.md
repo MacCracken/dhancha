@@ -5,6 +5,20 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed — `README.md`'s version line was twenty-one releases stale, and nothing checked it
+
+It read **0.9.3** while `VERSION` said 0.9.24. CI's *"Verify version consistency"* step checked the
+CHANGELOG heading and stopped there, so the gate was green through every one of those releases.
+⇒ The step now checks the README line too. ⚠ A version printed where a newcomer reads it first is
+exactly the one worth gating — this is the same rot crab records in its own `state.md`, one repo over.
+
+⛔ **THIS SECTION EXISTS BECAUSE 0.9.24 IS ALREADY TAGGED AND PUSHED.** The fix was first written
+into 0.9.24's own section, which is the mistake crab recorded when 0.7.2 had to exist: *a released
+section is not a scratchpad.* Editing one after its tag makes the tag and the notes disagree, and the
+notes are what a consumer reads.
+
 ## [0.9.24] - 2026-08-31 — stable widget keys: the retained-tree assumption, fixed at its cause
 
 ### ⭐⭐ The headline: four features had one bug, and it was identity

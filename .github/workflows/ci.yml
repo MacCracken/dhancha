@@ -179,4 +179,11 @@ jobs:
           VERSION=$(tr -d '[:space:]' < VERSION)
           echo "VERSION file: $VERSION"
           grep -q "^## \[$VERSION\]" CHANGELOG.md || { echo "FAIL: version not in CHANGELOG.md"; exit 1; }
+          # The README carries a `Version:` line and NOTHING CHECKED IT — it read 0.9.3 while
+          # VERSION said 0.9.24, twenty-one releases stale, and the gate above was green for all of
+          # them. A version printed where a newcomer reads it first is the one worth checking.
+          if grep -q '^Version:' README.md; then
+            RV=$(grep '^Version:' README.md | head -1 | awk '{print $2}')
+            [ "$RV" = "$VERSION" ] || { echo "FAIL: README.md Version ($RV) != VERSION ($VERSION)"; exit 1; }
+          fi
           echo "Version consistent (manifest pulls VERSION via \${file:VERSION})"

@@ -32,3 +32,8 @@ fn dh_theme_on_accent(): i64 { return dh_theme_col(rupa_theme_on_accent(rupa_the
 # to reach past the toolkit into rupa directly — which is the coupling this file exists to prevent.
 fn dh_theme_faint(): i64  { return dh_theme_col(rupa_theme_faint(rupa_theme_active())); }
 fn dh_theme_held(): i64   { return dh_theme_col(rupa_theme_held(rupa_theme_active())); }
+# ⭐ THE MODAL BACKDROP'S COLOUR AND COVERAGE (0.9.23, rupa 0.1.6). Two values, because a scrim is a
+# colour AND an alpha — and the light grounds dim with their own ink at 40% while the dark ones use
+# the void at 70%. See `dh_draw_scrim`.
+fn dh_theme_scrim(): i64   { return dh_theme_col(rupa_theme_scrim(rupa_theme_active())); }
+fn dh_theme_scrim_a(): i64 { return rupa_theme_scrim_a(rupa_theme_active()); }

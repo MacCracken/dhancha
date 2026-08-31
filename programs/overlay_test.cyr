@@ -161,9 +161,11 @@ fn main(): i64 {
     # ⚠ ...and a plain BOX still has none, so the generalisation did not give every widget an edge.
     check(dh_widget_border(dh_widget_new(BOX)), DH_BORDER_INHERIT);
 
-    # ---- D: the scrim is EVERY OTHER ROW, and it is not translucency -------------------------------
-    # ⛔ sadish cannot blend — `sd_rgba(0,0,0,128)` paints SOLID BLACK. 50 % coverage at scanline
-    # granularity is what is actually available, and this pins that it is what is drawn.
+    # ---- D: the scrim is a REAL BLEND, uniform, and it follows the theme -------------------------
+    # ⚠ THIS ASSERTED A SCANLINE DITHER FOR ABOUT AN HOUR. sadish had no fill that read its
+    # destination, so 50 % coverage at scanline granularity was the only honest option and the test
+    # pinned the stripes. sadish 0.5.3 added `sd_fill_rect_blend` and rupa 0.1.6 added the `scrim`
+    # token, so the veil is real now and these assertions changed with it.
     var sr = dh_widget_new(WINDOW);
     dh_widget_set_layout(sr, NONE);
     dh_widget_set_bg(sr, dh_theme_panel());
@@ -173,15 +175,34 @@ fn main(): i64 {
     dh_layout_apply(sr, 20, 20);
     var scs = sd_surface_new(20, 20);
     dh_draw_widget(scs, sr, 0, 0, 0, 20, 20);
-    # 10 of 20 rows dimmed, 20 px wide.
-    check(count_col(scs, 0, 0, 20, 20, dh_theme_bg()), 200);
-    # ⛔ AND HALF THE ROWS SURVIVE — a scrim that covered everything is option (A), an opaque panel,
-    # which hides rather than dims and loses the context the sheet is asking about.
-    check(count_col(scs, 0, 0, 20, 20, dh_theme_panel()), 200);
-    # ⚠ The phase is on ABSOLUTE y, so row 1 is dimmed and row 0 is not — a layer that moved by one
-    # pixel must not invert the whole pattern.
-    check(count_col(scs, 0, 0, 20, 1, dh_theme_bg()), 0);
-    check(count_col(scs, 0, 1, 20, 2, dh_theme_bg()), 20);
+    var dimmed = sd_surface_pixel_at(scs, 10, 10);
+    # ⛔ UNIFORM — NOT ONE UNDIMMED ROW LEFT. This is the check that fails if the dither ever returns:
+    # a striped scrim leaves exactly half the rect at the panel colour.
+    check(count_col(scs, 0, 0, 20, 20, dimmed), 400);
+    check(count_col(scs, 0, 0, 20, 20, dh_theme_panel()), 0);
+    # ⛔ AND IT IS A BLEND, NOT A REPLACE. The result must differ from BOTH the ground it covers and
+    # the scrim colour itself — landing on the scrim exactly would mean alpha was ignored and the
+    # backdrop is opaque, which hides rather than dims.
+    check(dimmed == dh_theme_panel(), 0);
+    check(dimmed == dh_theme_scrim(), 0);
+    # ⚠ ...and it moved TOWARD the scrim: on a dark ground the veil is the void, so every channel
+    # ends up darker than the panel it covered.
+    check(sd_color_r(dimmed) < sd_color_r(dh_theme_panel()), 1);
+    check(sd_color_g(dimmed) < sd_color_g(dh_theme_panel()), 1);
+    check(sd_color_b(dimmed) < sd_color_b(dh_theme_panel()), 1);
+    # ⛔ A LIGHT GROUND DIMS LESS, AND THAT ASYMMETRY IS THE TOKEN'S WHOLE JUSTIFICATION. The void at
+    # 70 % over rice paper would black the page out rather than let it recede, so rupa gives the
+    # light themes their own ink at 40 %. If these ever equalise, one of the two palettes is wrong.
+    check(dh_theme_scrim_a() > 0, 1);
+    var darka = dh_theme_scrim_a();
+    rupa_theme_set_active_name("shanta-light");
+    check(dh_theme_scrim_a() < darka, 1);
+    # ...and the light scrim really is a different colour, not the same one at a lower alpha.
+    rupa_theme_set_active_name("mudra-dark");
+    var darkscrim = dh_theme_scrim();
+    rupa_theme_set_active_name("mudra-light");
+    check(dh_theme_scrim() == darkscrim, 0);
+    rupa_theme_set_active_name("mudra-dark");
 
     # ---- E: placement at a point — flip, clamp, then shrink ----------------------------------------
     var r = alloc(32);

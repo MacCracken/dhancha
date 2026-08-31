@@ -2751,6 +2751,11 @@ fn dh_theme_on_accent(): i64 { return dh_theme_col(rupa_theme_on_accent(rupa_the
 # to reach past the toolkit into rupa directly — which is the coupling this file exists to prevent.
 fn dh_theme_faint(): i64  { return dh_theme_col(rupa_theme_faint(rupa_theme_active())); }
 fn dh_theme_held(): i64   { return dh_theme_col(rupa_theme_held(rupa_theme_active())); }
+# ⭐ THE MODAL BACKDROP'S COLOUR AND COVERAGE (0.9.23, rupa 0.1.6). Two values, because a scrim is a
+# colour AND an alpha — and the light grounds dim with their own ink at 40% while the dark ones use
+# the void at 70%. See `dh_draw_scrim`.
+fn dh_theme_scrim(): i64   { return dh_theme_col(rupa_theme_scrim(rupa_theme_active())); }
+fn dh_theme_scrim_a(): i64 { return rupa_theme_scrim_a(rupa_theme_active()); }
 
 # --- table.cyr ---
 
@@ -3338,34 +3343,39 @@ fn dh_draw_widget_ink(sds, wgt, font, clx, cly, clw, clh, ink, forced): i64 {
 # which paints a CHILD's rect and therefore needs the narrower one. A PROGRESS has no children.
 # ⚠ `dh_fill_rect_clip`, never `sd_fill_rect`: a bar inside a scrolled list must be cut by the
 # viewport like everything else, and the bare sadish call does not know about the clip.
-# ⭐⭐ THE SCRIM (0.9.23) — a SCREEN-DOOR DIM, and it is called that because that is what it is.
+# ⭐⭐ THE SCRIM (0.9.23) — a REAL translucent veil, as of sadish 0.5.3 and rupa 0.1.6.
 #
-# ⛔ THIS IS NOT TRANSLUCENCY AND WILL NEVER LOOK LIKE IT. sadish does not blend: `sd_hline` writes
-# four bytes per pixel and never reads the destination, and `sd_alpha_of` maps alpha 0 to OPAQUE — so
-# `sd_rgba(0, 0, 0, 128)` handed to a fill paints SOLID BLACK. There is no colour value that produces
-# a 50 % veil, and pretending otherwise is how a "dimmed" backdrop ships as a black rectangle nobody
-# notices until it is on screen.
-# ⇒ What IS available is 50 % COVERAGE at scanline granularity: paint every other row in
-# `dh_theme_bg()` and leave the rows between untouched. The content underneath stays legible in
-# outline — the entire job a scrim does — at the cost of a visible line texture.
-# ⚠ THE PHASE IS ON ABSOLUTE y, NOT ON THE WIDGET'S OWN TOP EDGE. A layer that moved by one pixel
-# would otherwise invert the whole pattern, and the backdrop would strobe as a sheet animates in.
-# ⚠ `dh_theme_bg()` — the desktop void the content already sits against, so the dim reads as the page
-# receding rather than as a new colour dhancha invented.
-# ⛔ THE REAL FIX IS IN TWO OTHER REPOS: a true scrim needs `sd_fill_rect_blend` in SADISH (a fill
-# that reads its destination) and a `scrim` token in RUPA — without the token the caller would be
-# naming a colour, which is ADR 0001's whole subject. Both are recorded as deferrals rather than
-# approximated here.
+# ⚠ THIS SHIPPED AS A SCANLINE DITHER FOR ABOUT AN HOUR, AND THE REASON IT DID IS WORTH KEEPING.
+# sadish had no fill that read its destination — every span writer stored four bytes per pixel and
+# never loaded — and `sd_alpha_of` maps a 0 alpha byte to **opaque**, so `sd_rgba(0,0,0,128)` handed
+# to a fill painted SOLID BLACK. The honest options were an opaque panel (hides rather than dims), a
+# hand-written coverage buffer through `sd_canvas_blit` (bypasses the clip stack and allocates a
+# screenful per frame), or 50% coverage at scanline granularity. The dither shipped.
+# ⛔ IT WAS NOT A LIMIT, IT WAS TWO UNFINISHED REPOS. `sd_fill_rect_blend` (sadish 0.5.3) is a fill
+# that composites source-over, and `scrim` / `scrim_a` (rupa 0.1.6) are the palette's own answer to
+# how far the page recedes. Both were a short change away in repos this stack owns. Calling that a
+# limitation was wrong, and the dither is gone.
+#
+# ⛔ THE COLOUR AND THE ALPHA BOTH COME FROM THE THEME, and they are not interchangeable: the dark
+# grounds dim with the void at 70%, the light grounds with their own INK at 40%. The void at 70% over
+# rice paper would black the page out rather than let it recede — which is exactly why this is a
+# per-theme token and not one number chosen here.
+# ⚠ HANDED THE INHERITED CLIP, like `dh_draw_progress` and unlike `dh_draw_list_selection`: it paints
+# its OWN rect, not a child's.
 fn dh_draw_scrim(sds, x, y, w, h, clx, cly, clw, clh): i64 {
-    var col = dh_theme_bg();
-    var yy = y;
-    if ((yy & 1) == 0) { yy = yy + 1; }
-    var end = y + h;
-    while (yy < end) {
-        dh_fill_rect_clip(sds, x, yy, w, 1, col, clx, cly, clw, clh);
-        yy = yy + 2;
-    }
-    return 0;
+    # ⚠ Intersect by hand: `sd_fill_rect_blend` is a sadish primitive and knows nothing about
+    # dhancha's clip stack, so the rect handed to it must already be the visible part.
+    var x0 = x;
+    var y0 = y;
+    var x1 = x + w;
+    var y1 = y + h;
+    if (x0 < clx) { x0 = clx; }
+    if (y0 < cly) { y0 = cly; }
+    if (x1 > clx + clw) { x1 = clx + clw; }
+    if (y1 > cly + clh) { y1 = cly + clh; }
+    if (x1 <= x0) { return 0; }
+    if (y1 <= y0) { return 0; }
+    return sd_fill_rect_blend(sds, x0, y0, x1 - x0, y1 - y0, dh_theme_scrim(), dh_theme_scrim_a());
 }
 
 fn dh_draw_progress(sds, wgt, x, y, w, h, clx, cly, clw, clh): i64 {

@@ -86,7 +86,13 @@ stdlib = [
 # mabda (GPU) + the aethersafha Wayland commit are a later bite — CPU draw first.
 [deps.sadish]
 git = "https://github.com/MacCracken/sadish.git"
-tag = "0.5.2"
+# ⚠ `path` added 0.9.23, for the same reason rupa carries one: without it dhancha can only build
+# against a PUBLISHED sadish tag, so a local sadish fix cannot be exercised until it is pushed — and
+# 0.9.23's scrim depends on `sd_fill_rect_blend`, which landed in sadish 0.5.3 minutes earlier.
+# ⛔ `path` WINS over `tag`, so a green build here is NOT evidence the declared tag resolves.
+# Re-verify with every `path` line disabled before any release that moves these tags.
+path = "../sadish"
+tag = "0.5.3"
 modules = ["dist/sadish.cyr"]
 
 # rupa (रूप — form / appearance) — the shared desktop theme-token core. Widgets +
@@ -98,7 +104,7 @@ git = "https://github.com/MacCracken/rupa.git"
 # ⚠ `path` — every other dep in this stack carries both; without it a local rupa change cannot be
 # built against until it is pushed, which is how a burn ends up testing last week's tokens.
 path = "../rupa"
-tag = "0.1.5"
+tag = "0.1.6"
 modules = ["dist/rupa.cyr"]
 
 [deps.rekha]

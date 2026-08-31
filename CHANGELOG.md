@@ -58,20 +58,29 @@ refuses an inert row, `dh_list_move_sel` steps **over** it in the direction of t
 ⚠ The step scan is capped by the row count and reverses at an edge, so a menu whose last row is a
 separator does not trap the cursor and a menu of only separators terminates rather than spinning.
 
-### Added — `DH_FLAG_SCRIM`: a scanline dim, and it is not translucency
+### Added — `DH_FLAG_SCRIM`: a real translucent backdrop
 
-⛔ **sadish does not blend.** `sd_hline` writes four bytes per pixel and never reads the destination,
-and `sd_alpha_of` maps alpha 0 to **opaque** — so `sd_rgba(0, 0, 0, 128)` handed to a fill paints
-**solid black**. There is no colour value that produces a 50 % veil, and pretending otherwise is how
-a "dimmed" backdrop ships as a black rectangle nobody notices until it is on screen.
-⇒ What IS available is 50 % coverage at scanline granularity: every other row in `dh_theme_bg()`,
-the rows between untouched. The content stays legible in outline — the entire job a scrim does — at
-the cost of a visible line texture.
-⚠ The phase is on **absolute y**, so a layer that moves by one pixel does not invert the pattern and
-strobe.
-⛔ **The real fix is in two other repos** and is recorded rather than approximated: `sd_fill_rect_blend`
-in **sadish** (a fill that reads its destination) and a **`scrim` token in rupa** — without the token
-the caller would be naming a colour, which is ADR 0001's whole subject.
+⭐⭐ **A modal backdrop that genuinely dims, via sadish 0.5.3 and rupa 0.1.6.**
+
+⚠ **THIS SHIPPED AS A SCANLINE DITHER FOR ABOUT AN HOUR, AND THE REASON IS WORTH KEEPING.** sadish
+had no fill that read its destination — every span writer stored four bytes per pixel and never
+loaded — and `sd_alpha_of` maps a 0 alpha byte to **opaque**, so `sd_rgba(0,0,0,128)` handed to a
+fill painted **solid black**. The three honest options were an opaque panel (hides rather than dims),
+a hand-written coverage buffer through `sd_canvas_blit` (bypasses the clip stack and allocates a
+screenful per frame), or 50 % coverage at scanline granularity. The dither shipped, and this
+CHANGELOG called it a limit.
+
+⛔ **IT WAS NOT A LIMIT. IT WAS TWO UNFINISHED REPOS THIS STACK OWNS.** `sd_fill_rect_blend`
+(**sadish 0.5.3**) is a fill that composites source-over; `scrim` / `scrim_a` (**rupa 0.1.6**) are the
+palette's own answer to how far the page recedes. Both were a short change away. The dither is gone.
+
+⛔ **The colour and the alpha both come from the theme, and they are not interchangeable**: the dark
+grounds dim with the void at **70 %**, the light grounds with their own **ink at 40 %**. The void at
+70 % over rice paper would black the page out rather than let it recede — which is exactly why this
+is a per-theme token and not one number chosen in the toolkit. `overlay_test` asserts the asymmetry,
+so if the two ever equalise one of the palettes is wrong.
+⚠ The rect is intersected with dhancha's clip **by hand** before the call: `sd_fill_rect_blend` is a
+sadish primitive and knows nothing about the clip stack.
 
 ### Added — `src/menu.cyr` (4 functions) and `src/overlay.cyr` (5)
 
@@ -92,9 +101,11 @@ writing a usable rect — `dh_progress_set`'s discipline, not `dh_list_select`'s
 ⚠ `DH_PIN_BOTTOM` is full-bleed and always leaves a strip of layer showing above the panel; that
 strip is what the scrim is drawn on, and a sheet covering its own scrim is a screen with no way to
 say what it is covering.
-⚠ **No radius, no shadow.** `rupa_theme_radius` is published and dhancha has never read it, and
-sadish has no shadow primitive. The canvas draws 14px corners and a 40px shadow; neither is
-expressible. Said rather than approximated.
+⚠ **No radius, no shadow — YET, and these are the same shape of unfinished work the scrim was.**
+`rupa_theme_radius` is published and dhancha has never read it; sadish has no rounded-rect or shadow
+primitive. The canvas draws 14 px corners and a 40 px shadow. ⛔ **Do not call these limits** — they
+are a `sd_fill_round_rect` in sadish and one read in dhancha away, in repos this stack owns. Recorded
+as the next two items rather than as constraints.
 
 ### ⭐⭐ Modality: dhancha holds nothing, and the TREE is the state
 
@@ -110,6 +121,13 @@ to the popup instead of the window.
 ⚠ **Modality gating inside `dh_dispatch` is a real gap and the wrong release** — it is a behaviour
 change to shipped routing with **no consumer in this repo's orbit to verify it against**, because
 crab bypasses dispatch entirely. Deferred deliberately.
+
+### Changed — dependencies: sadish 0.5.2 → **0.5.3**, rupa 0.1.5 → **0.1.6**
+
+Both cut for this release: sadish for `sd_fill_rect_blend`, rupa for the `scrim` token. ⚠ A `path`
+override was added for **sadish** for the same reason rupa already had one — without it dhancha can
+only build against a published tag, and a local sadish fix cannot be exercised until it is pushed.
+⛔ `path` wins over `tag`, so a green local build is **not** evidence the declared tags resolve.
 
 ### Changed — `DH_WIDGET_SIZE` 264 → 288 (`DH_W_OFF_X`/`_OFF_Y`/`_BORDER`)
 
@@ -127,8 +145,11 @@ All **nine** `programs/*_test.cyr` pass: event, layout, list, draw, canvas, aren
 **overlay**. `fmt --check` clean, `lint` 0 warnings on every touched module, `dist/` regenerated with
 `sh scripts/sync-deps-sidecar.sh` after `distlib` (sidecar verified byte-unchanged).
 
-⚠ **Not asserted:** how any of it looks on a real display; the scrim's texture at a real DPI; and
-modality under `dh_dispatch`, which is not implemented.
+⚠ **Not asserted:** how any of it looks on a real display, and modality under `dh_dispatch`, which is
+not implemented.
+⛔ **Release order**: **sadish 0.5.3** and **rupa 0.1.6** must be pushed BEFORE this — dhancha now
+declares both, and a tag that exists on no remote leaves every consumer unable to resolve dhancha at
+all. `path` overrides mask that locally, which is exactly why check 4 exists.
 
 ## [0.9.22] - 2026-08-31 — PROGRESS: a bar that can admit it does not know
 

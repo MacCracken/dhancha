@@ -165,16 +165,22 @@ enum DhWidgetField {
     # and gets away with it because a list has no cross-axis cell size to keep; a grid has both.
     DH_W_CELL_W       = 296;
     DH_W_CELL_H       = 304;
+    # ⭐⭐ HORIZONTAL SCROLL (0.9.25+1). ⛔ ITS OWN FIELD, EXACTLY AS `layout.cyr` PROMISED. That file
+    # has said since 0.9.7: *"Horizontal scrolling is not implemented; when it is, it gets its own
+    # field rather than a reinterpretation of this one."* Reusing `DH_W_SCROLL_Y` for a row would be
+    # a horizontal scroll wearing a field named `scroll_y` — a silent lie at every call site.
+    DH_W_SCROLL_X     = 312;
 }
 # ⚠ 256 -> 264 at 0.9.22. A consumer with a FIXED-size arena sized against the old footprint will
 # now spill to the global allocator, and `dh_falloc` degrades to a leak rather than to a null — so
 # it passes every functional test and shows up only in an `alloc_used()` convergence check. crab is
 # safe (`arena_new_growable`, which chains); check any other consumer before shipping.
-# ⚠ 312 as of 0.9.25 (288 at 0.9.23, 296 at 0.9.24) — `DH_W_KEY`, then `DH_W_CELL_W` / `_CELL_H`.
+# ⚠ 320 as of 0.9.26 (288 at 0.9.23, 296 at 0.9.24, 312 at 0.9.25) — `DH_W_KEY`, `DH_W_CELL_W` /
+# `_CELL_H`, then `DH_W_SCROLL_X`.
 # ⛔ This constant and the layout above must move together; the header comment has been stale before,
 # so re-derive it from the last field rather than trusting either. ⭐ `progress_test` pins the value
 # as a literal precisely so a change here has to be confirmed by a human — it has fired three times.
-var DH_WIDGET_SIZE = 312;
+var DH_WIDGET_SIZE = 320;
 
 # ============================================================================================
 # ⭐⭐ MOTION — the app's half of "the compositor grants, apps override per widget"
@@ -404,6 +410,7 @@ fn dh_widget_new(kind): i64 {
     # the previous frame's cell size here would lay a grid out to a geometry nothing asked for.
     store64(wgt + DH_W_CELL_W, 0);
     store64(wgt + DH_W_CELL_H, 0);
+    store64(wgt + DH_W_SCROLL_X, 0);      # ⛔ seeded: arena memory is RECYCLED, not zero
     return wgt;
 }
 
@@ -639,6 +646,7 @@ fn dh_widget_contains(wgt, px, py): i64 {
 # `dh_list_scroll_to` in list.cyr, which knows the content height. This pair exists because layout
 # and draw need the stored number, and a clamping getter would make them depend on the policy layer.
 fn dh_widget_scroll_y(wgt): i64 { if (wgt == 0) { return 0; } return load64(wgt + DH_W_SCROLL_Y); }
+fn dh_widget_scroll_x(wgt): i64 { if (wgt == 0) { return 0; } return load64(wgt + DH_W_SCROLL_X); }
 fn dh_widget_sel(wgt): i64      { if (wgt == 0) { return 0 - 1; } return load64(wgt + DH_W_SEL); }
 
 # Flex weight: 0 = fixed (takes its pref main-axis size); > 0 = flexible

@@ -10,9 +10,24 @@ include "src/lib.cyr"
 
 var g_fails = 0;
 
+var g_checks = 0;
+
+# ⚠ NAMES THE FAILING CHECK. This suite reported only a count, so a failure meant bisecting 100+
+# assertions by hand — and it drives a long stateful sequence where the index is most of the answer.
 fn check(got, want): i64 {
+    g_checks = g_checks + 1;
     if (got == want) { return 0; }
     g_fails = g_fails + 1;
+    var m = "  list_test: check #";
+    print(m, strlen(m));
+    fmt_int(g_checks);
+    var m2 = " failed: got ";
+    print(m2, strlen(m2));
+    fmt_int(got);
+    var m3 = " want ";
+    print(m3, strlen(m3));
+    fmt_int(want);
+    print("\n", 1);
     return 1;
 }
 
@@ -275,6 +290,112 @@ fn main(): i64 {
     check(dh_theme_held(), sd_rgb(0x6F, 0x7D, 0x5F));
     rupa_theme_set_active_name("mudra-dark");
 
+    # ---- 0.9.26: the HORIZONTAL list ----------------------------------------------------------
+    # ⛔⛔ WHY A HORIZONTAL LIST RATHER THAN A `MENU BAR` KIND. A menu bar, a tab strip, a toolbar and
+    # a view switcher are all the same thing: a row of items, one current, the current one
+    # highlighted. Composing that from a `BOX_H` of labels makes the APP paint the highlight — which
+    # means the app naming `accent`, which crab's ADR 0001 forbids. The toolkit has to own it; it
+    # does not need a new kind to. Same answer 0.9.23 gave MENU and SHEET, and it buys four surfaces.
+    var hl = dh_list_new_h(40);
+    check(dh_list_horizontal(hl), 1);
+    check(dh_list_horizontal(dh_list_new(20)), 0);
+    check(dh_list_horizontal(0), 0);
+    # ⚠ THE MAIN-AXIS EXTENT IS THE WIDTH HERE. `dh_list_row_h` keeps its name and means "along this
+    # list's own axis" as of 0.9.26 — renaming a public entry point in a patch would break every
+    # consumer for a word.
+    check(dh_list_row_h(hl), 40);
+    var hi = 0;
+    while (hi < 6) {
+        var hc = dh_widget_new(LABEL);
+        dh_list_add(hl, hc);
+        hi = hi + 1;
+    }
+    check(dh_list_count(hl), 6);
+    # ⛔ `dh_list_add` PINS THE MAIN AXIS. Pinning height here would leave every item auto-sized
+    # while the scroll arithmetic — which multiplies by this number — described a layout that never
+    # happened.
+    check(dh_widget_pref_w(dh_list_row_at(hl, 0)), 40);
+    dh_widget_set_gap(hl, 4);
+    check(dh_list_content_h(hl), 6 * 40 + 5 * 4);      # six items, five gaps
+    # ⛔⛔ SETTING THE LIST'S OWN PREF MUST NOT TOUCH ITS ITEM EXTENT. It did until 0.9.26: both lived
+    # in `DH_W_PREF_*`, so sizing the container silently rewrote the row height and every scroll
+    # figure derived from it. This test found it — `dh_list_row_h` answered 100 after a
+    # `dh_widget_set_pref(hl, 100, 30)`. GRID had already given cells their own fields; LIST had not.
+    dh_widget_set_pref(hl, 100, 30);
+    check(dh_list_row_h(hl), 40);
+
+    # A 100px-wide viewport over 260px of content.
+    dh_layout_apply(hl, 100, 30);
+    check(dh_list_max_scroll(hl), 260 - 100);
+    # ⛔ THE OFFSET LANDS IN `DH_W_SCROLL_X`, NOT `_SCROLL_Y`. `layout.cyr` promised this field since
+    # 0.9.7: a horizontal offset in a vertically-named field is a lie applied to the wrong axis.
+    dh_list_scroll_to(hl, 50);
+    check(dh_widget_scroll_x(hl), 50);
+    check(dh_widget_scroll_y(hl), 0);
+    # ...and layout really shifts the items left by it.
+    dh_layout_apply(hl, 100, 30);
+    check(dh_widget_x(dh_list_row_at(hl, 0)), 0 - 50);
+    check(dh_widget_y(dh_list_row_at(hl, 0)), 0);      # ...and not vertically
+    dh_list_scroll_to(hl, 0);
+    dh_layout_apply(hl, 100, 30);
+    check(dh_widget_x(dh_list_row_at(hl, 0)), 0);
+    # ⛔ THE BOTTOM-EDGE CLAMP APPLIES ON THIS AXIS TOO — content shorter than the viewport gives a
+    # negative maximum, and clamping to a negative scrolls content off the leading edge of a list
+    # that is not even full. Every hand-rolled version in the stack had this bug vertically.
+    var hs = dh_list_new_h(40);
+    var hs1 = dh_widget_new(LABEL);
+    dh_list_add(hs, hs1);
+    dh_widget_set_pref(hs, 200, 30);
+    dh_layout_apply(hs, 200, 30);
+    check(dh_list_max_scroll(hs), 0);
+    dh_list_scroll_to(hs, 500);
+    check(dh_widget_scroll_x(hs), 0);
+
+    # Keep-selected-visible works along the main axis, at MINIMUM move.
+    dh_list_select(hl, 0);
+    dh_list_scroll_to_sel(hl);
+    check(dh_widget_scroll_x(hl), 0);
+    dh_list_select(hl, 1);                              # item 1 spans 44..84, inside a 100 viewport
+    dh_list_scroll_to_sel(hl);
+    check(dh_widget_scroll_x(hl), 0);                   # ...so it does not move
+    dh_list_select(hl, 5);                              # item 5 spans 220..260
+    dh_list_scroll_to_sel(hl);
+    check(dh_widget_scroll_x(hl), 260 - 100);
+    dh_list_select(hl, 0);
+    dh_list_scroll_to_sel(hl);
+    check(dh_widget_scroll_x(hl), 0);
+
+    # ⚠ SELECTION, INERT AND HIT-TESTING ARE DIRECTION-AGNOSTIC and are reused unchanged — the
+    # index arithmetic never cared which way the items were laid out.
+    dh_layout_apply(hl, 100, 30);
+    check(dh_list_index_at(hl, 2, 2), 0);
+    check(dh_list_index_at(hl, 46, 2), 1);
+    check(dh_list_index_at(hl, 41, 2), 0 - 1);          # the gap belongs to nobody
+    dh_widget_set_inert(dh_list_row_at(hl, 1), 1);
+    check(dh_list_select(hl, 1), 0 - 1);                # an inert item is refused
+    check(dh_list_index_at(hl, 46, 2), 0 - 1);          # ...and not clickable
+
+    # ⛔ AND A VERTICAL LIST IS UNTOUCHED BY ALL OF IT — the additive guarantee. Its offset still
+    # goes to `scroll_y` and its extent is still a height.
+    var vl = dh_list_new(20);
+    var vi = 0;
+    while (vi < 6) { dh_list_add(vl, dh_widget_new(LABEL)); vi = vi + 1; }
+    dh_widget_set_pref(vl, 100, 50);
+    dh_layout_apply(vl, 100, 50);
+    check(dh_list_row_h(vl), 20);                      # ...and a container pref did not eat it
+    check(dh_widget_pref_h(dh_list_row_at(vl, 0)), 20);
+    dh_list_scroll_to(vl, 30);
+    check(dh_widget_scroll_y(vl), 30);
+    check(dh_widget_scroll_x(vl), 0);
+
+    var t = "list_test: ";
+    print(t, strlen(t));
+    fmt_int(g_checks);
+    var t2 = " checks, ";
+    print(t2, strlen(t2));
+    fmt_int(g_fails);
+    var t3 = " failed\n";
+    print(t3, strlen(t3));
     return g_fails;
 }
 

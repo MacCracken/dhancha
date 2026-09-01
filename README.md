@@ -1,6 +1,6 @@
 # dhancha
 
-Version: 0.9.25
+Version: 0.9.26
 
 **dhancha** (ढाँचा — Hindi/Sanskrit: *framework / structure / scaffold*)
 is a pure-Cyrius **client-side widget toolkit / desktop app framework**
@@ -87,6 +87,13 @@ compositor composites onto the screen over the native display protocol.
   ⛔ **It earns a kind by this repo's own rule** — the one 0.9.23 applied when it REFUSED one to MENU
   and SHEET: a grid composed from boxes would make the app paint its own selection highlight, which
   means the app naming `accent`. RUN-tested (`grid_test`, 66 checks, six mutations).
+- **v0.9.26 — the list goes sideways (shipped).** `dh_list_new_h` lays the same container
+  left-to-right, with `DH_W_SCROLL_X` as the second axis's own offset. ⛔ **A menu bar, a tab strip,
+  a toolbar and a view switcher are one thing** — a row of items with the current one highlighted —
+  and composing it from boxes would make the app paint that highlight, which means naming a colour.
+  The toolkit owns it, and needs no new kind to. ⚠ Also fixes a bug present since 0.9.7:
+  `dh_widget_set_pref` on a list silently rewrote its row height, because both lived in
+  `DH_W_PREF_*`. RUN-tested (`list_test`, 104 checks, five mutations).
 - **v0.6+ — next.** The compositor-fd input source (decode the native display
   protocol's input wire bytes into events + block on its transport), real hmtx
   text advances, and the present path (CPU buffer submit over the native

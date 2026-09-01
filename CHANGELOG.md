@@ -5,6 +5,73 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.26] - 2026-08-31 — the horizontal LIST, and a row height that a container pref could eat
+
+### ⭐⭐ The headline: a menu bar does not need a MENU BAR kind — it needs the list laid the other way
+
+A menu bar, a tab strip, a toolbar and a view switcher are all the same thing: **a row of items, one
+current, the current one highlighted**. Composing that from a `BOX_H` of labels makes the **app**
+paint the highlight — which means the app naming `accent`, which crab's ADR 0001 forbids. So the
+toolkit has to own it.
+
+⛔ **But it does not need a new kind.** It needs the container it already has, laid out the other way.
+That is the same answer 0.9.23 gave when it refused a kind to MENU and SHEET and composed them over
+LIST — and it buys **four** surfaces rather than one.
+⚠ **crab reported this** while re-deriving M6's gates: the roadmap listed a *"Gate: dhancha MENU
+BAR"*, and what was actually missing was a horizontal selectable strip.
+
+### Added — `dh_list_new_h(cell_w)` and `DH_W_SCROLL_X`
+
+⛔ **THE SECOND AXIS GETS ITS OWN FIELD, EXACTLY AS `layout.cyr` PROMISED.** That file has said since
+0.9.7: *"Horizontal scrolling is not implemented; when it is, it gets its own field rather than a
+reinterpretation of this one."* Subtracting `scroll_y` in a row would have been a horizontal scroll
+wearing a vertical field's name — a silent lie at every call site.
+
+⚠ **The orientation is read back from `DH_W_LAYOUT`**, not stored twice: a list already sets its own
+layout mode, and a second field saying the same thing is a second thing to keep in step.
+⚠ **`dh_list_row_h` keeps its name and now means "the per-item extent along this list's own axis"** —
+a row's height in a column, an item's width in a row. Renaming a public entry point in a patch would
+break every consumer for a word; the meaning is stated at the function and at each use.
+⚠ Selection, inert handling and `dh_list_index_at` are **reused unchanged** — index arithmetic never
+cared which way the items were laid out, and `dh_widget_contains` is direction-agnostic.
+
+### Fixed — `dh_widget_set_pref` on a LIST silently destroyed its row height
+
+⛔⛔ **A REAL BUG, PRESENT SINCE 0.9.7, AND NOTHING FAILED WHEN IT FIRED.** `dh_list_new(row_h)`
+stored the row height in `DH_W_PREF_H` — which is also the **list's own preferred height**, read by
+layout and settable by any caller. So `dh_widget_set_pref(lst, 100, 50)` on a list built with
+`dh_list_new(20)` changed its row height from 20 to 50, and every piece of scroll arithmetic derived
+from it — content extent, maximum offset, keep-visible — then described a layout that never happened.
+**The list did not break; it scrolled wrong.**
+
+⇒ Row height and item width now live in `DH_W_CELL_H` / `DH_W_CELL_W`, the fields **GRID already
+introduced in 0.9.25 for exactly this collision**. The reasoning simply had not been applied back to
+LIST, which is older.
+⚠ **Found by the horizontal list's own first test run** — it set a pref on the container and watched
+`dh_list_row_h` answer with it. A bug that had been latent for nineteen releases because no test ever
+sized a list explicitly.
+⚠ A list no longer carries a pref main-axis size of its own, so one with flex 0 and no explicit pref
+auto-sizes to its content — which is what `dh_layout_box` already does for every fixed child. All 17
+suites pass unchanged.
+
+### Changed — `DH_WIDGET_SIZE` 312 → 320
+
+One slot, `DH_W_SCROLL_X`. ⭐ **`progress_test`'s literal size pin FIRED for the fourth release
+running** (264 → 288 → 296 → 312 → 320). Four for four on a check that costs one line.
+
+### Tests — `list_test` gains the horizontal axis, and learns to name its failures
+
+The orientation predicate; main-axis extent, content, maximum offset and the bottom-edge clamp on the
+new axis; the offset landing in `DH_W_SCROLL_X` and **not** `_SCROLL_Y`; layout really shifting items
+along x and not y; keep-visible at minimum move; hit-testing and inert handling reused unchanged;
+and **a vertical list proved untouched by all of it**.
+
+⭐ **Five mutations, each producing a named failure**: the row height back in `DH_W_PREF_H`, layout
+ignoring the horizontal offset, a horizontal offset stored in `scroll_y`, the viewport always taken
+as the height, and items pinned on the wrong axis.
+⚠ **The suite reported only a count until now**, so a failure meant bisecting 100+ assertions by
+hand. It names the failing check.
+
 ## [0.9.25] - 2026-08-31 — GRID: a wrapping, selectable grid of fixed-size cells
 
 ### ⭐⭐ The headline: it earns a kind, and the bar is this repo's own

@@ -54,11 +54,11 @@ fn main(): i64 {
     # This check is a literal pin, not a memory-safety proof; the two-bar check below catches gross
     # overlap and nothing here catches subtle overlap. Said plainly rather than implied away.
     # ⚠ 264 -> 288 at 0.9.23 (DH_W_OFF_X / _OFF_Y / _BORDER), 288 -> 296 at 0.9.24 (DH_W_KEY),
-    # 296 -> 312 at 0.9.25 (DH_W_CELL_W / _CELL_H).
-    # **This pin has now FIRED at all three**, which is the whole reason it is a literal — it forces
-    # a human to confirm the growth was meant rather than letting a struct quietly widen. Three for
-    # three on a check that costs one line.
-    check(DH_WIDGET_SIZE, 312);
+    # 296 -> 312 at 0.9.25 (DH_W_CELL_W / _CELL_H), 312 -> 320 at 0.9.26 (DH_W_SCROLL_X).
+    # **This pin has now FIRED at all four**, which is the whole reason it is a literal — it forces
+    # a human to confirm the growth was meant rather than letting a struct quietly widen. Four for
+    # four on a check that costs one line.
+    check(DH_WIDGET_SIZE, 320);
 
     # ---- B: a fresh bar is INDETERMINATE, not 0 % -----------------------------------------------
     # ⛔ 0 is a VALID fill. A bar that boots claiming a real 0 % is lying about having been told.

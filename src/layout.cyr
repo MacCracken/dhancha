@@ -224,10 +224,13 @@ fn dh_layout_box(wgt, x, y, w, h, vertical): i64 {
     # pointer against the same bounds the painter used. A draw-time-only offset would have moved the
     # pixels and left the clickable regions behind — painted-but-inert rows, the failure this whole
     # container exists to avoid.
-    # ⚠ VERTICAL ONLY, deliberately. Subtracting it in a row would be a HORIZONTAL scroll wearing a
-    # field named `scroll_y` — a silent lie to anyone reading the call site. Horizontal scrolling is
-    # not implemented; when it is, it gets its own field rather than a reinterpretation of this one.
+    # ⭐ EACH AXIS HAS ITS OWN FIELD (0.9.26), which is what this comment promised when it read
+    # *"Horizontal scrolling is not implemented; when it is, it gets its own field rather than a
+    # reinterpretation of this one."* Subtracting `scroll_y` in a row would have been a horizontal
+    # scroll wearing a vertical field's name — a silent lie at every call site — so `DH_W_SCROLL_X`
+    # exists and this is the one place either is applied.
     if (vertical == 1) { pos = pos - dh_widget_scroll_y(wgt); }
+    else { pos = pos - dh_widget_scroll_x(wgt); }
     var flex_used = 0;
     var flex_seen = 0;
     child = dh_widget_first_child(wgt);

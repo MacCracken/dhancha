@@ -1,0 +1,252 @@
+# programs/grid_test.cyr — RUN test for the GRID container (0.9.25).
+#
+# ⛔⛔ WHAT THIS EXISTS TO PIN. A grid is a LIST with a second axis, and the second axis is where the
+# arithmetic goes wrong: the column count that a width admits, the ceiling division that turns cells
+# into rows, and arrow keys that must move by a WHOLE ROW rather than by one cell. Every one of those
+# is an off-by-one with a plausible-looking wrong answer.
+#
+#   A. the wrap arithmetic — `n` cells carry `n - 1` gaps, not `n`;
+#   B. layout places cells row-major, honouring pad, gap and the scroll offset;
+#   C. selection: refused out of range, refused on an inert cell, stepped over;
+#   D. arrow keys move by a row vertically and by one horizontally, and do NOT wrap;
+#   E. keep-selected-visible moves the MINIMUM distance;
+#   F. hit-testing answers from the laid-out cells, and the gaps belong to nobody;
+#   G. the whole thing costs the global heap nothing per frame.
+# Exit code = failed checks.
+
+include "src/lib.cyr"
+
+var g_fails = 0;
+var g_checks = 0;
+
+fn check(got, want): i64 {
+    g_checks = g_checks + 1;
+    if (got == want) { return 0; }
+    g_fails = g_fails + 1;
+    say("  grid_test: check #");
+    fmt_int(g_checks);
+    say(" failed: got ");
+    fmt_int(got);
+    say(" want ");
+    fmt_int(want);
+    say("\n");
+    return 1;
+}
+
+fn say(s): i64 { return print(s, strlen(s)); }
+
+# A grid of `n` LABEL cells, 40x30, gap 4.
+fn mkgrid(n): i64 {
+    var g = dh_grid_new(40, 30, 4);
+    var i = 0;
+    while (i < n) {
+        var c = dh_widget_new(LABEL);
+        dh_grid_add(g, c);
+        i = i + 1;
+    }
+    return g;
+}
+
+fn main(): i64 {
+    alloc_init();
+    rupa_theme_set_active_name("mudra-dark");
+
+    # ---- A: the wrap arithmetic -----------------------------------------------------------------
+    # ⛔ THE OFF-BY-ONE IS IN THE GAP. Three 40px cells with a 4px gap need 40*3 + 4*2 = 128, NOT
+    # 40*3 + 4*3 = 132 — the last cell has no gap after it. A reader that forgot that loses a column
+    # at exactly the width a caller chose on purpose.
+    var g = mkgrid(7);
+    check(dh_grid_count(g), 7);
+    check(dh_grid_cell_w(g), 40);
+    check(dh_grid_cell_h(g), 30);
+    check(dh_grid_cols_for(g, 128), 3);      # exactly three fit
+    check(dh_grid_cols_for(g, 127), 2);      # one pixel short of three
+    check(dh_grid_cols_for(g, 84), 2);       # exactly two
+    check(dh_grid_cols_for(g, 83), 1);
+    check(dh_grid_cols_for(g, 40), 1);       # exactly one
+    # ⚠ NEVER ZERO. A grid narrower than a cell shows one clipped cell, which is visible and
+    # recoverable; zero columns is a division by zero in every reader below it.
+    check(dh_grid_cols_for(g, 1), 1);
+    check(dh_grid_cols_for(g, 0), 1);
+    check(dh_grid_cols_for(g, 0 - 50), 1);
+    check(dh_grid_cols_for(0, 128), 1);
+
+    # ---- B: layout, row-major, with pad and gap --------------------------------------------------
+    dh_widget_set_pref(g, 128, 200);
+    dh_layout_apply(g, 128, 200);
+    check(dh_grid_cols(g), 3);
+    # ⚠ Ceiling division: 7 cells in 3 columns is 3 rows, not 2.
+    check(dh_grid_content_h(g), 30 + 4 + 30 + 4 + 30);
+    var c0 = dh_grid_cell_at(g, 0);
+    var c1 = dh_grid_cell_at(g, 1);
+    var c3 = dh_grid_cell_at(g, 3);
+    check(dh_widget_x(c0), 0);
+    check(dh_widget_y(c0), 0);
+    check(dh_widget_x(c1), 44);              # one cell + one gap to the right
+    check(dh_widget_y(c1), 0);               # ...and still on row 0
+    check(dh_widget_x(c3), 0);               # index 3 wraps to the start of row 1
+    check(dh_widget_y(c3), 34);
+    check(dh_widget_w(c0), 40);
+    check(dh_widget_h(c0), 30);
+    check(dh_grid_cell_at(g, 7), 0);         # past the end
+    check(dh_grid_cell_at(g, 0 - 1), 0);
+
+    # ⛔ THE SCROLL OFFSET IS APPLIED AT LAYOUT, not at paint — so hit-testing needs no knowledge of
+    # scrolling, and `dh_grid_index_at` can simply walk the laid-out cells. A grid that scrolled at
+    # paint time would draw in one place and answer the mouse in another.
+    # ⚠ A SHORTER VIEWPORT, because this grid's content is 98 px and a 200 px viewport does not
+    # scroll at all — `dh_grid_scroll_to` clamps to `dh_grid_max_scroll`, which is 0 there. A first
+    # draft asked for a 20 px offset against the tall viewport and got 0, which was the RIGHT answer
+    # to the wrong question.
+    dh_widget_set_pref(g, 128, 68);
+    dh_layout_apply(g, 128, 68);
+    dh_grid_scroll_to(g, 20);
+    dh_layout_apply(g, 128, 68);
+    check(dh_widget_y(c0), 0 - 20);
+    check(dh_widget_y(c3), 14);
+    dh_grid_scroll_to(g, 0);
+    dh_widget_set_pref(g, 128, 200);
+    dh_layout_apply(g, 128, 200);
+    check(dh_widget_y(c0), 0);
+
+    # ⚠ Padding insets the whole flow.
+    dh_widget_set_padding(g, 5);
+    dh_layout_apply(g, 138, 200);
+    check(dh_grid_cols(g), 3);               # 138 - 10 = 128, still three
+    check(dh_widget_x(c0), 5);
+    check(dh_widget_y(c0), 5);
+    dh_widget_set_padding(g, 0);
+    dh_layout_apply(g, 128, 200);
+
+    # ---- C: selection ----------------------------------------------------------------------------
+    check(dh_grid_selected(g), 0 - 1);       # nothing selected to begin with
+    check(dh_grid_select(g, 2), DHANCHA_OK);
+    check(dh_grid_selected(g), 2);
+    # ⛔ OUT OF RANGE IS REFUSED, NOT CLAMPED. A caller that computed a bad index wants to know;
+    # silently landing on the last cell hides the bug and shows the wrong file as selected.
+    check(dh_grid_select(g, 7), DHANCHA_ERR_BAD_WIDGET);
+    check(dh_grid_select(g, 0 - 1), DHANCHA_ERR_BAD_WIDGET);
+    check(dh_grid_selected(g), 2);           # ...and the refusal changed nothing
+    # ⚠ An inert cell is refused, exactly as `dh_list_select` refuses an inert row — a grid can carry
+    # a placeholder for a file it could not read, and selecting one means acting on nothing.
+    dh_widget_set_inert(dh_grid_cell_at(g, 4), 1);
+    check(dh_grid_select(g, 4), DHANCHA_ERR_BAD_WIDGET);
+
+    # ---- D: arrow keys -------------------------------------------------------------------------
+    # ⛔⛔ THIS IS THE WHOLE REASON GRID IS A KIND AND NOT A LIST. Left/right step by ONE; up/down
+    # step by a WHOLE ROW. An app driving a grid with `dh_list_move_sel` gets a cursor that walks the
+    # flow one cell at a time and appears to move diagonally.
+    dh_grid_select(g, 0);
+    check(dh_grid_move_sel(g, 1, 0), DHANCHA_OK);
+    check(dh_grid_selected(g), 1);           # right by one
+    check(dh_grid_move_sel(g, 0, 1), DHANCHA_OK);
+    # ⚠ Down a row from 1 targets 4 — which is INERT — so the step continues in the direction of
+    # travel and lands on 5. A placeholder must not trap the cursor.
+    check(dh_grid_selected(g), 5);
+    check(dh_grid_move_sel(g, 0, 0 - 1), DHANCHA_OK);
+    check(dh_grid_selected(g), 2);           # up by a row from 5
+    # ⛔ HORIZONTAL MOVEMENT DOES NOT WRAP TO THE NEXT ROW. The grid is a 2-D arrangement the operator
+    # can SEE, so the cursor moves the way the arrow points. Wrapping makes "right" mean "down and all
+    # the way left", which is not what was pressed. ⚠ The context MENU wraps and is right to — six
+    # items visible at once. A grid of a thousand files is the opposite case.
+    check(dh_grid_move_sel(g, 1, 0), DHANCHA_ERR_BAD_WIDGET);   # 2 is the last column
+    check(dh_grid_selected(g), 2);
+    dh_grid_select(g, 0);
+    check(dh_grid_move_sel(g, 0 - 1, 0), DHANCHA_ERR_BAD_WIDGET);  # 0 is the first column
+    check(dh_grid_move_sel(g, 0, 0 - 1), DHANCHA_ERR_BAD_WIDGET);  # ...and the first row
+    # ⚠ Past the last row is refused rather than clamped to the final cell: down from a column with
+    # no cell below it lands nowhere, and jumping sideways is a move nobody asked for.
+    dh_grid_select(g, 6);                    # last cell, row 2 column 0
+    check(dh_grid_move_sel(g, 0, 1), DHANCHA_ERR_BAD_WIDGET);
+    # ⚠ An unset selection lands on the first cell whichever direction was pressed — the operator
+    # asked to start navigating and the answer is "here".
+    store64(g + DH_W_SEL, 0 - 1);
+    check(dh_grid_move_sel(g, 0, 1), DHANCHA_OK);
+    check(dh_grid_selected(g), 0);
+
+    # ---- E: keep-selected-visible, minimum move --------------------------------------------------
+    # ⚠ A selection already visible does not scroll AT ALL. Snapping to the top on every step is what
+    # makes a grid feel like it is fighting the operator.
+    var t = mkgrid(30);
+    dh_widget_set_pref(t, 128, 68);          # two rows of viewport
+    dh_layout_apply(t, 128, 68);
+    check(dh_grid_cols(t), 3);
+    dh_grid_select(t, 0);
+    dh_grid_scroll_to_sel(t);
+    check(load64(t + DH_W_SCROLL_Y), 0);
+    dh_grid_select(t, 1);                    # same row
+    dh_grid_scroll_to_sel(t);
+    check(load64(t + DH_W_SCROLL_Y), 0);     # ...no movement
+    dh_grid_select(t, 6);                    # row 2, just past the viewport
+    dh_grid_scroll_to_sel(t);
+    # Row 2 starts at 2*(30+4) = 68 and ends at 98; the viewport is 68, so the minimum move is 30.
+    check(load64(t + DH_W_SCROLL_Y), 98 - 68);
+    # Scrolling back up moves the minimum the other way.
+    dh_grid_select(t, 0);
+    dh_grid_scroll_to_sel(t);
+    check(load64(t + DH_W_SCROLL_Y), 0);
+    # ⚠ Content shorter than the viewport does not scroll at all.
+    var s = mkgrid(2);
+    dh_widget_set_pref(s, 128, 200);
+    dh_layout_apply(s, 128, 200);
+    check(dh_grid_max_scroll(s), 0);
+    dh_grid_scroll_to(s, 500);
+    check(load64(s + DH_W_SCROLL_Y), 0);
+
+    # ---- F: hit-testing --------------------------------------------------------------------------
+    # ⛔ FROM THE LAID-OUT CELLS, NOT FROM THE ARITHMETIC. Recomputing row and column from the pointer
+    # would be a second answer to "where is cell i", free to disagree with the one layout produced —
+    # and the disagreement, not either answer, is what makes a click land on the wrong file.
+    dh_layout_apply(g, 128, 200);
+    check(dh_grid_index_at(g, 0, 0), 0);
+    check(dh_grid_index_at(g, 39, 29), 0);   # last pixel of cell 0
+    check(dh_grid_index_at(g, 44, 0), 1);
+    check(dh_grid_index_at(g, 0, 34), 3);
+    # ⚠ THE GAPS BELONG TO NOBODY. Walking the children gets that right for free; arithmetic would
+    # have had to special-case it.
+    check(dh_grid_index_at(g, 41, 0), 0 - 1);
+    check(dh_grid_index_at(g, 0, 31), 0 - 1);
+    check(dh_grid_index_at(g, 500, 500), 0 - 1);
+    # ⚠ An inert cell reports -1, matching `dh_list_index_at`: a placeholder the keyboard steps over
+    # must not be clickable either.
+    check(dh_grid_index_at(g, 44, 34), 0 - 1);   # cell 4, marked inert above
+
+    # ---- G: a grid frame costs the global heap nothing ------------------------------------------
+    # ⛔ THE SAME GATE EVERY OTHER WIDGET IS HELD TO. A container that allocated per layout would
+    # reopen the leak dhancha 0.9.13-0.9.16 spent four releases closing.
+    var arena = arena_new_growable(65536);
+    dh_frame_arena_set(arena);
+    dh_frame_begin();
+    var wg = mkgrid(24);
+    dh_widget_set_pref(wg, 128, 200);
+    dh_layout_apply(wg, 128, 200);
+    var a0 = alloc_used();
+    var i = 0;
+    while (i < 20) {
+        dh_frame_begin();
+        var fg = mkgrid(24);
+        dh_widget_set_pref(fg, 128, 200);
+        dh_layout_apply(fg, 128, 200);
+        dh_grid_select(fg, 7);
+        dh_grid_scroll_to_sel(fg);
+        dh_grid_index_at(fg, 44, 34);
+        i = i + 1;
+    }
+    check(alloc_used() - a0, 0);
+    dh_frame_arena_set(0);
+
+    say("grid_test: ");
+    fmt_int(g_checks);
+    say(" checks, ");
+    fmt_int(g_fails);
+    say(" failed\n");
+    if (g_fails == 0) {
+        println("grid_test: PASS (wrap, layout, selection, arrows, keep-visible, hit-test, zero-alloc)");
+        return 0;
+    }
+    println("grid_test: FAIL");
+    return g_fails;
+}
+
+fn _entry(): i64 { syscall(SYS_EXIT, main()); return 0; }
+_entry();

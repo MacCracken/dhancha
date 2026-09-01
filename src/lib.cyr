@@ -61,6 +61,11 @@ include "src/error.cyr"
 include "src/widget.cyr"
 include "src/layout.cyr"
 include "src/list.cyr"        # LIST container policy — needs widget + layout state, no draw deps
+# ⭐ GRID container policy (0.9.25). ⚠ AFTER layout.cyr in the READING order but its functions are
+# called BY it (`dh_layout_grid` dispatches on the kind, and reads `dh_grid_cell_w`) — which works
+# because the fold is one translation unit and cyrius resolves calls across it. The placement here
+# matches `list.cyr`'s: policy over state that widget.cyr stores.
+include "src/grid.cyr"
 include "src/progress.cyr"    # PROGRESS bar policy — needs widget state only; no theme, no draw deps
 include "src/event.cyr"
 include "src/canvas.cyr"      # app-drawn CANVAS slot — needs widget state, no event deps

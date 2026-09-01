@@ -406,6 +406,11 @@ fn dh_draw_widget_ink(sds, wgt, font, clx, cly, clw, clh, ink, forced): i64 {
     if (dh_widget_kind(wgt) == LIST) {
         dh_draw_list_selection(sds, wgt, kx0, ky0, kx1 - kx0, ky1 - ky0);
     }
+    # ⭐ GRID (0.9.25) — the selected CELL's highlight, painted here for the same reason a LIST's is:
+    # so the app never names `accent`. That is the whole reason GRID is a kind (ADR 0001 in crab).
+    if (dh_widget_kind(wgt) == GRID) {
+        dh_draw_grid_selection(sds, wgt, kx0, ky0, kx1 - kx0, ky1 - ky0);
+    }
 
     # ⭐⭐ THE SELECTED ROW'S TEXT MUST SURVIVE ITS OWN HIGHLIGHT (0.9.20, rupa 0.1.5).
     # ⛔ THE HIGHLIGHT WAS ERASING THE ROW IT HIGHLIGHTED. `dh_draw_list_selection` above fills the
@@ -505,6 +510,22 @@ fn dh_draw_progress(sds, wgt, x, y, w, h, clx, cly, clw, clh): i64 {
     var fw = w * p / 1000;
     if (fw <= 0) { return 0; }
     return dh_fill_rect_clip(sds, x, y, fw, h, dh_theme_accent(), clx, cly, clw, clh);
+}
+
+# The selected GRID cell's highlight. ⚠ Same split as a list's: `accent` when the grid holds focus,
+# `line` when it does not — two grids side by side must say which one the arrow keys drive, and a
+# muted highlight is how a pane that is merely *remembering* a selection says so.
+# ⛔ FROM THE CELL'S LAID-OUT BOX, never from the wrap arithmetic. Recomputing it here would be a
+# second answer to "where is cell i", free to disagree with the one the cell was drawn at.
+fn dh_draw_grid_selection(sds, wgt, clx, cly, clw, clh): i64 {
+    var sel = dh_widget_sel(wgt);
+    if (sel < 0) { return 0; }
+    var cell = dh_grid_cell_at(wgt, sel);
+    if (cell == 0) { return 0; }
+    var col = dh_theme_line();
+    if (dh_focus_within(wgt) == 1) { col = dh_theme_accent(); }
+    return dh_fill_rect_clip(sds, dh_widget_x(cell), dh_widget_y(cell),
+      dh_widget_w(cell), dh_widget_h(cell), col, clx, cly, clw, clh);
 }
 
 fn dh_draw_list_selection(sds, wgt, clx, cly, clw, clh): i64 {

@@ -285,7 +285,43 @@ fn dh_layout_at(wgt, x, y, w, h): i64 {
     if (mode == BOX_V) { return dh_layout_box(wgt, x, y, w, h, 1); }
     if (mode == FLEX)  { return dh_layout_box(wgt, x, y, w, h, 1); }
     if (mode == BOX_H) { return dh_layout_box(wgt, x, y, w, h, 0); }
+    # ⭐ GRID (0.9.25) — dispatched on the KIND, not on a layout mode. Wrapping is inseparable from
+    # the cell size and the selection, and a BOX mode that wrapped would change what every existing
+    # BOX means. A grid's declared mode is NONE so nothing else claims its children.
+    if (dh_widget_kind(wgt) == GRID) { return dh_layout_grid(wgt, x, y, w, h); }
     return dh_layout_none(wgt, x, y, w, h);
+}
+
+# Place a GRID's children in a wrapping row-major flow, honouring pad, gap and the scroll offset.
+#
+# ⛔ THE SCROLL OFFSET IS APPLIED HERE, exactly as `dh_layout_box` applies a LIST's — so hit-testing
+# needs no knowledge of scrolling and `dh_grid_index_at` can simply walk the laid-out cells. A grid
+# that scrolled at PAINT time would draw in one place and answer the mouse in another, which is the
+# disagreement `dh_hit_test`'s clipping fix existed to end.
+# ⚠ EVERY CELL IS LAID OUT, including those scrolled out of view. `dh_surface_render` clips them and
+# `dh_hit_test` prunes them, and a cell that had no bounds could not be found by `dh_grid_cell_at`
+# or scrolled back to.
+fn dh_layout_grid(wgt, x, y, w, h): i64 {
+    var pad = dh_widget_padding(wgt);
+    var gap = dh_widget_gap(wgt);
+    var cw = dh_grid_cell_w(wgt);
+    var ch = dh_grid_cell_h(wgt);
+    if (cw < 1) { cw = 1; }
+    if (ch < 1) { ch = 1; }
+    var cols = dh_grid_cols_for(wgt, w - pad - pad);
+    var off = load64(wgt + DH_W_SCROLL_Y);
+    var i = 0;
+    var c = dh_widget_first_child(wgt);
+    while (c != 0) {
+        var col = i - (i / cols) * cols;
+        var row = i / cols;
+        var cx = x + pad + col * (cw + gap);
+        var cy = y + pad + row * (ch + gap) - off;
+        dh_layout_at(c, cx, cy, cw, ch);
+        i = i + 1;
+        c = dh_widget_next_sibling(c);
+    }
+    return DHANCHA_OK;
 }
 
 # @public — lay out `root` within an (avail_w × avail_h) box at origin (0,0).

@@ -44,6 +44,17 @@ enum DhWidgetKind {
     LIST      = 5;   # ⭐ 0.9.7 — a SCROLLING, SELECTABLE container. See list.cyr.
     CANVAS    = 6;   # ⭐ 0.9.9 — APP-DRAWN content in a widget-tree slot. See canvas.cyr.
     PROGRESS  = 7;   # ⭐ 0.9.22 — a DETERMINATE-or-INDETERMINATE bar. See progress.cyr.
+    # ⭐⭐ 0.9.25 — a WRAPPING, SELECTABLE grid of fixed-size cells. See grid.cyr.
+    # ⛔ IT EARNS A KIND BY THIS REPO'S OWN RULE, stated in `progress.cyr`'s header and applied when
+    # MENU and SHEET were REFUSED one in 0.9.23: *a kind earns itself only when composing it would
+    # force the APP to name a theme colour, or when it expresses state no existing kind can hold.*
+    # A grid composed from BOXes clears both bars — the app would have to paint the selected cell's
+    # highlight itself, which means naming `accent`, which crab's ADR 0001 forbids outright; and the
+    # wrapping arithmetic (how many cells fit this width) is the rule that "lived in three apps"
+    # which is why LIST exists at all.
+    # ⚠ Deliberately NOT a new DhLayout mode. Wrapping is inseparable from the cell size and the
+    # selection here, and a BOX that wrapped would change what every existing BOX means.
+    GRID      = 8;
 }
 
 # Field offsets (bytes) into a DhWidget record.
@@ -148,15 +159,22 @@ enum DhWidgetField {
     # depth-first order; two widgets sharing a key is a bug in the app and dhancha cannot detect it
     # cheaply. Said here rather than enforced, because the check is O(n²) on every frame.
     DH_W_KEY          = 288;
+    # ⭐ GRID cell geometry (0.9.25). ⛔ NOT folded onto `DH_W_PREF_W` / `_PREF_H`: those are the
+    # grid's OWN preferred size, which layout reads and writes, so a grid that stored its cell size
+    # there could not also be sized by its parent. ⚠ LIST overloads `DH_W_PREF_H` as its row height
+    # and gets away with it because a list has no cross-axis cell size to keep; a grid has both.
+    DH_W_CELL_W       = 296;
+    DH_W_CELL_H       = 304;
 }
 # ⚠ 256 -> 264 at 0.9.22. A consumer with a FIXED-size arena sized against the old footprint will
 # now spill to the global allocator, and `dh_falloc` degrades to a leak rather than to a null — so
 # it passes every functional test and shows up only in an `alloc_used()` convergence check. crab is
 # safe (`arena_new_growable`, which chains); check any other consumer before shipping.
-# ⚠ 296 as of 0.9.24 (was 288) — `DH_W_KEY` is the added slot. ⛔ This constant and the layout above
-# must move together; the header comment has been stale before, so re-derive it from the last field
-# rather than trusting either.
-var DH_WIDGET_SIZE = 296;
+# ⚠ 312 as of 0.9.25 (288 at 0.9.23, 296 at 0.9.24) — `DH_W_KEY`, then `DH_W_CELL_W` / `_CELL_H`.
+# ⛔ This constant and the layout above must move together; the header comment has been stale before,
+# so re-derive it from the last field rather than trusting either. ⭐ `progress_test` pins the value
+# as a literal precisely so a change here has to be confirmed by a human — it has fired three times.
+var DH_WIDGET_SIZE = 312;
 
 # ============================================================================================
 # ⭐⭐ MOTION — the app's half of "the compositor grants, apps override per widget"
@@ -382,6 +400,10 @@ fn dh_widget_new(kind): i64 {
     # inherited the previous frame's key at this address would be silently adopted as the focused or
     # dragged widget — the exact failure this field exists to prevent, caused by the field itself.
     store64(wgt + DH_W_KEY, 0);
+    # ⛔ SEEDED, like every field above — arena memory is RECYCLED and not zero. A widget inheriting
+    # the previous frame's cell size here would lay a grid out to a geometry nothing asked for.
+    store64(wgt + DH_W_CELL_W, 0);
+    store64(wgt + DH_W_CELL_H, 0);
     return wgt;
 }
 

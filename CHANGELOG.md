@@ -5,7 +5,64 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.9.25] - 2026-08-31 — GRID: a wrapping, selectable grid of fixed-size cells
+
+### ⭐⭐ The headline: it earns a kind, and the bar is this repo's own
+
+`progress.cyr` states it and **0.9.23 applied it by REFUSING one to MENU and SHEET**: *a kind earns
+itself only when composing it would force the APP to name a theme colour, or when it expresses state
+no existing kind can hold.* GRID clears both bars, which is why it gets what MENU did not:
+
+- A grid composed from BOXes would have the **app paint the selected cell's highlight**, which means
+  the app naming `accent` — and crab's ADR 0001 forbids an app naming any colour.
+- A wrapped flow is state no existing kind holds: which cell, at which column, on which row.
+
+⚠ **Deliberately NOT a new `DhLayout` mode.** Wrapping is inseparable from the cell size and the
+selection, and a BOX that wrapped would change what every existing BOX means. A grid's declared mode
+is `NONE` so nothing else claims its children, and `dh_layout_at` dispatches on the **kind**.
+
+### Added — `src/grid.cyr` and `DhWidgetKind.GRID`
+
+`dh_grid_new(cell_w, cell_h, gap)` · `_add` · `_count` · `_cell_at` · `_cols_for` · `_cols` ·
+`_content_h` · `_max_scroll` · `_scroll_to` · `_scroll_by` · `_selected` · `_select` · `_move_sel` ·
+`_step` · `_scroll_to_sel` · `_index_at`.
+
+⛔ **THE OFF-BY-ONE IS IN THE GAP, AND IT IS THE ARITHMETIC THE WIDGET EXISTS FOR.** `n` cells carry
+`n - 1` gaps, not `n`: `cols = (avail + gap) / (cell + gap)`. Dropping the `+ gap` loses a column at
+exactly the widths where a column fits perfectly — the width a caller is most likely to have chosen
+on purpose. ⚠ Never zero: a grid narrower than one cell shows one clipped cell, which is visible and
+recoverable; zero columns is a division by zero in every reader.
+
+⛔⛔ **ARROW KEYS MOVE BY A WHOLE ROW VERTICALLY, AND THAT IS THE REASON THIS IS NOT A LIST.** An app
+driving a grid with `dh_list_move_sel` gets a cursor that walks the flow one cell at a time and
+appears to move diagonally.
+⛔ **Horizontal movement does NOT wrap to the next row.** The grid is a 2-D arrangement the operator
+can *see*, so the cursor moves the way the arrow points; wrapping makes "right" mean "down and all
+the way left", which is not what was pressed. ⚠ The context MENU wraps and is right to — six items
+visible at once, where running off the end and continuing is faster than stopping. A grid of a
+thousand files is the opposite case, and the two rules are opposite for the same reason.
+⚠ Past the last row is **refused rather than clamped** to the final cell: down from a column with no
+cell below it lands nowhere, and jumping sideways is a move nobody asked for.
+
+⛔ **The scroll offset is applied at LAYOUT, not at paint** — the same choice `list.cyr` made — so
+hit-testing needs no knowledge of scrolling and `dh_grid_index_at` simply walks the laid-out cells.
+A grid that scrolled at paint time would draw in one place and answer the mouse in another, which is
+the disagreement `dh_hit_test`'s clipping fix existed to end.
+⚠ **Hit-testing answers from the cells, never from the arithmetic.** Recomputing row and column from
+the pointer would be a second answer to "where is cell *i*", free to disagree with the one layout
+produced — and the disagreement, not either answer, is what makes a click land on the wrong file.
+The gaps between cells belong to no cell, and walking the children gets that right for free.
+⚠ **`DH_FLAG_INERT` cells** are refused by `_select`, stepped over by `_move_sel` in the direction of
+travel, and report -1 from `_index_at` — matching LIST exactly.
+
+### Changed — `DH_WIDGET_SIZE` 296 → 312
+
+Two slots, `DH_W_CELL_W` and `DH_W_CELL_H`. ⛔ **Not folded onto `DH_W_PREF_W` / `_PREF_H`**: those
+are the grid's *own* preferred size, which layout reads and writes, so a grid storing its cell size
+there could not also be sized by its parent. ⚠ LIST overloads `DH_W_PREF_H` as its row height and
+gets away with it because a list has no cross-axis cell size to keep; a grid has both.
+⭐ **`progress_test`'s literal size pin FIRED for the third release running** (264 → 288 → 296 → 312).
+That is the whole reason it is a literal.
 
 ### Fixed — `README.md`'s version line was twenty-one releases stale, and nothing checked it
 
@@ -14,10 +71,27 @@ CHANGELOG heading and stopped there, so the gate was green through every one of 
 ⇒ The step now checks the README line too. ⚠ A version printed where a newcomer reads it first is
 exactly the one worth gating — this is the same rot crab records in its own `state.md`, one repo over.
 
-⛔ **THIS SECTION EXISTS BECAUSE 0.9.24 IS ALREADY TAGGED AND PUSHED.** The fix was first written
-into 0.9.24's own section, which is the mistake crab recorded when 0.7.2 had to exist: *a released
-section is not a scratchpad.* Editing one after its tag makes the tag and the notes disagree, and the
-notes are what a consumer reads.
+⛔ **THIS RIDES IN 0.9.25 BECAUSE 0.9.24 WAS ALREADY TAGGED AND PUSHED.** The fix was first written
+into 0.9.24's own section — the mistake crab recorded when 0.7.2 had to exist: *a released section is
+not a scratchpad.* Editing one after its tag makes the tag and the notes disagree, and the notes are
+what a consumer reads.
+
+### Tests — `programs/grid_test.cyr`, 66 checks
+
+The wrap arithmetic at every boundary; row-major layout with pad, gap and scroll; selection refused
+out of range and on inert cells; arrow keys by row and by column, and the no-wrap rule; keep-visible
+moving the **minimum** distance; hit-testing including the gaps that belong to nobody; and twenty
+laid-out frames costing the global heap **zero bytes**.
+
+⭐ **Six mutations, each producing a named failure**: the wrap forgetting the last cell has no gap
+(13 checks), floor instead of ceiling division for rows (3), horizontal movement wrapping (2),
+keep-visible always snapping to the top (1), layout ignoring the scroll offset (2), and an inert cell
+becoming selectable (4).
+
+⚠ **Three of the four failures on the suite's first run were the TEST's fault, not the widget's** —
+a scroll assertion against a viewport taller than the content (which correctly does not scroll), a
+bogus paired expectation, and keep-visible arithmetic worked out wrong by hand. Recorded because the
+direction matters: a new widget's first test failures are as likely to be the test's.
 
 ## [0.9.24] - 2026-08-31 — stable widget keys: the retained-tree assumption, fixed at its cause
 

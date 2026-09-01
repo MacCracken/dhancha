@@ -1,6 +1,6 @@
 # dhancha
 
-Version: 0.9.24
+Version: 0.9.25
 
 **dhancha** (ढाँचा — Hindi/Sanskrit: *framework / structure / scaffold*)
 is a pure-Cyrius **client-side widget toolkit / desktop app framework**
@@ -34,7 +34,7 @@ compositor composites onto the screen over the native display protocol.
     `_ERR_UNSUPPORTED` / `_ERR_OTHER`), a 16-byte record, and
     `dhancha_err_name`.
   - `src/widget.cyr` — `DhWidget` (first-child / next-sibling tree),
-    `DhWidgetKind { WINDOW / BOX / LABEL / BUTTON / TEXTINPUT / LIST / CANVAS / PROGRESS }`,
+    `DhWidgetKind { WINDOW / BOX / LABEL / BUTTON / TEXTINPUT / LIST / CANVAS / PROGRESS / GRID }`,
     `dh_widget_new` / `dh_widget_add_child` + bounds accessors.
   - `src/layout.cyr` — `DhRect`, `DhLayout { NONE / BOX_H / BOX_V /
     FLEX }`, and a `dh_layout_apply` tree-walk skeleton.
@@ -79,6 +79,14 @@ compositor composites onto the screen over the native display protocol.
   and `dh_text_attach` lets an app own the edit buffer instead of leaking one per frame.
   ⚠ **Additive**: key 0 means "no identity", every existing widget has it, and nothing shipped
   changes behaviour. RUN-tested (`key_test`, 50 checks, six mutations).
+- **v0.9.25 — GRID (shipped).** A wrapping, selectable grid of fixed-size cells (`src/grid.cyr`),
+  with the arithmetic every consumer would otherwise re-derive: how many cells a width admits (`n`
+  cells carry `n - 1` gaps), the ceiling division that turns cells into rows, arrow keys that move by
+  a whole **row** vertically and do not wrap horizontally, keep-selected-visible at minimum move, and
+  hit-testing from the laid-out cells so the gaps between them belong to nobody.
+  ⛔ **It earns a kind by this repo's own rule** — the one 0.9.23 applied when it REFUSED one to MENU
+  and SHEET: a grid composed from boxes would make the app paint its own selection highlight, which
+  means the app naming `accent`. RUN-tested (`grid_test`, 66 checks, six mutations).
 - **v0.6+ — next.** The compositor-fd input source (decode the native display
   protocol's input wire bytes into events + block on its transport), real hmtx
   text advances, and the present path (CPU buffer submit over the native

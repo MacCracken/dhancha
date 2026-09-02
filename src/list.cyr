@@ -38,7 +38,7 @@ fn dh_list_new(row_h): i64 {
 }
 
 # @public — a new HORIZONTAL list: the same container laid out left-to-right. `cell_w` is the width
-# every item gets.
+# every item gets — or **0 for per-item widths**, see below.
 #
 # ⭐⭐ WHY THIS, AND NOT A `MENU BAR` KIND (0.9.26). A menu bar, a tab strip, a toolbar and a
 # view switcher are all the same thing: a row of items, one of them current, the current one
@@ -49,6 +49,16 @@ fn dh_list_new(row_h): i64 {
 # over LIST instead, and it buys four surfaces rather than one.
 # ⛔ THE ORIENTATION IS READ BACK FROM `DH_W_LAYOUT`, NOT STORED TWICE. A list already sets its own
 # layout mode, so a second field saying the same thing is a second thing to keep in step.
+#
+# ⭐ `cell_w = 0` MEANS PER-ITEM WIDTHS, AND IT IS SUPPORTED RATHER THAN MERELY TOLERATED (documented
+# 0.9.28). `dh_list_add` pins the main axis only `if (rh > 0)`, so at 0 it pins nothing and each item
+# keeps whatever `DH_W_PREF_W` the caller set. A **menu bar needs exactly this**: `File` and `Window`
+# are not the same width, and a uniform cell wide enough for the longest label wastes a third of a
+# 380 px window on padding.
+# ⚠ WHAT YOU GIVE UP IS SCROLLING, and only that. `dh_list_scroll_to_sel` returns early when
+# `dh_list_row_h` is 0, because its arithmetic multiplies by a per-item extent that no longer
+# exists. Selection paint and `dh_list_index_at` both read the row's LAID-OUT box, so highlight and
+# hit-test are unaffected. ⇒ Uniform cells for anything that scrolls; 0 for a bar that does not.
 fn dh_list_new_h(cell_w): i64 {
     var w = dh_widget_new(DhWidgetKind.LIST);
     dh_widget_set_layout(w, DhLayout.BOX_H);

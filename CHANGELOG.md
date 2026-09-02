@@ -5,6 +5,46 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.28] - 2026-09-02 — `dh_widget_last_child`, and `cell_w = 0` said out loud
+
+### Added — `dh_widget_last_child`
+
+⛔ **SIBLING ORDER IS Z-ORDER IN BOTH PASSES — this file's own overlay header says so — which makes
+"is this widget on top?" a question consumers genuinely ask, and dhancha could not answer it.**
+`dh_widget_first_child`, `_next_sibling` and `_parent` were all public; the last child was not, so a
+consumer wanting it hand-rolled the walk. crab did exactly that, asserting that its overlay layer is
+the root's last child — a property it had just spent two releases getting wrong, with the popup
+painted under the content and hit-tested behind it.
+
+⚠ **IT WALKS, AND THAT IS NOT AN OVERSIGHT.** Children are a singly-linked list with no tail
+pointer, so `dh_widget_add_child` is *already* O(n) per append; this accessor costs exactly what the
+call that built the list did. ⛔ A `DH_W_LAST_CHILD` field would make both O(1) but widens the widget
+struct and every offset after it — **not a patch-release change**. If child counts ever reach the
+tens, do that rather than memoise here.
+
+### Documented — `dh_list_new_h(0)` is the per-item-width mode, and it always was
+
+⭐ **NO CODE CHANGED. The capability existed and nothing said so**, which for a consumer is the same
+as it not existing. `dh_list_add` pins the main axis only `if (rh > 0)`, so `cell_w = 0` pins nothing
+and each item keeps the `DH_W_PREF_W` its caller set.
+
+⛔ **A MENU BAR NEEDS EXACTLY THIS.** `File` and `Window` are not the same width, and a uniform cell
+wide enough for the longest label wastes a third of a 380 px window — six cells at `Window`'s 54 px
+is 324 px before padding. 0.9.26 named a menu bar as this widget's first intended surface and then
+left its consumer to discover the mode by reading `dh_list_add`.
+
+⚠ **WHAT IT GIVES UP IS SCROLLING, AND ONLY THAT.** `dh_list_scroll_to_sel` returns early when
+`dh_list_row_h` is 0 — its arithmetic multiplies by a per-item extent that no longer exists, so it
+declines rather than computing nonsense. Selection paint and `dh_list_index_at` both read the row's
+**laid-out box**, so highlight and hit-test are unaffected. ⇒ Uniform cells for anything that
+scrolls; 0 for a bar that does not.
+
+### Testing
+
+`programs/list_test.cyr` 104 → **120 checks**. Mutation-proven both ways: a `dh_widget_last_child`
+that returns the first child instead of walking fails **5**, and a `dh_list_add` that pins
+unconditionally — deleting the `cell_w = 0` mode — fails **2**.
+
 ## [0.9.27] - 2026-09-02 — real advance widths: the scalable path stops rendering at monospace pitch
 
 ### ⭐⭐ The headline: proportional text was proportional in SHAPE and monospace in POSITION

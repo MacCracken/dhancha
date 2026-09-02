@@ -388,6 +388,64 @@ fn main(): i64 {
     check(dh_widget_scroll_y(vl), 30);
     check(dh_widget_scroll_x(vl), 0);
 
+    # ================================================================================
+    # 0.9.28 — `dh_widget_last_child`, and `cell_w = 0` as the per-item-width mode.
+    # ================================================================================
+    # ⛔ SIBLING ORDER IS Z-ORDER IN BOTH PASSES, so "is this widget on top?" is a real question and
+    # a consumer should not have to hand-roll the walk to ask it. crab did, of its overlay layer.
+    var par = dh_widget_new(BOX);
+    check(dh_widget_last_child(par), 0);                 # no children -> 0, not a crash
+    check(dh_widget_last_child(0), 0);                   # ...and a null widget too
+    var k1 = dh_widget_new(LABEL);
+    dh_widget_add_child(par, k1);
+    check(dh_widget_last_child(par), k1);                # one child IS the last
+    check(dh_widget_last_child(par), dh_widget_first_child(par));
+    var k2 = dh_widget_new(LABEL);
+    dh_widget_add_child(par, k2);
+    check(dh_widget_last_child(par), k2);                # ...and it tracks the append
+    var k3 = dh_widget_new(LABEL);
+    dh_widget_add_child(par, k3);
+    check(dh_widget_last_child(par), k3);
+    # ⚠ It agrees with walking the sibling chain by hand — the thing it replaces.
+    var wk = dh_widget_first_child(par);
+    var lastwk = wk;
+    while (wk != 0) { lastwk = wk; wk = dh_widget_next_sibling(wk); }
+    check(dh_widget_last_child(par), lastwk);
+    # ⚠ And it is the parent's LAST, not the tree's — a grandchild does not change the answer.
+    var g1 = dh_widget_new(LABEL);
+    dh_widget_add_child(k1, g1);
+    check(dh_widget_last_child(par), k3);
+    check(dh_widget_last_child(k1), g1);
+
+    # ---- `cell_w = 0`: per-item widths, which a MENU BAR needs ----------------------------
+    # ⛔ `File` and `Window` are not the same width. A uniform cell wide enough for the longest
+    # label wastes a third of a 380px window; this is the mode that makes a bar affordable.
+    var bar = dh_list_new_h(0);
+    check(dh_list_row_h(bar), 0);                        # 0 is the documented "never set"
+    var b1 = dh_widget_new(LABEL);
+    dh_widget_set_pref(b1, 36, 20);
+    dh_list_add(bar, b1);
+    var b2 = dh_widget_new(LABEL);
+    dh_widget_set_pref(b2, 54, 20);
+    dh_list_add(bar, b2);
+    # ⛔ THE POINT: `dh_list_add` pinned NOTHING, so each item kept its own width.
+    check(dh_widget_pref_w(b1), 36);
+    check(dh_widget_pref_w(b2), 54);
+    check(dh_widget_last_child(bar), b2);
+    # ⚠ ...while a uniform bar still overwrites both, which is the behaviour a scrolling list wants.
+    var ubar = dh_list_new_h(40);
+    var u1 = dh_widget_new(LABEL);
+    dh_widget_set_pref(u1, 36, 20);
+    dh_list_add(ubar, u1);
+    check(dh_widget_pref_w(u1), 40);                     # pinned over the caller's 36
+    # ⚠ WHAT `cell_w = 0` GIVES UP IS SCROLLING, AND ONLY THAT — the arithmetic multiplies by a
+    # per-item extent that no longer exists, so it declines rather than computing nonsense.
+    dh_widget_set_bounds(bar, 0, 0, 200, 20);
+    dh_list_select(bar, 1);
+    check(dh_list_scroll_to_sel(bar), dh_list_offset(bar));
+    # ...and selection itself is unaffected, because it reads the row, not the cell size.
+    check(dh_list_selected(bar), 1);
+
     var t = "list_test: ";
     print(t, strlen(t));
     fmt_int(g_checks);

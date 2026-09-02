@@ -446,6 +446,27 @@ fn dh_widget_parent(wgt): i64      { return load64(wgt + DH_W_PARENT); }
 fn dh_widget_first_child(wgt): i64 { return load64(wgt + DH_W_FIRST_CHILD); }
 fn dh_widget_next_sibling(wgt): i64 { return load64(wgt + DH_W_NEXT_SIBLING); }
 
+# @public — the LAST child of `wgt`, or 0 if it has none.
+#
+# ⭐ ADDED 0.9.28 BECAUSE SIBLING ORDER IS Z-ORDER, so "is this widget on top?" is a question
+# consumers genuinely ask. crab asks it of its overlay layer — the layer must be the root's last
+# child or the popup inside it is painted under the content and hit-tested behind it — and had to
+# hand-roll the walk to assert it. A toolkit whose own header says *"sibling order IS z-order in
+# BOTH passes"* should answer that question itself.
+#
+# ⚠ IT WALKS, and that is not an oversight: children are a singly-linked list with no tail pointer,
+# so `dh_widget_add_child` above is already O(n) per append. This accessor is the same cost as the
+# call that built the list. ⛔ A `DH_W_LAST_CHILD` field would make both O(1), but it widens the
+# widget struct — `DH_W_SZ` and every offset after it — which is not a patch-release change. If the
+# child count ever grows past the tens, do that instead of memoising here.
+fn dh_widget_last_child(wgt): i64 {
+    if (wgt == 0) { return 0; }
+    var c = load64(wgt + DH_W_FIRST_CHILD);
+    if (c == 0) { return 0; }
+    while (load64(c + DH_W_NEXT_SIBLING) != 0) { c = load64(c + DH_W_NEXT_SIBLING); }
+    return c;
+}
+
 # Set the resolved bounds (called by the layout pass).
 fn dh_widget_set_bounds(wgt, x, y, w, h): i64 {
     if (wgt == 0) { return DHANCHA_ERR_BAD_WIDGET; }

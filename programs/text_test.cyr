@@ -142,8 +142,68 @@ fn main(): i64 {
     if (nonbg <= 0) { g_fails = g_fails + 1; }
     if (nonbg >= 1600) { g_fails = g_fails + 1; }   # not the whole 40x40 surface
 
+    # ================================================================================
+    # ADVANCES — the half that was hardcoded until 0.9.27.
+    # ================================================================================
+    # ⛔ The font above carries NO hhea/hmtx, which makes it the FALLBACK case: rekha reports
+    # "unknown" (0) and dhancha must keep its fixed ~0.6 em rather than advancing by zero and
+    # stacking every glyph on one x. At h = 32 that is (32*6)/10 = 19.
+    check(rekha_char_advance_px(font, 0x41, 32), 0);      # rekha: unknown
+    check(dh_text_advance(font, 0x41, 32), 19);           # dhancha: falls back
+    check(dh_text_advance(font, 0x41, 0), 4);             # degenerate h -> the 4px floor
+    # ⚠ An unmapped codepoint takes the same fallback — not zero.
+    check(dh_text_advance(font, 0x5A, 32), 19);
+
+    # ---- a font WITH hmtx: the advance must come from the table ---------------------------------
+    # Two glyphs of deliberately different width — 250 and 1000 design units on a 1000 em — so a
+    # fixed-pitch advance and a real one cannot agree by accident.
+    var mbuf = alloc(400);
+    memset(mbuf, 0, 400);
+    put_u32(mbuf, 0, 0x00010000);
+    put_u16(mbuf, 4, 5);
+    dir_entry(mbuf, 12, 0x68656164, 92, 54);      # head
+    dir_entry(mbuf, 28, 0x6D617870, 146, 32);     # maxp
+    dir_entry(mbuf, 44, 0x68686561, 178, 36);     # hhea
+    dir_entry(mbuf, 60, 0x686D7478, 214, 8);      # hmtx
+    dir_entry(mbuf, 76, 0x636D6170, 222, 44);     # cmap
+    put_u16(mbuf, 92 + 18, 1000);                 # unitsPerEm
+    put_u16(mbuf, 146 + 4, 2);                    # numGlyphs = 2
+    put_u16(mbuf, 178 + 34, 2);                   # numberOfHMetrics = 2
+    put_u16(mbuf, 214 + 0, 250);  put_u16(mbuf, 214 + 2, 0);   # gid 0: adv 250
+    put_u16(mbuf, 214 + 4, 1000); put_u16(mbuf, 214 + 6, 0);   # gid 1: adv 1000
+    # cmap: 'A' -> gid 1 (same shape as build_font's)
+    put_u16(mbuf, 222 + 0, 0);
+    put_u16(mbuf, 222 + 2, 1);
+    put_u16(mbuf, 222 + 4, 3);
+    put_u16(mbuf, 222 + 6, 1);
+    put_u32(mbuf, 222 + 8, 12);
+    var ms = 234;
+    put_u16(mbuf, ms + 0, 4);      put_u16(mbuf, ms + 2, 32);   put_u16(mbuf, ms + 4, 0);
+    put_u16(mbuf, ms + 6, 4);      put_u16(mbuf, ms + 8, 4);    put_u16(mbuf, ms + 10, 1);
+    put_u16(mbuf, ms + 12, 0);
+    put_u16(mbuf, ms + 14, 0x41);  put_u16(mbuf, ms + 16, 0xFFFF);
+    put_u16(mbuf, ms + 18, 0);
+    put_u16(mbuf, ms + 20, 0x41);  put_u16(mbuf, ms + 22, 0xFFFF);
+    put_u16(mbuf, ms + 24, 0xFFC0); put_u16(mbuf, ms + 26, 1);
+    put_u16(mbuf, ms + 28, 0);     put_u16(mbuf, ms + 30, 0);
+
+    var mf = rekha_font_open(mbuf, 400);
+    if (mf == 0) { g_fails = g_fails + 1; }
+    check(rekha_char_to_glyph(mf, 0x41), 1);
+    # 'A' is gid 1, adv 1000/1000 em -> a FULL em: 32 px at h = 32.
+    check(dh_text_advance(mf, 0x41, 32), 32);
+    # ⛔ AND IT IS NOT THE OLD FIXED PITCH. 19 is what (32*6)/10 gives; if this ever equals 19
+    # again the hardcode is back.
+    if (dh_text_advance(mf, 0x41, 32) == 19) { g_fails = g_fails + 1; }
+    # An unmapped codepoint falls to .notdef (gid 0), adv 250/1000 -> 8 px at h = 32. A quarter
+    # em, not the 0.6 em fallback — proof the table is being read rather than guessed at.
+    check(dh_text_advance(mf, 0x5A, 32), 8);
+    if (dh_text_advance(mf, 0x5A, 32) == 19) { g_fails = g_fails + 1; }
+    # ⚠ A SPACE ADVANCES BY ITS REAL WIDTH TOO — it draws nothing, but it is a glyph.
+    check(dh_text_advance(mf, 32, 32), 8);
+
     if (g_fails == 0) {
-        var ok = "text_test: PASS (dhancha -> rekha -> sadish text)\n";
+        var ok = "text_test: PASS (dhancha -> rekha -> sadish text + hmtx advances)\n";
         syscall(1, 1, ok, strlen(ok));
     } else {
         var bad = "text_test: FAIL\n";

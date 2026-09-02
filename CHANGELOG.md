@@ -5,6 +5,65 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.27] - 2026-09-02 — real advance widths: the scalable path stops rendering at monospace pitch
+
+### ⭐⭐ The headline: proportional text was proportional in SHAPE and monospace in POSITION
+
+`dh_draw_text_ink`'s scalable path advanced by a hardcoded `advf = (h * 6) / 10` — *"fixed advance
+~0.6 em"* — for every character, of every font, at every size. The glyph outlines were correct;
+where they were **put** was not. ⇒ A proportional face rendered at a uniform pitch: an `i` given the
+same box as an `M`, which reads as a rasterizer bug and sends you looking in the wrong module.
+
+⛔⛔ **AND THE COMMENT ABOVE IT SAID "real hmtx advances are a rekha v0.4 item", WHICH WAS NOT TRUE.**
+They were never scheduled work. rekha declared `REKHA_TAG_HHEA` and `REKHA_TAG_HMTX` in its first
+SFNT commit and **never referenced either again** — no reader, no test, no consumer. So dhancha was
+not waiting on a roadmap item; it was working around a table nobody had read, and the workaround had
+been given a release number to wait for. ⇒ **A gate written as "upstream will do it" is a claim about
+another repository, and this one was never made there.**
+
+⭐ **rekha 0.3.6 adds `rekha_char_advance_px`**, and `dh_text_advance` is the whole consumption of it:
+
+```
+fn dh_text_advance(font, cp, h): i64 {
+    var adv = rekha_char_advance_px(font, cp, h);
+    if (adv > 0) { return adv; }
+    var advf = (h * 6) / 10;               # fallback: the old fixed ~0.6 em
+    if (advf <= 0) { advf = 4; }
+    return advf;
+}
+```
+
+⛔ **THE FALLBACK IS NOT DEAD CODE AND MUST STAY.** rekha returns **0 for "unknown"** — no
+`hhea`/`hmtx`, an unreadable table, or a `unitsPerEm` of 0 — and 0 is not a width. Advancing by it
+stacks every glyph on one x, which is worse than a wrong-but-uniform pitch. A subsetted or
+bitmap-derived font with no metrics is a real input, and **this repo's own `text_test` font is one**,
+so the fallback is exercised by the suite rather than merely asserted to exist.
+
+⚠ **A SPACE NOW ADVANCES BY ITS REAL WIDTH.** It contributes no coverage and is still skipped for
+drawing, but the advance is computed outside that test — a space with an `hmtx` entry is an ordinary
+glyph that happens to be blank, and treating it as a fixed gap was part of the same assumption.
+
+⚠ **The advance is derived from `h`, the same value `scale` is** — so the outline and the pitch agree
+by construction rather than through a second conversion that could drift.
+
+⛔ **`FLOOR: rekha >= 0.3.6`, HARD.** `rekha_char_advance_px` does not exist in 0.3.5; against an
+older pin the scalable text path does not compile at all.
+
+### Testing
+
+`programs/text_test.cyr` gains a second synthetic font carrying `hhea` + `hmtx` with two glyphs of
+deliberately different width (250 and 1000 design units on a 1000 em), so a fixed pitch and a real
+one cannot agree by accident. It asserts both directions — the metric-bearing font advances a full
+em (32 px at h = 32) and the metric-less font still falls back to 19 — and asserts **explicitly that
+neither equals the other**, so the hardcode reappearing fails the suite rather than passing it.
+⚠ **Proven by mutation**: deleting the `rekha_char_advance_px` call fails the suite in **5** places.
+
+### Changed — `cyrius = "6.5.36"` -> **6.5.41**
+
+The stack moved and this repo had not; every build ran against an installed 6.5.41 with a drift
+warning. ⚠ The pin selects the stdlib snapshot that compiles in, so it is not cosmetic. `lib/`
+re-synced `--full`; all 17 test programs and the smoke build re-run green after both changes.
+
 ## [0.9.26] - 2026-08-31 — the horizontal LIST, and a row height that a container pref could eat
 
 ### ⭐⭐ The headline: a menu bar does not need a MENU BAR kind — it needs the list laid the other way

@@ -5,7 +5,7 @@ description = "dhancha (ढाँचा — framework) — pure-Cyrius client-si
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/dhancha"
 language = "cyrius"
-cyrius = "6.5.36"
+cyrius = "6.5.41"
 
 # dhancha is a library — no CLI binary. `cyrius build` targets a smoke
 # program that links the full include chain to prove lib.cyr parses clean.
@@ -110,7 +110,10 @@ modules = ["dist/rupa.cyr"]
 
 [deps.rekha]
 git = "https://github.com/MacCracken/rekha.git"
-tag = "0.3.5"
+# ⛔ FLOOR >= 0.3.6, HARD: `dh_text_advance` calls `rekha_char_advance_px`, which 0.3.5 does not
+# define — `hhea`/`hmtx` were declared tags with no reader until 0.3.6. Against an older pin the
+# scalable text path does not compile.
+tag = "0.3.6"
 modules = ["dist/rekha.cyr"]
 
 # kashi (काशि) — the AGNOS system console font (full CP437, VGA 8x16). dh_draw_text

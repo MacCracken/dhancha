@@ -1,3 +1,4 @@
+commit	cf41b41578fee809abe66b22544b3ca3820cfa65	rekha	https://github.com/MacCracken/rekha.git	0.3.6
 7240760b1260fa06c53c5a139d1a2086fb439e21ac90e53eacd4bf486ac0e9ca  lib/tagged.cyr
 09186af1de956b62bdd9e0717990ffd89c67c8d37bab06039d569b795e4c945c  lib/net.cyr
 e84c090fd0f8532700d967ca3190837780a52a42630f4c6a0a4567ad9a49ab6b  lib/cffi.cyr

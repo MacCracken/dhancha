@@ -1920,3 +1920,12 @@ dhancha → rekha → sadish → pixels — is validated as a unit. 3 RUN tests.
   `src/event.cyr`, `src/surface.cyr`), the `src/lib.cyr` include chain,
   and `programs/smoke.cyr` link-check. `cyrius = "6.4.7"`, GPL-3.0-only.
   Draw/present cross-deps (sadish + rekha + mabda) are deferred to v0.2.
+
+## [Unreleased]
+
+## [0.9.29] - 2026-09-11
+
+### Changed
+
+- **Toolchain `6.5.41` → `6.6.2`.** No source change; the value form needed none.
+  Build, tests, and any bench/fuzz/distlib target the repo ships re-verified at the new pin.

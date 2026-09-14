@@ -228,7 +228,7 @@ fn dh_text_advance(font, cp, h): i64 {
 # to a sadish path (scaled so the em-height ~= h) and union-filled into one
 # coverage canvas, then blit in `ink`. Advance is per-character from the font's
 # `hmtx` table via `dh_text_advance`, falling back to a fixed ~0.6em when the
-# font carries no metrics. No-op if font is 0.
+# font carries no metrics. `font == 0` takes the kashi bitmap path instead.
 # ⚠ A SPACE ADVANCES BY ITS REAL WIDTH. It contributes no coverage (skipped below), but the advance
 # is computed outside that test — a space with an `hmtx` entry is a normal glyph that happens to be
 # blank, and treating it as a fixed gap was part of the same monospace assumption.
@@ -239,6 +239,76 @@ fn dh_draw_text(sds, font, text, x, y, h, clx, cly, clw, clh): i64 {
     return dh_draw_text_ink(sds, font, text, x, y, h, clx, cly, clw, clh, dh_theme_ink());
 }
 
+# ============================================================================================
+# ⭐⭐ THE SCALABLE BRANCH COSTS THE GLOBAL HEAP NOTHING PER FRAME (0.10.0) — closes the 2026-09-13
+# filing, `scalable-text-allocates-per-call-outside-the-frame-arena`
+# ============================================================================================
+# ⛔ WHAT IT COST. The `font != 0` branch opened with `sd_canvas_new(surface_w, surface_h)` — a
+# FULL-SURFACE canvas plus a full-surface clip mask, per call, per LABEL, per FRAME — and then a
+# sadish path per glyph via `rekha_char_to_sdpath`, every byte of it from `lib/alloc.cyr`'s bump
+# allocator, which has no `free()`. MEASURED on 0.9.29 as shipped (sadish 0.5.3, rekha 0.3.6), a
+# 380x220 surface, one 10-character label at h = 20: **2,513,248 B per call, every call**. A frame
+# of 12 such labels: **26,645,208 B**, and under a frame arena the arena took 4,736 B (the widgets)
+# while the global heap still took 26,640,472 B per frame — twenty frames, 532,809,440 B. crab's
+# headline gate asserts a rendered frame costs the global heap EXACTLY 0 bytes; at half a gigabyte
+# per twenty frames a session exhausts the heap rather than merely slows down.
+# ⛔⛔ AND THE GATE THAT SHOULD HAVE CAUGHT IT NEVER REACHED THIS CODE. The bitmap branch above
+# returns before the scalable one begins, so a zero-allocation test that only ever rendered
+# `font = 0` — crab's, and this repo's own `arena_test` — was proving a function body that was not
+# running. A gate that covers one state proves one state. `text_arena_test` renders THIS branch.
+#
+# ⭐ WHERE THE MEMORY COMES FROM NOW — three moves, one per repo:
+#   sadish 0.5.5  — every per-call `alloc(` (23 of its 32 sites) behind `sd_alloc(n)`, with
+#                   `sd_alloc_set(fp)` as the hook; the other 9 sites are the fixed-capacity
+#                   fill/stroke scratch, allocated ONCE for the process on the global heap, never
+#                   the hook (it used to be 327,824 B per fill) — 589,896 B at the first fill, plus
+#                   a per-row accumulator of w*8 whenever a canvas WIDER than any before arrives
+#                   (⚠ below). `sd_canvas_blit_at` lets a canvas smaller than the surface land at
+#                   an offset.
+#   rekha 0.3.10  — its 15 `alloc(` sites draw from sadish's seam too, so the outline scratch
+#                   (136 B per simple glyph, 70,856 B per composite) follows the paths.
+#   dhancha 0.10.0 — THIS FUNCTION installs `dh_falloc` as that hook for the duration of one text
+#                   draw, so canvas, outlines, paths, flatten mid-points and coverage all live until
+#                   the next `dh_frame_begin`, exactly like the widget tree; and it sizes the canvas
+#                   to the CLIP ∩ SURFACE ∩ RUN instead of the surface.
+# MEASURED after (same probe, sadish 0.5.5 + rekha 0.3.10): the label **38,184 B per call** after
+# the first (which also pays sadish's one-time 589,896 B scratch), the same 38,184 B on a 760x440
+# surface — the cost follows the run, not the surface; a frame of 12 labels 417,056 B, and under
+# the arena **0 B on the global heap over twenty frames**, with the whole frame — tree and layout
+# scratch 4,736 B, text the rest — at 417,056 B of arena, reclaimed every `dh_frame_begin`.
+# ⚠ THE ONE GLOBAL COST THAT SURVIVES WARM-UP: sadish's per-row accumulator (`_sd_fill_accrow_for`)
+# is re-allocated from the GLOBAL alloc, never the hook, at exactly w*8 whenever a canvas WIDER than
+# any it has filled arrives — and this canvas is the clip ∩ surface ∩ run, so the first run after
+# warm-up that is longer, taller (h scales the slack) or less clipped than anything before costs the
+# global heap w*8 once, under the arena. MEASURED (`text_arena_test` B2): a 60-character run on a
+# 1200 px surface after twenty 380 px frames, canvas 772 px wide → 6,176 B; the same run again → 0.
+# ⇒ A consumer's zero-heap gate warms up at the WIDEST run / clip / h it will draw, then measures.
+# ⚠ WHAT REMAINS IS THE PATH, NOT THE CANVAS. Of the 38,184 B, 30,392 B is the seven glyph paths —
+# 4 x 4,328 B ('A', 3 points) + 3 x 4,360 B ('B', 4 points); `sd_path_new` opens at a fixed 4,144 B
+# capacity either way — and the canvas is 7,792 B (155 x 50: 40 B header + 7,750 B coverage, rounded
+# to 8). 30,392 + 7,792 = 38,184. A frame's arena high-water is therefore ~4.3 KB per glyph drawn,
+# and shrinking it further is a sadish/rekha question (a path sized to the outline, or one path
+# reused per run).
+#
+# ⚠ THE HOOK IS SCOPED, NOT INSTALLED. `sd_alloc_set` returns the PREVIOUS hook and this function
+# restores THAT, not 0 — a consumer that has its own sadish hook around its own drawing keeps it. No
+# early return sits between the set and the restore; every failure below degrades to a no-op inside
+# the scope (`sd_canvas_new` refusing → `fill_union` and `blit_at` return `SADISH_ERR_BOUNDS`).
+# ⚠ WITH NO FRAME ARENA SET, `dh_falloc` IS `alloc()`, and this is the pre-0.10.0 lifetime — the
+# memory still leaks, it merely leaks 66x less. The arena is the consumer's decision (0.9.15).
+# ⚠ AND A FIXED ARENA THAT CANNOT HOLD A FRAME SPILLS, SILENTLY. `dh_falloc` (widget.cyr) falls back
+# to `alloc()` when the arena refuses — by design, a 0 from `arena_alloc` faults several layers away
+# — so under `arena_new(65536)` the tree and the first paths land on the arena, `arena_used` stops at
+# the capacity, this hook is restored correctly, and every byte after the refusal is the global heap,
+# per frame, with nothing failing. MEASURED (`text_arena_test` B3): the 12-label frame under a fixed
+# 64 KiB arena costs the global heap 351,520 B per frame while `arena_used` reads 65,536 — twenty
+# frames, 7,030,400 B. ⇒ A fixed arena must hold a WHOLE frame: ~417 KB for that one — ~4.3 KB per
+# glyph drawn + 320 B per widget (`DH_WIDGET_SIZE`; its 14 widgets and layout scratch are 4,736 B).
+# Prefer `arena_new_growable`, which chains instead of refusing (the 0.9.15 advice, restated for
+# text): the same 64 KiB as a growable arena costs 0 B after warm-up.
+# ⛔ NOTHING sadish OR rekha RETURNS UNDER THE HOOK MAY OUTLIVE THE FRAME. Nothing here does: the
+# canvas is blitted and dropped inside the scope, and the font itself was opened by the caller
+# outside it (`rekha_font_open` under a per-frame hook would die at the next reset — rekha 0.3.10).
 fn dh_draw_text_ink(sds, font, text, x, y, h, clx, cly, clw, clh, ink): i64 {
     if (text == 0) { return 0; }
     if (font == 0) {
@@ -298,17 +368,61 @@ fn dh_draw_text_ink(sds, font, text, x, y, h, clx, cly, clw, clh, ink): i64 {
     var baseline = y + h - 2;              # sit text near the box bottom
     var cx = x + 2;
 
-    var cv = sd_canvas_new(sd_surface_width(sds), sd_surface_height(sds));
-    # ⭐ REAL per-pixel clipping for the scalable path — sadish's clip stack (v0.4.0) multiplies the
-    # clip mask into the coverage before the blit, so a glyph straddling the viewport edge is CUT,
+    # ⭐ THE CANVAS IS THE CLIP ∩ THE SURFACE ∩ THE RUN, NOT THE SURFACE. The first two are the
+    # bitmap branch's bx0/by0/bx1/by1 verbatim. The third is the run's own extent, from a pre-pass
+    # that sums the advances — a cmap + hmtx read per character, no allocation (rekha 0.3.10
+    # asserts its readers cost 0 B) — giving `cx_end`, the origin the character after the last one
+    # would take.
+    # ⚠ ONE EM OF SLACK ON EVERY SIDE OF THE BOX, AND WHY THAT IS EXACT RATHER THAN A GUESS: `scale`
+    # is derived from `h`, so one em IS `h` pixels, by construction. The slack is measured from the
+    # BOX (x .. cx_end, y .. y + h), which from the baseline `y + h - 2` is 2h - 2 px above, h + 2
+    # below, h + 2 left of the first origin and h past the last advance. MEASURED over 1,750 system
+    # TTFs, cp 32..255 (what `load8` can reach), composites included: the worst reachable extent
+    # above the baseline is 1.177 em (MonoidNerdFont-Italic 'Ä'; AdwaitaSans 'Å' 0.997, LiberationSans
+    # 'Ñ' 0.878; Monoid's own unaccented caps 0.917), below 0.270 em, left of the origin 0.190 em,
+    # past the advance 0.254 em. ⛔ Do NOT tighten the top bound to `y` (one em above the baseline):
+    # accented caps in real faces exceed 1.0 em and would be cut; the 2h - 2 above is what keeps them
+    # whole, with 0.8 em to spare at the worst. An outline further out than these bounds is not
+    # text; it is a font bug, and it is cut at the bound, not at the surface.
+    var sw = sd_surface_width(sds);
+    var sh2 = sd_surface_height(sds);
+    var bx0 = clx; if (bx0 < 0) { bx0 = 0; }
+    var by0 = cly; if (by0 < 0) { by0 = 0; }
+    var bx1 = clx + clw; if (bx1 > sw) { bx1 = sw; }
+    var by1 = cly + clh; if (by1 > sh2) { by1 = sh2; }
+    var cx_end = cx;
+    var j = 0;
+    while (load8(text + j) != 0) {
+        cx_end = cx_end + dh_text_advance(font, load8(text + j), h);
+        j = j + 1;
+    }
+    if (bx0 < x - h) { bx0 = x - h; }
+    if (by0 < y - h) { by0 = y - h; }
+    if (bx1 > cx_end + h) { bx1 = cx_end + h; }
+    if (by1 > y + 2 * h) { by1 = y + 2 * h; }
+    # ⚠ EMPTY BOUNDS RETURN BEFORE THE HOOK IS INSTALLED — a label scrolled fully out of the clip, or
+    # laid out off the surface, costs nothing and touches nothing. This is the only early return.
+    if (bx1 <= bx0) { return 0; }
+    if (by1 <= by0) { return 0; }
+
+    # ⭐ EVERYTHING FROM HERE TO THE RESTORE LIVES UNTIL THE NEXT `dh_frame_begin`: the canvas and
+    # its coverage, rekha's outline scratch, the sadish path per glyph, the flatten mid-points.
+    # With no frame arena set `dh_falloc` is `alloc()` — the pre-0.10.0 lifetime, at 1/66 the size.
+    var prev = sd_alloc_set(&dh_falloc);
+    var cv = sd_canvas_new(bx1 - bx0, by1 - by0);
+    # ⭐ REAL per-pixel clipping for the scalable path — a glyph straddling the viewport edge is CUT,
     # not dropped. Dropping the whole glyph was the tempting shortcut and it reads as text that
-    # vanishes a row early while scrolling.
-    sd_canvas_clip_push_rect(cv, clx, cly, clx + clw, cly + clh);
+    # vanishes a row early while scrolling. It used to be sadish's clip stack (a full-surface mask
+    # multiplied into the coverage); now the canvas BOUNDS are the clip. The output is identical by
+    # construction: the mask was 255/255 at every pixel inside the clip and the blit skips zero
+    # coverage, so a glyph is rasterised into exactly the pixels it was before and cut at exactly
+    # the same edge — and the cut now costs nothing, because a pixel outside the canvas is never
+    # visited rather than visited and multiplied by 0. Glyph origins are canvas-relative.
     var i = 0;
     while (load8(text + i) != 0) {
         var cp = load8(text + i);
         if (cp != 32) {                    # spaces contribute no coverage
-            var path = rekha_char_to_sdpath(font, cp, scale, cx << 16, baseline << 16);
+            var path = rekha_char_to_sdpath(font, cp, scale, (cx - bx0) << 16, (baseline - by0) << 16);
             sd_canvas_fill_union(cv, path, SD_FILL_NONZERO);
         }
         cx = cx + dh_text_advance(font, cp, h);
@@ -319,8 +433,13 @@ fn dh_draw_text_ink(sds, font, text, x, y, h, clx, cly, clw, clh, ink): i64 {
     # unreadable on both light grounds, and had been since it was written. The bitmap path (what
     # everything actually ships with, `font == 0`) always honoured the theme, which is why nothing
     # caught it.
-    sd_canvas_blit(cv, sds, ink);
-    sd_canvas_clip_pop(cv);
+    # ⚠ `sd_canvas_blit_at` (sadish 0.5.5) places the canvas at the bounds' origin and addresses
+    # rows by `sd_surface_stride`, so a WRAPPED surface (`dh_surface_wrap` over a pane sub-rect,
+    # stride != width*4) is blitted straight — the old `sd_canvas_blit` used width*4 as the pitch.
+    sd_canvas_blit_at(cv, sds, ink, bx0, by0);
+    # ⛔ RESTORE THE PREVIOUS HOOK, NOT 0. A consumer with its own sadish hook around its own drawing
+    # gets it back; one with none gets the global allocator back, which is what `prev == 0` means.
+    sd_alloc_set(prev);
     return 0;
 }
 
@@ -391,17 +510,44 @@ fn dh_draw_widget_ink(sds, wgt, font, clx, cly, clw, clh, ink, forced): i64 {
     }
     # ⭐ THE CARET (0.9.7). Drawn only on the FOCUSED field: a caret in every text box at once says
     # every box is taking input, which is exactly the thing the operator uses it to find out.
-    # ⚠ Positioned with the bitmap font's 9px advance — correct for the system font (which is what
-    # `font == 0` draws with, and is monospace) and an approximation under rekha, where glyph
-    # advances vary. A caret that drifts from proportional text is a rekha-advance item, not a
-    # reason to withhold the caret from the monospace path that is what everything ships with.
+    # ⭐ THE CARET FOLLOWS THE FACE (0.10.0). Until 0.10.0 ONE geometry served both draw paths — the
+    # bitmap font's: `x + 3 + chars * 9`, 16 px tall at `y + (h - 16) / 2` — and the comment called the
+    # drift under a proportional face "a rekha-advance item". The advances have been read from `hmtx`
+    # since 0.9.27; the caret simply never used them. MEASURED (`text_arena_test` G, the suite's face,
+    # advances 12 / 20 / 5 px at h = 20): 'AB AB' with the caret after all five characters drew it at
+    # x + 48 (column 78) while the run's pen ended at x + 71 (column 101; last glyph ink at x + 67) —
+    # **23 px short, in the blank second-'A' cell 3 px before the second 'B'** — and 16 px tall in a
+    # 20 px box, 2 px clear of the em the glyphs were scaled to.
+    # ⇒ Each arm now uses ITS OWN draw's geometry, and nothing else:
+    #   `font == 0` — the kashi cell: origin `x + 3`, 9 px per CHARACTER (`dh_text_char_index`, so a
+    #                 multi-byte character is one cell), 16 rows centred in the box. Verbatim from
+    #                 0.9.7; this is the path everything ships with and its pixels did not move.
+    #   `font != 0` — the scalable run: origin `x + 2`, then `dh_text_advance` summed over the first
+    #                 `cbytes` BYTES of the text — BYTES, because `dh_draw_text_ink` above iterates
+    #                 `load8` and draws (and advances) one glyph per byte, so a 2-byte sequence is two
+    #                 `.notdef` advances there and must be two here; a caret counted in characters would
+    #                 sit one `.notdef` short of every glyph after it. The height is the em box the draw
+    #                 scales to (`scale` is `h` / unitsPerEm; the baseline sits at `y + h - 2`), inset by
+    #                 the box's own border rows: `y + 1` to `y + h - 1`, so h - 2 px. `dh_text_advance`
+    #                 allocates nothing (rekha 0.3.10 asserts it), so the caret needs no hook.
     if (dh_widget_kind(wgt) == TEXTINPUT) {
         if (dh_focus_get() == wgt) {
             var cbytes = dh_text_caret(wgt);
-            var cchars = dh_text_char_index(wgt, cbytes);
-            var cx2 = x + 3 + (cchars * 9);
-            var cy2 = y + (h - 16) / 2;
-            dh_fill_rect_clip(sds, cx2, cy2, 1, 16, dh_theme_ink(), clx, cly, clw, clh);
+            if (font == 0) {
+                var cchars = dh_text_char_index(wgt, cbytes);
+                var cx2 = x + 3 + (cchars * 9);
+                var cy2 = y + (h - 16) / 2;
+                dh_fill_rect_clip(sds, cx2, cy2, 1, 16, dh_theme_ink(), clx, cly, clw, clh);
+            } else {
+                var cx3 = x + 2;
+                if (text == 0) { cbytes = 0; }
+                var cb = 0;
+                while (cb < cbytes) {
+                    cx3 = cx3 + dh_text_advance(font, load8(text + cb), h);
+                    cb = cb + 1;
+                }
+                dh_fill_rect_clip(sds, cx3, y + 1, 1, h - 2, dh_theme_ink(), clx, cly, clw, clh);
+            }
         }
     }
 

@@ -5,6 +5,235 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.10.0] - 2026-09-14 — scalable text costs the global heap nothing per frame
+
+### ⭐⭐ The headline: the one draw path that never went through the frame arena now does
+
+`dh_draw_text_ink`'s scalable branch (`font != 0`) opened with
+`sd_canvas_new(sd_surface_width(sds), sd_surface_height(sds))` — a **full-surface canvas plus a
+full-surface clip mask, per call, per LABEL, per FRAME** — and then a sadish path per glyph via
+`rekha_char_to_sdpath`. Every byte came from `lib/alloc.cyr`'s bump allocator, which has no `free()`,
+and none of it from the per-frame arena that every other per-frame allocation in this toolkit has
+used since 0.9.15. Filed by crab on 2026-09-13
+(`docs/development/issues/2026-09-13-scalable-text-allocates-per-call-outside-the-frame-arena.md`)
+as one of two blockers on crab adopting a proportional face — crab's headline gate asserts a rendered
+frame costs the global heap **exactly 0 bytes**.
+
+**MEASURED on 0.9.29 as shipped** (sadish 0.5.3, rekha 0.3.6; a 380x220 surface, a synthetic
+proportional face that rasterises, `alloc_used()` deltas — the probe is the new suite's own shape):
+
+| | 0.9.29 (sadish 0.5.3, rekha 0.3.6) | 0.10.0 (sadish 0.5.5, rekha 0.3.10) |
+|---|---|---|
+| one 10-char label at h = 20, `dh_draw_text_ink`, per call | **2,513,248 B**, every call | **38,184 B** (first call +589,896 B, sadish's one-time scratch; a run wider than any before +w*8, the accrow — see Testing B2) |
+| the same label on a 760x440 surface | — | **38,184 B** — the cost follows the run, not the surface |
+| a frame of 12 such labels, no arena | **26,645,208 B** | **417,056 B** |
+| that frame under a frame arena: global heap / arena | **26,640,472 B** / 4,736 B | **0 B** / 417,056 B (4,736 B of it tree + layout) |
+| twenty frames under the arena, global heap | **532,809,440 B** | **0 B** |
+
+⛔⛔ **AND THE GATE THAT SHOULD HAVE CAUGHT IT NEVER REACHED THE CODE.** The bitmap branch
+(`font == 0`) returns before the scalable one begins. `arena_test` renders `font = 0`; so did crab's
+zero-allocation gate. Both were proving a function body that was not running — *a gate that covers
+one state proves one state.* crab 0.8.10 closed it from its side with a synthetic proportional face
+and an assertion that the heap cost is **non-zero**, written with its own expiry. ⚠ **That assertion
+does NOT trip against 0.10.0 — a different one does, and the flip needs a warm-up.** MEASURED, crab
+0.8.10's suite against these three trees: `2195 passed, 1 failed`, the failure being
+`arena_capacity_total(farena) == cap0` (got 468,040, expected 16,384), while `scost > 0` still holds.
+crab's per-frame arena is a growable 8 KiB sized to one BITMAP frame; the first face frame chains
+~452 KB of chunks from the global heap for its glyph paths at ~4.3 KB each (`scost` 452,520 B), and the second
+face frame costs 0 B. ⇒ crab's flip to `scost == 0` must follow one warm-up face frame (or an arena
+that holds one), with `cap0` re-baselined after it. And before any of that: crab pins sadish 0.5.4 /
+rekha 0.3.7 TAG-ONLY, and against those with dhancha 0.10.0 by path its build is **refused** —
+`refusing to emit binary with 2 reachable undefined function(s)` (`sd_alloc_set`,
+`sd_canvas_blit_at`) — so the tags 0.5.5 / 0.3.10 must exist and crab must bump to them first.
+
+### Changed — where the memory comes from now: three moves, one per repo
+
+- **sadish 0.5.5** — every per-call `alloc(` (23 of its 32 sites) behind `sd_alloc(n)`, with
+  `sd_alloc_set(fp)` installing a hook and returning the PREVIOUS one; the other 9 sites are the
+  fixed-capacity fill/stroke scratch, allocated ONCE for the process on the global heap and never the
+  hook (589,896 B at the first fill — it used to be 327,824 B **per fill** — plus a w*8 per-row
+  accumulator whenever a canvas wider than any before arrives); `sd_canvas_blit_at` for a canvas that
+  lands at an offset and is addressed by `sd_surface_stride`.
+- **rekha 0.3.10** — its 15 `alloc(` sites draw from sadish's seam, so the outline scratch (136 B per
+  simple glyph, 70,856 B per composite) follows the paths onto whatever the hook says.
+- **dhancha 0.10.0 — this function**:
+  - `var prev = sd_alloc_set(&dh_falloc);` around the whole scalable draw — canvas, coverage, rekha's
+    outlines, the path per glyph, the flatten mid-points — and `sd_alloc_set(prev)` after. Everything
+    lives until the next `dh_frame_begin`, exactly like the widget tree.
+  - The canvas is **the clip ∩ the surface ∩ the run**, not the surface. The first two are the bitmap
+    branch's bounds verbatim; the run's extent comes from a pre-pass summing `dh_text_advance` (a
+    cmap + hmtx read, no allocation), with one em of slack on every side of the BOX — and one em IS
+    `h` pixels, because `scale` is derived from `h`. From the baseline (`y + h - 2`) that is 2h - 2 px
+    above, h + 2 below, h + 2 left of the first origin and h past the last advance. MEASURED over
+    1,750 system TTFs at cp 32..255: the tallest reachable glyph is 1.177 em above the baseline
+    (MonoidNerdFont-Italic 'Ä'; AdwaitaSans 'Å' 0.997), the deepest 0.270 em below, 0.190 em left of
+    the origin, 0.254 em past the advance. ⛔ Accented caps exceed one em, so the top bound stays
+    `y - h`, not `y`; an outline further out than these bounds is not text.
+  - **No `sd_canvas_clip_push_rect` / `clip_pop`**: the canvas bounds ARE the clip. The mask was
+    255/255 at every pixel inside the clip and the blit skips zero coverage, so the raster is
+    identical by construction — asserted pixel-for-pixel — and the cut now costs nothing. A glyph
+    straddling the viewport edge is still CUT, not dropped.
+  - `sd_canvas_blit_at(cv, sds, ink, bx0, by0)`.
+
+⛔ **THE HOOK IS SCOPED, NOT INSTALLED — and the PREVIOUS hook comes back, not 0.** A consumer with its
+own sadish hook around its own drawing keeps it (asserted). No early return sits between the set and
+the restore; empty bounds return BEFORE the hook is installed, and every failure inside the scope
+degrades to a no-op (`sd_canvas_new` refusing → `fill_union` / `blit_at` return `SADISH_ERR_BOUNDS`).
+⚠ **With no frame arena set, `dh_falloc` is `alloc()`** — the pre-0.10.0 lifetime, at 1/66 the size.
+The arena is still the consumer's decision (0.9.15).
+⚠ **And a FIXED arena that cannot hold a frame spills to the global heap, silently.** `dh_falloc`
+falls back to `alloc()` when the arena refuses (by design — a 0 from `arena_alloc` faults several
+layers away), so under `arena_new(65536)` the tree and the first paths land on the arena, `arena_used`
+stops at the capacity, the hook is restored correctly, and everything after the refusal is the global
+heap, per frame, with nothing failing. MEASURED (Testing B3): the 12-label frame under a fixed 64 KiB
+arena costs the global heap **351,520 B per frame** while `arena_used` reads 65,536 — twenty frames,
+7,030,400 B. ⇒ A fixed arena must hold a WHOLE frame: ~417 KB for that one — ~4.3 KB per glyph drawn
++ 320 B per widget (`DH_WIDGET_SIZE`). Prefer `arena_new_growable`, which chains instead of refusing
+(the 0.9.15 advice, restated for text): the same 64 KiB as a growable arena costs 0 B after warm-up.
+⚠ **What remains on the arena is the PATH, not the canvas.** Of a label's 38,184 B, 30,392 B is the
+seven glyph paths — 4 x 4,328 B ('A', 3 points) + 3 x 4,360 B ('B', 4 points); `sd_path_new` opens at
+a fixed 4,144 B capacity either way — and the canvas is 7,792 B (155 x 50: 40 B header + 7,750 B
+coverage, rounded to 8). 30,392 + 7,792 = 38,184. A frame's arena high-water is ~4.3 KB per glyph
+drawn; shrinking it is a sadish/rekha question (a path sized to the outline, or one path reused per
+run), not a leak.
+⚠ **The one global cost that survives warm-up.** sadish's per-row accumulator is re-allocated from
+the GLOBAL alloc (never the hook) at exactly w*8 whenever a canvas WIDER than any it has filled
+arrives, and this canvas is the clip ∩ surface ∩ run — so the first run after warm-up that is longer,
+taller or less clipped than anything before costs the global heap w*8 once, under the arena. MEASURED
+(Testing B2): 6,176 B for a 772 px canvas, 0 B on the repeat. ⇒ A consumer's zero-heap gate warms up
+at the WIDEST run / clip / h it will draw, then measures.
+⚠ **The public signatures are unchanged** (`dh_draw_text`, `dh_draw_text_ink`, `dh_text_advance`), and
+the bitmap branch is untouched.
+
+### Fixed — the TEXTINPUT caret follows the face's advances
+
+⛔ **The caret used the bitmap font's geometry under every font.** `dh_draw_widget_ink` drew the
+focused field's caret at `x + 3 + chars * 9`, 16 px tall at `y + (h - 16) / 2` — the kashi 8x16 cell —
+regardless of `font`, and the comment beside it called the drift under a proportional face "a
+rekha-advance item". The advances have been read from `hmtx` since 0.9.27; the caret never used them.
+MEASURED (Testing G, the suite's face, advances 12 / 20 / 5 px at h = 20): 'AB AB' with the caret
+after all five characters drew it at **x + 48** (column 78) while the run's pen ends at x + 71
+(column 101; last glyph ink at x + 67) — **23 px short, in the blank second-'A' cell 3 px before the
+second 'B'** (the 'B' cell opens at x + 51, its first ink column is x + 53) — and **16 px tall in a
+20 px box** (rows y + 2 .. y + 17).
+⇒ Each arm now uses its own draw's geometry. `font != 0`: `x + 2` + `dh_text_advance` summed over the
+first `cbytes` **bytes** of the text — bytes, because `dh_draw_text_ink` iterates `load8` and draws one
+glyph per byte, so a 2-byte sequence is two `.notdef` advances there and must be two here (a caret
+counted in characters sits one `.notdef` short of every glyph after it) — from `y + 1` to `y + h - 1`,
+the em box the draw scales to, inset by the field's own border rows. `dh_text_advance` allocates
+nothing (rekha 0.3.10), so the caret needs no hook. ⚠ **`font == 0` is verbatim 0.9.7** — the path
+everything ships with did not move a pixel (asserted: x + 3 + 5 * 9 = x + 48, 16 rows from y + 2).
+
+### Testing — `programs/text_arena_test.cyr` (new, 92 checks)
+
+Builds a synthetic **proportional face that rasterises** — `text_test`'s head/maxp/loca/glyf/cmap
+plus `hhea`/`hmtx`: 'A' a triangle at advance 600, 'B' a box at advance 1000, `.notdef` (and so space)
+at 250, one format-4 segment — and mirrors `arena_test`'s groups with `font != 0` throughout:
+**A)** no arena, the heap grows every frame (417,056 B the second frame — the pre-0.10.0 lifetime,
+asserted); **B)** under a growable 256 KiB arena, after four warm-up frames, **twenty frames cost
+`alloc_used()` exactly 0** — then **B2)** the first run WIDER than any before (60 characters on a
+1200 px surface, canvas 772 px) costs the global heap exactly 772 x 8 = 6,176 B (sadish's accrow
+re-grow) without chaining an arena chunk, and the same run again exactly 0; **B3)** the fixed-arena
+spill said out loud — one face frame under `arena_new(65536)` costs the global heap **351,520 B**
+(asserted > 300,000) with `arena_used` at 65,536, and the same frame under `arena_new_growable(65536)`
+after four warm-up frames costs **exactly 0** (capacity_total 458,752); **C)** the arena
+high-water follows the text and not the surface — one
+frame measured exactly on a 4 MiB chunk (417,056 B, against 4,736 B for the same tree with `font = 0`)
+is less than the twelve full-surface canvases the old code made before a single path; the same
+10-character run on a 760x440 surface costs the arena the same 38,184 B as on 380x220, to the byte;
+"AAA" (16,424 B) costs more than "A" (6,568 B); **D)** pixels — a frame has coverage (8,436 of 83,600),
+a 12x10 clip inside the box glyph gets 120 pixels and **nothing outside it**, the full-surface clip
+and a clip that just contains the run produce **0 differing pixels** over 160x100, and a run at
+x = -30 / x = 110 on a 120-wide surface draws without fault and only the part that is on it (896 and
+12 pixels of an unclipped 908), and **D5)** a WRAPPED surface — `dh_surface_wrap` of a 200x60 sub-rect
+over a 300 px-stride buffer with a guard row above and below, a 10-character LABEL (bg = -1) drawn
+through `dh_draw_widget` — matches a packed 200x60 draw in **0 pixels** (688 text pixels) and writes
+**0 dwords** outside the sub-rect (padding columns + guard rows; ⚠ only the text goes through the
+wrap — a WINDOW/LABEL background goes through sadish's `sd_fill_rect`, which still addresses rows by
+width*4 and would shear, filed in sadish as
+`docs/development/issues/2026-09-14-direct-primitives-address-rows-by-width-not-stride.md`);
+**E)** `sd_alloc_get()` is 0 after a render with no consumer hook and
+is the consumer's own hook after a render with one; **F)** `dh_frame_arena_set(0)` and the heap
+grows again; **G)** the caret — a focused `dh_text_new` field at (30, 20, 160, 20) rendered through
+`dh_draw_widget` with the face, the caret found as the ONE column of h - 2 = 18 exact-ink rows: 'AB AB'
+at byte 5 → column **101** (asserted both as `30 + 2 + Σ dh_text_advance` over 5 bytes and as the
+literal 101, so a change to the face's advances cannot keep the check green), rows y + 1 and y + 18
+ink, rows y and y + 19 clear; the pre-0.10.0 column 78 carries **0 ink rows** under the face (the
+second-'A' cell — the triangle rasterises nothing at h = 20), the last glyph ink is column 97 = x + 67
+(the second 'B' box, 14 rows) and column 98 is clear, and the drift is asserted as the difference of
+the two measured columns, 101 - 78 = **23**; byte 0 → 32; 'AB AB AB' at byte 8 → 138 and moved back to
+byte 5 → 101; 'AB' + the 2-byte sequence C3 84 (4 bytes, 3 characters) → **74** = 30 + 2 + 12 + 20 + 5 + 5, two
+`.notdef` advances for the two bytes; and with `font = 0` the bitmap arm is unchanged — the one
+column of 16 ink rows at **78** = 30 + 3 + 5 * 9, rows y + 2 .. y + 17, and 33 at byte 0.
+
+⭐ **Thirteen mutations, each of which fails the suite** (failed checks in brackets): never installing the
+`sd_alloc_set(&dh_falloc)` line [7 — the headline among them]; the canvas back to full-surface with
+absolute glyph origins and a blit at (0, 0) [5]; dropping the `- bx0` on the glyph x [4 — the run
+lands 10 px right, and column 98 reads 14 ink rows]; blitting at (0, 0) instead of (bx0, by0) [5 — the
+run lands 10 px left: column 78 reads 14 ink rows, column 97 0]; restoring 0 instead of the previous
+hook [1]; and three in the
+vendored sadish, applied to the path dep's `dist/sadish.cyr` (⚠ `cyrius build` re-vendors `lib/`
+from the path source, so editing `lib/sadish.cyr` in place changes nothing): the accrow capacity never
+remembered [3]; the accrow drawn from `sd_alloc` [1]; all nine scratch sites drawn from `sd_alloc` [1
+— B2's exact 6,176 B reads 0, the accrow having landed on the arena]; and, for 0.10.0's second half,
+`sd_canvas_blit_at` addressing rows by width*4 instead of the stride, again in the path dep's
+`dist/sadish.cyr` [2 — D5 reads 876 differing pixels and 210 dwords in the padding]; the caret x back
+to `x + 3 + chars * 9` under the face [8 — G finds it at 78, and at 60 after the 2-byte sequence, not
+101 / 74; column 78 then carries 18 ink rows, and 78 - 78 is not 23]; the caret summed over
+`dh_text_char_index` CHARACTERS instead of bytes [1 — the ASCII probes agree by construction, the C3 84
+probe reads 69, one `.notdef` short]; the caret 16 px tall again [9 — no column has 18 ink rows, and
+-1 - 78 is not 23]; the caret's top at `y` instead of `y + 1` [2]. ⚠ B3 carries no mutation:
+it documents `dh_falloc`'s existing fallback, asserted at > 300,000 B and exactly 0.
+⚠ `text_test`'s expectations do not change and it passes unchanged — its metric-less font still falls
+back to 19 px and its `hmtx` font still advances a full em.
+⚠ The suite reports its own check count, as `key_test` does.
+
+### Changed — dependencies
+
+- **sadish `0.5.3` → `0.5.5`** (`path = "../sadish"` stays; ⛔ FLOOR >= 0.5.5, HARD — `sd_alloc_set`,
+  `sd_alloc_get`, `sd_canvas_blit_at`). ⛔ Below the floor the build is EITHER refused OR goes green
+  and faults, and which is not "direct call vs through the bundle": cyrius 6.6.4 judges each
+  undefined name by its FIRST call site in code order — in a function DCE keeps live, it refuses
+  (`error: refusing to emit binary with N reachable undefined function(s)`); in a dead one, it prints
+  `warning: undefined function` and emits a binary that faults at the first real call, never looking
+  at the later sites. MEASURED against a `git archive` of sadish 0.5.4: this repo's `smoke` and
+  `arena_test` build `OK` and run (exit 0 — no face); `text_test` and `text_arena_test` are refused;
+  rekha's `path_test` builds `OK` and exits 132 (its first `sd_alloc(` is `rekha_err_new`, dead there);
+  crab, with no call of its own, is refused (its first `sd_alloc_set(` is `dh_draw_text_ink`, live).
+  Grep build output for `undefined function` — the plain warning is printed in both cases.
+- **rekha `0.3.6` → `0.3.10`**, and `path = "../rekha"` added (the 0.3.10 tag is not yet pushed; path
+  wins, re-verify the tag before release). ⛔ FLOOR >= 0.3.10, HARD: it is the version whose glyph
+  scratch follows sadish's seam, which is what lets the frame arena own the whole scalable-text
+  cost; 0.3.6's `rekha_char_advance_px` floor still stands beneath it.
+- **rupa `0.1.6` → `0.1.7`**, **kashi `1.0.6` → `1.0.8`**, **setu `0.8.8` → `0.8.9`** — pin-only
+  moves; each changelog says no source change, and the vendored `lib/rupa.cyr` / `lib/setu.cyr` /
+  `lib/kashi_font_data.cyr` hashes in `cyrius.lock` did not move.
+- **Toolchain `6.6.2` → `6.6.4`** (bumped before any source change; all 17 suites passed on the new
+  pin first). 6.6.4's `cyrius.lock` carries a `cyrius	<pin>` trailer and refuses a stdlib file whose
+  bytes moved under an unchanged pin; it also made `&_private_fn` / `public impl` stricter, which this
+  repo has no private files to be affected by. `lib/` was re-synced `--full` from the 6.6.4 snapshot,
+  and `cyrius.lock` now hashes it: 40 entries move as a sorted set — `lib/sadish.cyr`, `lib/rekha.cyr`
+  and 38 stdlib files — and every one of the 110 stdlib hashes equals the 6.6.4 snapshot's file
+  (checked, file by file). ⚠ Only seven of those 38 are the 6.6.2 → 6.6.4 move inside the declared
+  closure (`lib/io.cyr`, `lib/hashseed.cyr`, `lib/syscalls_{x86_64_linux,x86_64_agnos,macos,windows,
+  aarch64_linux}.cyr`); the rest are the same hygiene note kashi 1.0.8 recorded — the ignored `lib/`
+  on the dev box carried leftovers of older pins outside the closure, and 28 of the 0.9.29 lock's
+  entries were not the 6.6.2 snapshot's file at all. The lock also loses the rekha `commit` line (a
+  path dep pins no commit) and gains the trailer.
+
+`dist/dhancha.cyr` 221,761 → 233,891 B (4,483 → 4,629 lines); `dist/dhancha.deps` unchanged. The
+`CYRIUS_DCE=1` smoke binary 123,400 → 123,480 B (+80 — `smoke` never renders, so the caret arm is
+eliminated there) and the plain one 393,736 → 397,912 B, both measured against the 0.9.29 tree with
+its own deps. All **18** `programs/*_test.cyr` pass; `lint` 0 warnings, `fmt --check` clean, `vet`
+clean, `distlib` in sync.
+
+## [0.9.29] - 2026-09-11
+
+### Changed
+
+- **Toolchain `6.5.41` → `6.6.2`.** No source change; the value form needed none.
+  Build, tests, and any bench/fuzz/distlib target the repo ships re-verified at the new pin.
+
 ## [0.9.28] - 2026-09-02 — `dh_widget_last_child`, and `cell_w = 0` said out loud
 
 ### Added — `dh_widget_last_child`
@@ -1920,12 +2149,3 @@ dhancha → rekha → sadish → pixels — is validated as a unit. 3 RUN tests.
   `src/event.cyr`, `src/surface.cyr`), the `src/lib.cyr` include chain,
   and `programs/smoke.cyr` link-check. `cyrius = "6.4.7"`, GPL-3.0-only.
   Draw/present cross-deps (sadish + rekha + mabda) are deferred to v0.2.
-
-## [Unreleased]
-
-## [0.9.29] - 2026-09-11
-
-### Changed
-
-- **Toolchain `6.5.41` → `6.6.2`.** No source change; the value form needed none.
-  Build, tests, and any bench/fuzz/distlib target the repo ships re-verified at the new pin.

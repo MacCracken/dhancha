@@ -1,6 +1,6 @@
 # dhancha
 
-Version: 0.9.29
+Version: 0.10.0
 
 **dhancha** (ढाँचा — Hindi/Sanskrit: *framework / structure / scaffold*)
 is a pure-Cyrius **client-side widget toolkit / desktop app framework**
@@ -94,10 +94,28 @@ compositor composites onto the screen over the native display protocol.
   The toolkit owns it, and needs no new kind to. ⚠ Also fixes a bug present since 0.9.7:
   `dh_widget_set_pref` on a list silently rewrote its row height, because both lived in
   `DH_W_PREF_*`. RUN-tested (`list_test`, 104 checks, five mutations).
+- **v0.10.0 — scalable text on the frame arena (shipped).** `dh_draw_text_ink`'s `font != 0`
+  branch opened a full-surface canvas per label per frame and a sadish path per glyph, all from the
+  global bump allocator with no `free()` — MEASURED at 26,640,472 B per 12-label frame on the global
+  heap UNDER a frame arena, which is the thing the arena exists to prevent (filed by crab,
+  2026-09-13). The draw now installs `dh_falloc` as sadish's allocation hook (sadish 0.5.5's seam,
+  which rekha 0.3.10 draws from too) for the duration of one text draw and sizes its canvas to the
+  clip ∩ surface ∩ run, so a frame of proportional text at a fixed maximum run / clip / h costs the
+  global heap **exactly 0 bytes** and 417,056 B of arena, reclaimed at `dh_frame_begin` (⚠ the first
+  run WIDER than any before still costs the global heap w*8 once — sadish's per-row accumulator,
+  never on the hook — so a zero-heap gate warms up at the widest run it will draw; MEASURED 6,176 B
+  for a 772 px canvas, 0 on the repeat; ⚠ and a FIXED arena that cannot hold a whole frame — ~417 KB
+  for that one, ~4.3 KB per glyph drawn + 320 B per widget — spills the text to the global heap per
+  frame with nothing failing, MEASURED 351,520 B per frame under `arena_new(65536)`, so prefer
+  `arena_new_growable`, which chains instead of refusing). ⛔ The gate that missed it rendered
+  `font = 0` only; `text_arena_test` renders the branch that was not running, with a face that
+  rasterises, and the caret follows the face's advances (it was drawn at the bitmap font's
+  `x + 3 + chars * 9` under every font — 23 px short after 'AB AB' at h = 20, 16 px tall in a 20 px
+  box). RUN-tested (`text_arena_test`, 92 checks, thirteen mutations).
 - **v0.6+ — next.** The compositor-fd input source (decode the native display
-  protocol's input wire bytes into events + block on its transport), real hmtx
-  text advances, and the present path (CPU buffer submit over the native
-  protocol; mabda GPU upload later). Wayland is refused — see
+  protocol's input wire bytes into events + block on its transport), and the
+  present path (CPU buffer submit over the native protocol; mabda GPU upload
+  later). Wayland is refused — see
   [`docs/development/sovereign-desktop.md`](docs/development/sovereign-desktop.md).
 
 ## Place in the stack
@@ -140,14 +158,23 @@ scaffold. As the draw/present code lands (v0.2), add to `cyrius.cyml`:
   `syscalls`, `assert`, `bench`, `args`, plus `hashmap` (widget-id →
   handler routing), `fnptr` (event-callback dispatch), and `tagged`
   (tagged-value payloads). Resolved by `cyrius deps` into `lib/`.
-- **sadish** (0.4.0) + **rekha** (0.3.0) — the draw path: sadish fills/strokes
+- **sadish** (0.5.5) + **rekha** (0.3.10) — the draw path: sadish fills/strokes
   widget backgrounds/borders, rekha rasterizes text (via sadish). Wired as
   `[deps.*]` (local `../` path overrides for dev; git tags as published pins).
+  ⛔ Both floors are HARD: 0.10.0's scalable text installs `dh_falloc` through
+  sadish 0.5.5's `sd_alloc_set` and blits with `sd_canvas_blit_at`, and rekha
+  0.3.10 is the version whose outline scratch follows that hook.
+- **rupa** (0.1.7) — the shared desktop theme tokens (`dh_theme_*`), the same
+  source the compositor reads.
+- **kashi** (1.0.8) — the VGA 8x16 system font the default (`font = 0`) text
+  path blits; vendored as its freestanding core (see the manifest's ⛔).
+- **setu** (0.8.9) — the display-protocol contract and reference client that
+  `dh_client_connect` / `dh_setu_*` delegate to.
 - **mabda** (GPU) — still deferred; the present path (CPU buffer submit over
   the native protocol; GPU upload later) is a later bite. The CPU draw is
   complete.
 
-The toolchain pin is `cyrius = "6.4.7"`.
+The toolchain pin is `cyrius = "6.6.4"`.
 
 ## Quick Start
 

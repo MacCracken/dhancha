@@ -1,0 +1,731 @@
+# programs/text_arena_test.cyr — RUN test for the SCALABLE TEXT PATH UNDER THE PER-FRAME ARENA (0.10.0).
+#
+# ⭐⭐ WHAT THIS EXISTS TO PROVE. `dh_draw_text_ink`'s `font != 0` branch used to open a FULL-SURFACE
+# canvas plus a full-surface clip mask per call — per LABEL, per FRAME — and a sadish path per glyph,
+# all from `lib/alloc.cyr`'s bump allocator, which has no `free()`, and none of it through the frame
+# arena that every other per-frame allocation in the toolkit already used (0.9.15). MEASURED on 0.9.29
+# as shipped (sadish 0.5.3, rekha 0.3.6): one 10-character label on a 380x220 surface at h = 20 cost
+# **2,513,248 B per call, every call**; a frame of 12 such labels **26,645,208 B**; and under a frame
+# arena the arena took 4,736 B (the widgets) while the global heap still took 26,640,472 B per frame —
+# 532,809,440 B over twenty frames. Filed by crab as
+# `docs/development/issues/2026-09-13-scalable-text-allocates-per-call-outside-the-frame-arena.md`.
+# 0.10.0 installs `dh_falloc` as sadish's allocation hook (sadish 0.5.5 — and rekha 0.3.10 draws its
+# outline scratch from the same seam) for the duration of one text draw, and sizes the canvas to the
+# clip ∩ surface ∩ run instead of the surface.
+#
+# ⛔⛔ THE GATE THAT SHOULD HAVE CAUGHT IT NEVER REACHED THE CODE. `arena_test` renders every frame with
+# `font = 0`, and so did crab's zero-allocation gate. The bitmap branch RETURNS before the scalable
+# one begins, so both were proving a function body that was not running. A gate that covers one state
+# proves one state. ⇒ Every render below passes a REAL face: a synthetic proportional one built in
+# memory, with `hhea`/`hmtx` (two glyphs of different advance, so a fixed pitch cannot agree by
+# accident) AND `glyf` outlines, so every glyph rasterises to coverage — `text_test`'s metric font has
+# no outlines, and a width question never rasterises.
+#
+# ⚠ THE HEADLINE ASSERTION IS THE SAME AS `arena_test`'s: GLOBAL `alloc_used()` stops moving once the
+# arena has reached its high-water mark — twenty frames of scalable text cost the global heap EXACTLY
+# 0 bytes. An arena that grew a chunk a frame would satisfy every structural check here and still leak.
+# ⚠ crab's suite carries THE INVERSE ASSERTION (`t_prop_face`, crab 0.8.10: one frame with a
+# proportional face costs the heap MORE than 0), written with its own expiry stated at the assertion.
+# MEASURED against crab 0.8.10 with the three 0.10.0 trees: that assertion does NOT trip — the one
+# that does is `arena_capacity_total(farena) == cap0` (got 468,040, expected 16,384). crab's arena is
+# a growable 8 KiB sized to one BITMAP frame, and the first face frame chains ~452 KB of chunks from
+# the global heap for its glyph paths at ~4.3 KB each (scost 452,520 B; the second 0 B), so `scost`
+# stays > 0. ⇒ The flip to `scost == 0` needs one warm-up face frame (or an arena that holds one)
+# and `cap0` re-baselined after it — and before any of that, crab's tag-only sadish/rekha pins must
+# reach 0.5.5 / 0.3.10: against them crab's build is refused outright (see cyrius.cyml).
+#
+# ⚠ ON THE ARENA HIGH-WATER (group C). What remains per frame is the PATH, not the canvas: sadish's
+# `sd_path_new` opens at a fixed 4,144 B capacity, so a 3-point glyph costs 4,328 B on the arena
+# (rekha 0.3.10's figure, reproduced here) and a 12-label frame of ~80 glyphs lands at ~417 KB — more
+# than one 380x220 canvas (83,600 B), less than the twelve the old code made. So the bound asserted is
+# not "smaller than the surface"; it is that the cost FOLLOWS THE TEXT AND NOT THE SURFACE: the same
+# run on a surface four times the area costs the arena the same bytes, to the byte, and a frame costs
+# less than the old full-surface canvases alone would have.
+
+include "src/lib.cyr"
+
+var g_fails = 0;
+var g_n = 0;
+
+fn check(got, want): i64 {
+    g_n = g_n + 1;
+    if (got == want) { return 0; }
+    g_fails = g_fails + 1;
+    var m = "text_arena_test: check failed at #";
+    syscall(1, 2, m, strlen(m));
+    fmt_int_fd(2, g_n);
+    var nl = "\n";
+    syscall(1, 2, nl, 1);
+    return 1;
+}
+
+fn say(label, v): i64 {
+    syscall(1, 1, label, strlen(label));
+    fmt_int_fd(1, v);
+    var nl = "\n";
+    syscall(1, 1, nl, 1);
+    return 0;
+}
+
+fn put_u16(buf, off, v): i64 {
+    store8(buf + off, (v >> 8) & 255);
+    store8(buf + off + 1, v & 255);
+    return 0;
+}
+
+fn put_u32(buf, off, v): i64 {
+    put_u16(buf, off, (v >> 16) & 65535);
+    put_u16(buf, off + 2, v & 65535);
+    return 0;
+}
+
+fn dir_entry(buf, ent, tag, off, tlen): i64 {
+    put_u32(buf, ent, tag);
+    put_u32(buf, ent + 8, off);
+    put_u32(buf, ent + 12, tlen);
+    return 0;
+}
+
+# Fill `buf` (400 B) with a PROPORTIONAL face that RASTERISES: `text_test`'s table set plus
+# `hhea`/`hmtx`. gid 1 'A' = the triangle (10,10)(90,10)(50,90) at advance 600; gid 2 'B' = a box
+# (100,0)(900,0)(900,700)(100,700) at advance 1000; gid 0 (.notdef, and therefore space, which the
+# cmap does not map) is empty at advance 250. One format-4 segment 'A'..'B' with idDelta -64.
+# ⚠ Both outlines sit inside the em: the widest point is 0.9 em right of the origin, the tallest 0.9
+# em above the baseline, so the one-em canvas slack in `dh_draw_text_ink` contains them — as it does
+# every real face. A glyph drawn outside the em would be cut, and that would be the font's bug.
+fn build_prop_font(buf): i64 {
+    # 7 tables: head@124/54 maxp@180/32 hhea@212/36 hmtx@248/12 loca@260/8 glyf@268/60 cmap@328/44
+    put_u32(buf, 0, 0x00010000);
+    put_u16(buf, 4, 7);
+    dir_entry(buf, 12, 0x68656164, 124, 54);     # head
+    dir_entry(buf, 28, 0x6D617870, 180, 32);     # maxp
+    dir_entry(buf, 44, 0x68686561, 212, 36);     # hhea
+    dir_entry(buf, 60, 0x686D7478, 248, 12);     # hmtx
+    dir_entry(buf, 76, 0x6C6F6361, 260, 8);      # loca
+    dir_entry(buf, 92, 0x676C7966, 268, 60);     # glyf
+    dir_entry(buf, 108, 0x636D6170, 328, 44);    # cmap
+
+    put_u16(buf, 124 + 18, 1000);      # unitsPerEm
+    put_u16(buf, 124 + 50, 0);         # short loca
+    put_u16(buf, 180 + 4, 3);          # numGlyphs = 3
+    put_u16(buf, 212 + 34, 3);         # numberOfHMetrics = 3
+    put_u16(buf, 248 + 0, 250);  put_u16(buf, 248 + 2, 0);    # gid 0 (.notdef / space): adv 250
+    put_u16(buf, 248 + 4, 600);  put_u16(buf, 248 + 6, 0);    # gid 1 'A': adv 600
+    put_u16(buf, 248 + 8, 1000); put_u16(buf, 248 + 10, 0);   # gid 2 'B': adv 1000
+    put_u16(buf, 260 + 0, 0);          # loca[0] = 0  (glyph 0 empty)
+    put_u16(buf, 260 + 2, 0);          # loca[1] = 0  -> glyph 1 = glyf[0,26)
+    put_u16(buf, 260 + 4, 13);         # loca[2] = 26/2
+    put_u16(buf, 260 + 6, 30);         # loca[3] = 60/2 -> glyph 2 = glyf[26,60)
+
+    # glyph 1 @268: triangle (10,10)(90,10)(50,90), all on-curve (text_test's glyph)
+    var g = 268;
+    put_u16(buf, g + 0, 1);
+    put_u16(buf, g + 2, 10);
+    put_u16(buf, g + 4, 10);
+    put_u16(buf, g + 6, 90);
+    put_u16(buf, g + 8, 90);
+    put_u16(buf, g + 10, 2);
+    put_u16(buf, g + 12, 0);
+    store8(buf + g + 14, 0x01);
+    store8(buf + g + 15, 0x21);
+    store8(buf + g + 16, 0x03);
+    put_u16(buf, g + 17, 10);
+    put_u16(buf, g + 19, 80);
+    store8(buf + g + 21, 40);
+    put_u16(buf, g + 22, 10);
+    put_u16(buf, g + 24, 80);
+
+    # glyph 2 @294: box (100,0)(900,0)(900,700)(100,700), 16-bit deltas, all on-curve
+    g = 294;
+    put_u16(buf, g + 0, 1);
+    put_u16(buf, g + 2, 100);
+    put_u16(buf, g + 4, 0);
+    put_u16(buf, g + 6, 900);
+    put_u16(buf, g + 8, 700);
+    put_u16(buf, g + 10, 3);           # endPts[0] = 3
+    put_u16(buf, g + 12, 0);           # no instructions
+    store8(buf + g + 14, 0x01);
+    store8(buf + g + 15, 0x01);
+    store8(buf + g + 16, 0x01);
+    store8(buf + g + 17, 0x01);
+    put_u16(buf, g + 18, 100);         # dx: 100, 800, 0, -800
+    put_u16(buf, g + 20, 800);
+    put_u16(buf, g + 22, 0);
+    put_u16(buf, g + 24, 0xFCE0);
+    put_u16(buf, g + 26, 0);           # dy: 0, 0, 700, 0
+    put_u16(buf, g + 28, 0);
+    put_u16(buf, g + 30, 700);
+    put_u16(buf, g + 32, 0);
+
+    # cmap @328: 1 subtable (plat 3/enc 1), format 4, one segment 'A'..'B' -> gid 1..2
+    put_u16(buf, 328 + 0, 0);
+    put_u16(buf, 328 + 2, 1);
+    put_u16(buf, 328 + 4, 3);
+    put_u16(buf, 328 + 6, 1);
+    put_u32(buf, 328 + 8, 12);
+    var s = 340;
+    put_u16(buf, s + 0, 4);
+    put_u16(buf, s + 2, 32);
+    put_u16(buf, s + 4, 0);
+    put_u16(buf, s + 6, 4);
+    put_u16(buf, s + 8, 4);
+    put_u16(buf, s + 10, 1);
+    put_u16(buf, s + 12, 0);
+    put_u16(buf, s + 14, 0x42);        # endCode[0] = 'B'
+    put_u16(buf, s + 16, 0xFFFF);
+    put_u16(buf, s + 18, 0);
+    put_u16(buf, s + 20, 0x41);        # startCode[0] = 'A'
+    put_u16(buf, s + 22, 0xFFFF);
+    put_u16(buf, s + 24, 0xFFC0);      # idDelta = -64 -> 'A' 1, 'B' 2
+    put_u16(buf, s + 26, 1);
+    put_u16(buf, s + 28, 0);
+    put_u16(buf, s + 30, 0);
+    return 0;
+}
+
+# Count pixels differing from `bg` in the w*h rect at (x0, y0) of a sadish surface. Text coverage
+# blends toward the ink, so any glyph pixel — even a partial one — differs from bg.
+fn count_nonbg_in(sds, x0, y0, w, h, bg): i64 {
+    var n = 0;
+    var y = y0;
+    while (y < y0 + h) {
+        var x = x0;
+        while (x < x0 + w) {
+            if (sd_surface_pixel_at(sds, x, y) != bg) { n = n + 1; }
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    return n;
+}
+
+fn count_nonbg(sds, w, h, bg): i64 {
+    var n = 0;
+    var y = 0;
+    while (y < h) {
+        var x = 0;
+        while (x < w) {
+            if (sd_surface_pixel_at(sds, x, y) != bg) { n = n + 1; }
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    return n;
+}
+
+# Number of pixels at which two w*h surfaces differ.
+fn count_diff(s1, s2, w, h): i64 {
+    var n = 0;
+    var y = 0;
+    while (y < h) {
+        var x = 0;
+        while (x < w) {
+            if (sd_surface_pixel_at(s1, x, y) != sd_surface_pixel_at(s2, x, y)) { n = n + 1; }
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    return n;
+}
+
+# Copy the w*h sub-rect at the head of a `stride_px`-pitched caller buffer into a PACKED sadish
+# surface, so `count_diff` (which reads through `sd_surface_pixel_at`, and that addresses rows by
+# WIDTH) can compare it against a packed draw. The copy is by hand, row by row, through the stride.
+fn ta_unwrap(buf, stride_px, w, h): i64 {
+    var s = sd_surface_new(w, h);
+    var px = sd_surface_pixels(s);
+    var y = 0;
+    while (y < h) {
+        var x = 0;
+        while (x < w) {
+            store32(px + (y * w + x) * 4, load32(buf + (y * stride_px + x) * 4));
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    return s;
+}
+
+# Count the dwords in `n` consecutive pixels from `buf` that are not `pat` — the untouched-memory
+# probe for a wrapped surface's padding columns and guard rows.
+fn ta_count_not(buf, n, pat): i64 {
+    var k = 0;
+    var bad = 0;
+    while (k < n) {
+        if ((load32(buf + k * 4) & 0xFFFFFFFF) != pat) { bad = bad + 1; }
+        k = k + 1;
+    }
+    return bad;
+}
+
+# Rows in [y, y + h) at column `cx` whose pixel is EXACTLY `ink` — a caret column is `ink` at full
+# coverage from top to bottom; a glyph column is `ink` only where its outline covers a pixel whole.
+fn ta_col_ink(sds, cx, y, h, ink): i64 {
+    var n = 0;
+    var r = y;
+    while (r < y + h) {
+        if (sd_surface_pixel_at(sds, cx, r) == ink) { n = n + 1; }
+        r = r + 1;
+    }
+    return n;
+}
+
+# The ONE column in [x0, x1) with exactly `want` ink rows in [y, y + h): its x, or -1 if there is
+# none, or -2 if there is more than one (the probe texts are chosen so no glyph column reaches
+# `want`: the suite's 'B' box is 0.7 em tall, the kashi glyphs never fill all 16 rows of a cell).
+fn ta_find_col(sds, x0, x1, y, h, ink, want): i64 {
+    var found = 0 - 1;
+    var cx = x0;
+    while (cx < x1) {
+        if (ta_col_ink(sds, cx, y, h, ink) == want) {
+            if (found != (0 - 1)) { return 0 - 2; }
+            found = cx;
+        }
+        cx = cx + 1;
+    }
+    return found;
+}
+
+# `dh_text_advance` summed over the first `nbytes` BYTES of `text` at em-height `h` — the same sum
+# `dh_draw_text_ink` walks (one `load8` per glyph), so the expected caret x is computed, not typed.
+fn ta_adv_sum(font, text, nbytes, h): i64 {
+    var sum = 0;
+    var k = 0;
+    while (k < nbytes) {
+        sum = sum + dh_text_advance(font, load8(text + k), h);
+        k = k + 1;
+    }
+    return sum;
+}
+
+# Row `i`'s ten characters: 'A', 'B' and ' ' in rotation, phase-shifted per row so no two adjacent
+# rows are the same string. ⚠ `dh_falloc`, not `alloc`: `dh_widget_set_text` stores the pointer and
+# does not copy, so the string must share the widget's lifetime (arena_test's rule).
+fn ta_text(i): i64 {
+    var t = dh_falloc(16);
+    var k = 0;
+    while (k < 10) {
+        var c = 65;                             # 'A'
+        if (((i + k) % 3) == 1) { c = 66; }     # 'B'
+        if (((i + k) % 3) == 2) { c = 32; }     # ' '
+        store8(t + k, c);
+        k = k + 1;
+    }
+    store8(t + 10, 0);
+    return t;
+}
+
+# One frame, the shape crab renders: a WINDOW(BOX_V) holding a list of 12 ten-character labels at
+# 380x220, laid out and RENDERED WITH THE FACE. Returns the sadish surface drawn into.
+fn ta_frame(surf, font): i64 {
+    var root = dh_widget_new(WINDOW);
+    dh_widget_set_layout(root, BOX_V);
+    dh_widget_set_bg(root, dh_theme_bg());
+    var lst = dh_list_new(20);
+    var i = 0;
+    while (i < 12) {
+        var row = dh_widget_new(LABEL);
+        dh_widget_set_bg(row, 0 - 1);
+        dh_widget_set_text(row, ta_text(i));
+        dh_list_add(lst, row);
+        i = i + 1;
+    }
+    dh_widget_add_child(root, lst);
+    dh_surface_set_root(surf, root);
+    dh_layout_apply(root, 380, 220);
+    return dh_surface_render(surf, font);
+}
+
+# A consumer's own sadish hook, for group E. Behaviourally the global allocator; what matters is
+# that its IDENTITY comes back after a text draw.
+fn ta_consumer_hook(n): i64 { return alloc(n); }
+
+fn main(): i64 {
+    alloc_init();
+    var fbuf = alloc(400);
+    memset(fbuf, 0, 400);
+    build_prop_font(fbuf);
+    # ⚠ Opened OUTSIDE any hook, on the global heap — a font opened under a per-frame arena dies at
+    # that arena's first reset (rekha 0.3.10).
+    var font = rekha_font_open(fbuf, 400);
+    check(font != 0, 1);
+    check(rekha_char_to_glyph(font, 0x41), 1);
+    check(rekha_char_to_glyph(font, 0x42), 2);
+    # The face is PROPORTIONAL and its advances are read, not guessed: 'A' 0.6 em, 'B' a full em,
+    # space (unmapped -> .notdef) a quarter em. At h = 20: 12 / 20 / 5.
+    check(dh_text_advance(font, 0x41, 20), 12);
+    check(dh_text_advance(font, 0x42, 20), 20);
+    check(dh_text_advance(font, 32, 20), 5);
+    var bg = dh_theme_bg();
+    var ink = sd_rgb(200, 40, 40);              # distinct from every theme ground
+
+    # ── A) BASELINE — NO ARENA: THE GLOBAL HEAP GROWS EVERY FRAME ──────
+    check(dh_frame_arena_get(), 0);
+    var surf = dh_surface_new(380, 220);
+    var g0 = alloc_used();
+    var sds = ta_frame(surf, font);
+    var g1 = alloc_used();
+    ta_frame(surf, font);
+    var g2 = alloc_used();
+    # ⛔ THE PRE-0.10.0 LIFETIME, ASSERTED RATHER THAN ASSUMED — with no arena the text still comes
+    # off the global heap (`dh_falloc` IS `alloc()` then). If this ever reads 0 the baseline has moved
+    # and every saving below is measured against nothing. The first frame also pays sadish's one-time
+    # fill scratch (589,896 B, global by design — a scratch on a resettable arena would dangle).
+    check((g1 - g0) > 0, 1);
+    check((g2 - g1) > 0, 1);
+    say("A: frame(12 labels, face) no arena, 1st: ", g1 - g0);
+    say("A: frame(12 labels, face) no arena, 2nd: ", g2 - g1);
+    check(sds != 0, 1);
+
+    # ── B) THE HEADLINE: UNDER AN ARENA, TWENTY FRAMES OF SCALABLE TEXT COST THE HEAP NOTHING ──────
+    var a = arena_new_growable(262144);
+    check(a != 0, 1);
+    check(dh_frame_arena_set(a), DHANCHA_OK);
+    dh_frame_begin();
+    ta_frame(surf, font);
+    check(arena_used(a) > 0, 1);                  # the text really landed on the arena
+    # Warm up so the GROW arena reaches its high-water mark and chains whatever chunks it needs.
+    var w = 0;
+    while (w < 4) { dh_frame_begin(); ta_frame(surf, font); w = w + 1; }
+    var b0 = alloc_used();
+    var f = 0;
+    while (f < 20) { dh_frame_begin(); ta_frame(surf, font); f = f + 1; }
+    var b1 = alloc_used();
+    # ⭐ EXACTLY 0. Canvas, coverage, rekha's outline scratch, the path per glyph, the flatten
+    # mid-points — all of it on the arena, reclaimed at `dh_frame_begin`, re-walked next frame.
+    check(b1 - b0, 0);
+    say("B: 20 frames with the face, global heap cost: ", b1 - b0);
+    say("B: arena_capacity_total after warm-up: ", arena_capacity_total(a));
+    # ⚠ B2. THE ONE GLOBAL COST THAT SURVIVES WARM-UP, MEASURED SO IT IS A KNOWN NUMBER AND NOT A
+    # SURPRISE IN A CONSUMER'S GATE. sadish's per-row accumulator (`_sd_fill_accrow_for`, raster.cyr)
+    # is re-allocated from the GLOBAL alloc — never the hook, a scratch on a resettable arena would
+    # dangle — at exactly w*8 whenever a canvas WIDER than any this process has filled arrives, and
+    # this canvas is the clip ∩ surface ∩ run. So the first run that is longer, taller (h scales the
+    # em of slack) or less clipped than anything drawn before costs the global heap w*8 once, under
+    # the arena, after warm-up. ⇒ A zero-heap gate warms up at the WIDEST run/clip/h it will draw.
+    # The canvas this run gets: bx0 = 0 (x - h < 0), bx1 = cx_end + h with cx = x + 2, well inside
+    # the 1200 px surface; every frame above was 380 px wide with 10-character labels.
+    var s_wide = sd_surface_new(1200, 60);
+    var wide = "AB AB AB AB AB AB AB AB AB AB AB AB AB AB AB AB AB AB AB AB ";
+    var wide_w = 12 + 20;
+    var wk = 0;
+    while (load8(wide + wk) != 0) { wide_w = wide_w + dh_text_advance(font, load8(wide + wk), 20); wk = wk + 1; }
+    check(wk, 60);
+    dh_frame_begin();
+    var w0 = alloc_used();
+    dh_draw_text_ink(s_wide, font, wide, 10, 10, 20, 0, 0, 1200, 60, ink);
+    var w1 = alloc_used();
+    check(w1 - w0, wide_w * 8);                  # the accrow re-grow, exactly w*8, on the global heap
+    check(arena_capacity_total(a), 524288);      # ...and not an arena chunk: the run fit the warm arena
+    dh_frame_begin();
+    dh_draw_text_ink(s_wide, font, wide, 10, 10, 20, 0, 0, 1200, 60, ink);
+    check(alloc_used() - w1, 0);                 # never again at this width
+    say("B2: canvas width of the 60-char run: ", wide_w);
+    say("B2: first run wider than any before, under the arena, global heap: ", w1 - w0);
+    say("B2: the same run again: ", alloc_used() - w1);
+    # ⚠ B3. A FIXED ARENA THAT CANNOT HOLD A FRAME SPILLS THE TEXT TO THE GLOBAL HEAP, SILENTLY.
+    # `dh_falloc` (widget.cyr) falls back to `alloc()` when the arena refuses — by design, since a 0
+    # from `arena_alloc` faults several layers away — so under `arena_new(65536)` the tree (4,736 B)
+    # and the first few paths land on the arena, `arena_used` stops at the capacity, the hook is
+    # restored correctly, and everything after the refusal is the pre-0.10.0 cost, every frame, with
+    # nothing failing. ⇒ A fixed arena must hold a whole frame (~417 KB for this one: ~4.3 KB per
+    # glyph drawn + 320 B per widget, `DH_WIDGET_SIZE`); `arena_new_growable` chains instead of
+    # refusing (0.9.15's advice, restated for text). Both halves measured, so the number is known.
+    var fx = arena_new(65536);
+    check(fx != 0, 1);
+    dh_frame_arena_set(fx);
+    dh_frame_begin();
+    var fx0 = alloc_used();
+    ta_frame(surf, font);
+    var fx_spill = alloc_used() - fx0;
+    check(fx_spill > 300000, 1);                 # most of the 417,056 B frame went to the global heap
+    check(arena_used(fx) <= 65536, 1);           # ...and the arena is full to within one path
+    check(arena_used(fx) > 65536 - 4400, 1);
+    say("B3: fixed 64 KiB arena, one face frame, global heap (the spill): ", fx_spill);
+    say("B3: fixed 64 KiB arena, arena_used: ", arena_used(fx));
+    var gx = arena_new_growable(65536);
+    check(gx != 0, 1);
+    dh_frame_arena_set(gx);
+    var gw = 0;
+    while (gw < 4) { dh_frame_begin(); ta_frame(surf, font); gw = gw + 1; }
+    dh_frame_begin();
+    var gx0 = alloc_used();
+    ta_frame(surf, font);
+    check(alloc_used() - gx0, 0);                # the same initial size, chained: exactly 0
+    say("B3: growable 64 KiB arena, one face frame after warm-up, global heap: ", alloc_used() - gx0);
+    say("B3: growable 64 KiB arena, capacity_total: ", arena_capacity_total(gx));
+    dh_frame_arena_set(a);
+
+    # ── C) THE ARENA HIGH-WATER FOLLOWS THE TEXT, NOT THE SURFACE ──────
+    # ⚠ A 4 MiB chunk so the arena never chains and `arena_used` (current chunk only) is exact.
+    var big = arena_new_growable(4194304);
+    check(big != 0, 1);
+    dh_frame_arena_set(big);
+    dh_frame_begin();
+    ta_frame(surf, font);
+    var one = arena_used(big);
+    check(arena_capacity_total(big), 4194304);    # it did not chain; `one` is the whole frame
+    say("C: one frame on the arena, exact: ", one);
+    dh_frame_begin();
+    ta_frame(surf, 0);
+    say("C: the same frame with font = 0 (tree + layout only): ", arena_used(big));
+    check(one > arena_used(big), 1);
+    # ⛔ THE OLD CODE'S CANVASES ALONE — twelve full-surface canvases, before a single path — exceed
+    # what a whole frame costs now. A canvas back to full-surface fails this.
+    check(one < 12 * 380 * 220, 1);
+    # ⭐ THE SAME RUN ON A SURFACE FOUR TIMES THE AREA COSTS THE SAME BYTES, TO THE BYTE. The canvas
+    # is the clip ∩ surface ∩ run, and the run is the same; a full-surface canvas would cost 4x more.
+    var s_small = sd_surface_new(380, 220);
+    var s_large = sd_surface_new(760, 440);
+    var run = "AB AB AB A";
+    dh_frame_begin();
+    dh_draw_text_ink(s_small, font, run, 10, 10, 20, 0, 0, 380, 220, ink);
+    var c_small = arena_used(big);
+    dh_frame_begin();
+    dh_draw_text_ink(s_large, font, run, 10, 10, 20, 0, 0, 760, 440, ink);
+    var c_large = arena_used(big);
+    check(c_small > 0, 1);
+    check(c_large, c_small);
+    say("C: one 10-char label on 380x220: ", c_small);
+    say("C: one 10-char label on 760x440: ", c_large);
+    # ...and MORE text costs more: "AAA" costs more than "A" (a path per glyph, a wider canvas).
+    dh_frame_begin();
+    var r1 = "A";
+    dh_draw_text_ink(s_small, font, r1, 10, 10, 20, 0, 0, 380, 220, ink);
+    var c_one = arena_used(big);
+    dh_frame_begin();
+    var r3 = "AAA";
+    dh_draw_text_ink(s_small, font, r3, 10, 10, 20, 0, 0, 380, 220, ink);
+    var c_three = arena_used(big);
+    check(c_three > c_one, 1);
+    say("C: 'A': ", c_one);
+    say("C: 'AAA': ", c_three);
+    dh_frame_arena_set(a);
+
+    # ── D) PIXELS: THE RE-BOUNDED CANVAS DRAWS THE SAME GLYPHS IN THE SAME PLACE ──────
+    # D1. A frame with the face has coverage — some pixels, not all of them.
+    dh_frame_begin();
+    sds = ta_frame(surf, font);
+    var nonbg = count_nonbg(sds, 380, 220, bg);
+    check(nonbg > 0, 1);
+    check(nonbg < 380 * 220, 1);
+    say("D: frame non-bg pixels: ", nonbg);
+    # D2. A tight clip CUTS the glyph: nothing outside it, less inside it than the unclipped draw.
+    # "AB" at h = 40: 'A' occupies x+2.4..x+5.6, 'B' x+30..x+62, both within y+2..y+38.
+    var s_clip = sd_surface_new(120, 80);
+    var s_open = sd_surface_new(120, 80);
+    var ab = "AB";
+    dh_frame_begin();
+    dh_draw_text_ink(s_open, font, ab, 10, 10, 40, 0, 0, 120, 80, ink);
+    dh_draw_text_ink(s_clip, font, ab, 10, 10, 40, 40, 20, 12, 10, ink);   # clip inside 'B'
+    var open_all = count_nonbg(s_open, 120, 80, 0);
+    var clip_all = count_nonbg(s_clip, 120, 80, 0);
+    var clip_in = count_nonbg_in(s_clip, 40, 20, 12, 10, 0);
+    check(open_all > 0, 1);
+    check(clip_in > 0, 1);                        # the clip window is inside the box glyph
+    check(clip_all, clip_in);                     # NOTHING landed outside the clip
+    check(clip_in < open_all, 1);                 # and it is a CUT, not the whole glyph
+    say("D: unclipped 'AB' pixels: ", open_all);
+    say("D: pixels inside a 12x10 clip: ", clip_in);
+    # D3. PIXEL IDENTITY: the full surface as clip vs a clip that just contains the run must give
+    # the same raster, pixel for pixel. The bounds differ (bx0 = 0 vs 37, by0 = 0 vs 23), so a glyph
+    # origin not made canvas-relative, or a blit not placed at the bounds' origin, shifts one of them.
+    var s_full = sd_surface_new(160, 100);
+    var s_tight = sd_surface_new(160, 100);
+    dh_frame_begin();
+    dh_draw_text_ink(s_full, font, ab, 37, 23, 40, 0, 0, 160, 100, ink);
+    # the run: cx = 39, advances 24 + 40 -> cx_end = 103; glyphs within [39, 103) x [23, 63)
+    dh_draw_text_ink(s_tight, font, ab, 37, 23, 40, 37, 23, 68, 40, ink);
+    var ident_px = count_nonbg(s_full, 160, 100, 0);
+    check(ident_px > 0, 1);
+    check(count_diff(s_full, s_tight, 160, 100), 0);
+    say("D: identity draw pixels: ", ident_px);
+    say("D: pixels differing between full-clip and tight-clip draws: ", count_diff(s_full, s_tight, 160, 100));
+    # D4. Partly OFF the surface — negative x, and x near the right edge — draws without fault and
+    # only inside the surface (there is nowhere else to count, so the proof is that we get here and
+    # the visible part is there). 'B' at x = -30: its box spans -4+4 .. -4+36 = 0..32 -> visible.
+    var s_off = sd_surface_new(120, 80);
+    dh_frame_begin();
+    dh_draw_text_ink(s_off, font, ab, 0 - 30, 10, 40, 0, 0, 120, 80, ink);
+    var off_left = count_nonbg(s_off, 120, 80, 0);
+    check(off_left > 0, 1);
+    check(off_left < open_all, 1);                # 'A' is off the surface entirely
+    var s_off2 = sd_surface_new(120, 80);
+    dh_frame_begin();
+    dh_draw_text_ink(s_off2, font, ab, 110, 10, 40, 0, 0, 120, 80, ink);
+    var off_right = count_nonbg(s_off2, 120, 80, 0);
+    check(off_right > 0, 1);                      # 'A' at 112.4..115.6 is on the surface
+    check(off_right < open_all, 1);               # 'B' is not
+    # and fully off: the bounds are empty and nothing is drawn (nor allocated — see E)
+    var s_gone = sd_surface_new(120, 80);
+    dh_frame_begin();
+    dh_draw_text_ink(s_gone, font, ab, 0 - 200, 10, 40, 0, 0, 120, 80, ink);
+    check(count_nonbg(s_gone, 120, 80, 0), 0);
+    check(arena_used(a), 0);                      # the empty-bounds return precedes the hook
+    say("D: off-left pixels: ", off_left);
+    say("D: off-right pixels: ", off_right);
+    # D5. A WRAPPED SURFACE (`dh_surface_wrap` over a sub-rect of a wider buffer, stride != width*4)
+    # gets the same pixels as a packed one and NOTHING outside its rect. A 200x60 header over a
+    # 300 px-stride buffer, one guard row above and one below, filled with a pattern; a 10-character
+    # LABEL drawn through `dh_draw_widget` into both. `sd_canvas_blit_at` addresses rows by
+    # `sd_surface_stride`; the old `sd_canvas_blit` used width*4 and sheared one row of slip per
+    # scanline (canvas_test covers `dh_canvas_blit_rgb24` only — this is the text path's own gate).
+    # ⚠ THE LABEL HAS NO BACKGROUND (bg = -1) ON PURPOSE: a WINDOW or LABEL background goes through
+    # sadish's `sd_fill_rect`, which still addresses rows by width*4 and WOULD shear here — filed in
+    # sadish as `docs/development/issues/2026-09-14-direct-primitives-address-rows-by-width-not-stride.md`.
+    # Only the text is drawn through the wrap.
+    var wpat = 0x11223344;                       # what `sd_surface_pixel_at` reads as 0x223344
+    var wbuf = alloc(300 * 62 * 4);
+    var wj = 0;
+    while (wj < 300 * 62) { store32(wbuf + wj * 4, wpat); wj = wj + 1; }
+    var wrapped = dh_surface_wrap(wbuf + 300 * 4, 200, 60, 300);
+    check(sd_surface_stride(wrapped), 1200);
+    var packed = sd_surface_new(200, 60);
+    sd_clear(packed, 0x223344);
+    # ⚠ `dh_frame_begin` BEFORE the widget: it is arena-allocated and the reset would recycle it under
+    # the first draw's paths (widget.cyr's ⛔ on resetting, met here first-hand).
+    dh_frame_begin();
+    var wlab = dh_widget_new(LABEL);
+    dh_widget_set_bg(wlab, 0 - 1);
+    dh_widget_set_text(wlab, run);
+    dh_widget_set_bounds(wlab, 10, 10, 180, 20);
+    dh_draw_widget(wrapped, wlab, font, 0, 0, 200, 60);
+    dh_draw_widget(packed, wlab, font, 0, 0, 200, 60);
+    var w_px = count_nonbg(packed, 200, 60, 0x223344);
+    check(w_px > 0, 1);
+    var w_unwrapped = ta_unwrap(wbuf + 300 * 4, 300, 200, 60);
+    check(count_diff(packed, w_unwrapped, 200, 60), 0);
+    check(ta_count_not(wbuf, 300, wpat), 0);                     # guard row above
+    check(ta_count_not(wbuf + 300 * 61 * 4, 300, wpat), 0);      # guard row below
+    var wrow = 1;
+    var wpad = 0;
+    while (wrow <= 60) { wpad = wpad + ta_count_not(wbuf + (wrow * 300 + 200) * 4, 100, wpat); wrow = wrow + 1; }
+    check(wpad, 0);                                              # padding columns 200..299
+    say("D5: label pixels through the wrapped surface: ", w_px);
+    say("D5: pixels differing wrapped vs packed: ", count_diff(packed, w_unwrapped, 200, 60));
+    say("D5: bytes written outside the sub-rect (padding + guard rows), as dwords: ", wpad);
+
+    # ── E) THE HOOK IS SCOPED: THE PREVIOUS ONE COMES BACK, NOT 0 ──────
+    check(sd_alloc_get(), 0);                     # nothing installed before...
+    dh_frame_begin();
+    ta_frame(surf, font);
+    check(sd_alloc_get(), 0);                     # ...and nothing left installed after
+    var mine = sd_alloc_set(&ta_consumer_hook);
+    check(mine, 0);
+    check(sd_alloc_get(), &ta_consumer_hook);
+    dh_frame_begin();
+    ta_frame(surf, font);
+    # ⛔ THE CONSUMER'S HOOK, NOT 0. A draw that restored 0 would silently un-hook a consumer's own
+    # sadish drawing for the rest of its frame.
+    check(sd_alloc_get(), &ta_consumer_hook);
+    sd_alloc_set(0);
+    check(sd_alloc_get(), 0);
+
+    # ── F) UNSETTING THE ARENA RESTORES THE OLD BEHAVIOUR EXACTLY ──────
+    dh_frame_arena_set(0);
+    check(dh_frame_arena_get(), 0);
+    var d0 = alloc_used();
+    ta_frame(surf, font);
+    check(alloc_used() - d0 > 0, 1);
+    say("F: frame with no arena again: ", alloc_used() - d0);
+
+    # ── G) THE CARET FOLLOWS THE FACE ──────
+    # ⛔ UNTIL 0.10.0 THE TEXTINPUT CARET USED THE BITMAP GEOMETRY UNDER EVERY FONT: `x + 3 + chars * 9`,
+    # 16 px tall at `y + (h - 16) / 2`. MEASURED here before the fix, with this face at h = 20: 'AB AB'
+    # with the caret after all five characters drew it at x + 48 (column 78) while the run's pen ends
+    # at x + 2 + 69 = x + 71 (column 101; last glyph ink at x + 67) — 23 px short, in the BLANK
+    # second-'A' cell (pen x + 39 .. x + 51; the triangle rasterises no ink at h = 20) 3 px before the
+    # second 'B' cell and 5 px before its first ink column — and 16 px tall in a 20 px box.
+    # ⚠ 21 was the figure written first: 69 - 48 subtracts an origin-INCLUSIVE offset (48 = 3 + 45)
+    # from an origin-EXCLUSIVE advance sum. Both columns are asserted below, and their difference.
+    # Now (`font != 0`) it is `x + 2 + Σ dh_text_advance` over the first `cbytes` BYTES, from `y + 1`
+    # to `y + h - 1`.
+    # The caret is the ONE column of h - 2 exact-ink rows: the 'B' box is 0.7 em (14 px), 'A' 1.6 px.
+    var fld = dh_text_new(32);
+    check(dh_widget_kind(fld), TEXTINPUT);
+    dh_widget_set_bounds(fld, 30, 20, 160, 20);
+    dh_focus_set(fld);
+    check(dh_focus_get(), fld);
+    var s_car = sd_surface_new(200, 60);
+    var gink = dh_theme_ink();
+    check(gink != bg, 1);
+    var abab = "AB AB";
+    check(dh_text_set(fld, abab), 5);           # caret at the end: byte 5
+    check(dh_text_caret(fld), 5);
+    sd_clear(s_car, bg);
+    dh_draw_widget(s_car, fld, font, 0, 0, 200, 60);
+    var gcol = ta_find_col(s_car, 0, 200, 20, 20, gink, 18);
+    check(gcol, 30 + 2 + ta_adv_sum(font, abab, 5, 20));
+    check(gcol, 101);                           # the literal: x 30 + 2 + (12 + 20 + 5 + 12 + 20)
+    check(sd_surface_pixel_at(s_car, gcol, 20) != gink, 1);    # row y: the top border row is clear
+    check(sd_surface_pixel_at(s_car, gcol, 21), gink);         # y + 1: the caret's first row
+    check(sd_surface_pixel_at(s_car, gcol, 38), gink);         # y + h - 2: its last
+    check(sd_surface_pixel_at(s_car, gcol, 39) != gink, 1);    # y + h - 1: the bottom border row
+    say("G: caret column, 'AB AB' at byte 5, h 20, face: ", gcol);
+    # The pre-0.10.0 column, 78, carries NO ink under the face (the second-'A' cell); the last glyph
+    # ink is the second 'B' box's right edge at x + 67 (14 rows), and x + 68 .. x + 70 are clear.
+    check(ta_col_ink(s_car, 78, 20, 20, gink), 0);
+    check(ta_col_ink(s_car, 30 + 67, 20, 20, gink), 14);
+    check(ta_col_ink(s_car, 30 + 68, 20, 20, gink), 0);
+    # Space counts: '.notdef' advances 250 units (5 px); a caret that skipped it would sit at 96.
+    check(dh_text_advance(font, 32, 20), 5);
+    # caret at 0: the run origin, x + 2.
+    dh_text_home(fld);
+    sd_clear(s_car, bg);
+    dh_draw_widget(s_car, fld, font, 0, 0, 200, 60);
+    check(ta_find_col(s_car, 0, 200, 20, 20, gink, 18), 32);
+    # a longer text, caret at its end (byte 8) and then moved back to byte 5 — mid-text, same x.
+    var ababab = "AB AB AB";
+    check(dh_text_set(fld, ababab), 8);
+    sd_clear(s_car, bg);
+    dh_draw_widget(s_car, fld, font, 0, 0, 200, 60);
+    check(ta_find_col(s_car, 0, 200, 20, 20, gink, 18), 30 + 2 + ta_adv_sum(font, ababab, 8, 20));
+    check(30 + 2 + ta_adv_sum(font, ababab, 8, 20), 138);
+    check(dh_text_caret_move(fld, 0 - 3), 5);
+    sd_clear(s_car, bg);
+    dh_draw_widget(s_car, fld, font, 0, 0, 200, 60);
+    check(ta_find_col(s_car, 0, 200, 20, 20, gink, 18), 101);
+    # ⛔ BYTES, NOT CHARACTERS. 'AB' + the 2-byte sequence C3 84: `dh_draw_text_ink` iterates `load8`,
+    # so each of the two bytes is one `.notdef` glyph at 5 px and the run ends at 2 + 12 + 20 + 5 + 5.
+    # `dh_text_char_index` counts 3 characters; a caret summed over three would land 5 px short.
+    var u8 = alloc(8);
+    store8(u8, 65); store8(u8 + 1, 66); store8(u8 + 2, 0xC3); store8(u8 + 3, 0x84); store8(u8 + 4, 0);
+    check(dh_text_set(fld, u8), 4);
+    check(dh_text_char_index(fld, 4), 3);
+    check(ta_adv_sum(font, u8, 4, 20), 42);
+    sd_clear(s_car, bg);
+    dh_draw_widget(s_car, fld, font, 0, 0, 200, 60);
+    var ucol = ta_find_col(s_car, 0, 200, 20, 20, gink, 18);
+    check(ucol, 30 + 2 + 42);
+    say("G: caret column after 'AB' + C3 84 (4 bytes, 3 characters): ", ucol);
+    # ⚠ THE BITMAP ARM IS UNCHANGED: `font = 0`, 'AB AB' at byte 5 → x + 3 + 5 * 9 = 78, 16 rows from
+    # y + 2; at byte 0 → x + 3. The path everything ships with did not move a pixel.
+    check(dh_text_set(fld, abab), 5);
+    sd_clear(s_car, bg);
+    dh_draw_widget(s_car, fld, 0, 0, 0, 200, 60);
+    var bcol = ta_find_col(s_car, 0, 200, 20, 20, gink, 16);
+    check(bcol, 78);
+    check(gcol - bcol, 23);                     # the drift the comment above states, measured
+    check(sd_surface_pixel_at(s_car, bcol, 21) != gink, 1);
+    check(sd_surface_pixel_at(s_car, bcol, 22), gink);
+    check(sd_surface_pixel_at(s_car, bcol, 37), gink);
+    check(sd_surface_pixel_at(s_car, bcol, 38) != gink, 1);
+    dh_text_home(fld);
+    sd_clear(s_car, bg);
+    dh_draw_widget(s_car, fld, 0, 0, 0, 200, 60);
+    check(ta_find_col(s_car, 0, 200, 20, 20, gink, 16), 33);
+    say("G: caret column, 'AB AB' at byte 5, font 0 (bitmap, unchanged): ", bcol);
+
+    say("text_arena_test: checks run: ", g_n);
+    if (g_fails == 0) {
+        var ok = "text_arena_test: PASS (scalable text on the frame arena; global heap flat)\n";
+        syscall(1, 1, ok, strlen(ok));
+    } else {
+        var bad = "text_arena_test: FAIL\n";
+        syscall(1, 2, bad, strlen(bad));
+    }
+    return g_fails;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

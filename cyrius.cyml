@@ -5,7 +5,7 @@ description = "dhancha (ढाँचा — framework) — pure-Cyrius client-si
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/dhancha"
 language = "cyrius"
-cyrius = "6.6.2"
+cyrius = "6.6.4"
 
 # dhancha is a library — no CLI binary. `cyrius build` targets a smoke
 # program that links the full include chain to prove lib.cyr parses clean.
@@ -90,10 +90,26 @@ git = "https://github.com/MacCracken/sadish.git"
 # ⚠ `path` added 0.9.23, for the same reason rupa carries one: without it dhancha can only build
 # against a PUBLISHED sadish tag, so a local sadish fix cannot be exercised until it is pushed — and
 # 0.9.23's scrim depends on `sd_fill_rect_blend`, which landed in sadish 0.5.3 minutes earlier.
+# 0.10.0's scalable text depends on `sd_alloc_set` + `sd_canvas_blit_at`, which landed in sadish
+# 0.5.5 the same way.
 # ⛔ `path` WINS over `tag`, so a green build here is NOT evidence the declared tag resolves.
 # Re-verify with every `path` line disabled before any release that moves these tags.
+# ⛔⛔ FLOOR >= 0.5.5, HARD — AND BELOW IT THE BUILD IS EITHER REFUSED OR GOES GREEN AND FAULTS.
+# `sd_alloc_set`, `sd_alloc_get` and `sd_canvas_blit_at` do not exist below 0.5.5. Which outcome a
+# build gets is NOT "a direct call from the program vs one through the bundle": cyrius 6.6.4 judges
+# each undefined name by its FIRST call site in code order — inside a function DCE keeps live it
+# refuses (`error: refusing to emit binary with N reachable undefined function(s)`); inside a dead
+# one it prints `warning: undefined function`, emits a binary that faults at the first real call,
+# and never looks at the later sites. MEASURED against a `git archive` of sadish 0.5.4: this repo's
+# smoke and arena_test build OK and run (no face reached); text_test and text_arena_test are
+# refused; rekha's path_test builds OK and exits 132 (its first `sd_alloc(` site, rekha_err_new, is
+# dead there); crab — no call of its own, `dh_draw_text_ink` reachable from main through
+# lib/dhancha.cyr — is refused, 2 undefined. A consumer that vendors sadish itself (crab: tag-only
+# 0.5.4 / rekha 0.3.7) must therefore bump BOTH tags before it can build against 0.10.0 at all.
+# ⇒ Grep build output for `undefined function` before trusting a green build against a moved tag —
+# the plain warning line is printed in both cases.
 path = "../sadish"
-tag = "0.5.3"
+tag = "0.5.5"
 modules = ["dist/sadish.cyr"]
 
 # rupa (रूप — form / appearance) — the shared desktop theme-token core. Widgets +
@@ -105,15 +121,26 @@ git = "https://github.com/MacCracken/rupa.git"
 # ⚠ `path` — every other dep in this stack carries both; without it a local rupa change cannot be
 # built against until it is pushed, which is how a burn ends up testing last week's tokens.
 path = "../rupa"
-tag = "0.1.6"
+tag = "0.1.7"
 modules = ["dist/rupa.cyr"]
 
 [deps.rekha]
 git = "https://github.com/MacCracken/rekha.git"
-# ⛔ FLOOR >= 0.3.6, HARD: `dh_text_advance` calls `rekha_char_advance_px`, which 0.3.5 does not
-# define — `hhea`/`hmtx` were declared tags with no reader until 0.3.6. Against an older pin the
-# scalable text path does not compile.
-tag = "0.3.6"
+# ⚠ `path` added 0.10.0, for the reason the sadish and setu blocks carry one: 0.10.0 needs rekha
+# 0.3.10, which is not yet a pushed tag, and without `path` a local rekha cannot be built against
+# until it is. ⛔ `path` WINS over `tag`, so a green build here is NOT evidence the declared tag
+# resolves — re-verify with this line disabled before any release that moves the tag.
+path = "../rekha"
+# ⛔ FLOOR >= 0.3.10, HARD. rekha 0.3.10 draws its glyph scratch — the loca span, the point arrays,
+# the outline record, a composite's merge buffers — from sadish's `sd_alloc` seam instead of the
+# global heap. That is what lets this repo's frame arena own the WHOLE scalable-text cost: dhancha
+# installs `dh_falloc` as sadish's hook around a text draw (surface.cyr), and every byte rekha asks
+# for lands on the arena too. Against 0.3.6–0.3.9 the outlines still leak 136 B per glyph (70,856 B
+# per composite glyph) onto the global heap, under the hook, per frame — MEASURED in rekha 0.3.10's
+# release. 0.3.6's floor still stands beneath this one: `dh_text_advance` calls
+# `rekha_char_advance_px`, which 0.3.5 does not define — `hhea`/`hmtx` were declared tags with no
+# reader until 0.3.6, and against an older pin the scalable text path does not compile.
+tag = "0.3.10"
 modules = ["dist/rekha.cyr"]
 
 # kashi (काशि) — the AGNOS system console font (full CP437, VGA 8x16). dh_draw_text
@@ -123,7 +150,7 @@ modules = ["dist/rekha.cyr"]
 git = "https://github.com/MacCracken/kashi.git"
 # ⚠ `path` — kashi is VENDORED (lib/kashi_font_data.cyr); every other dep in this stack carries both.
 path = "../kashi"
-tag = "1.0.6"
+tag = "1.0.8"
 # ⛔⛔ THE FREESTANDING CORE IS A MEASURED CHOICE, NOT A SHORTCUT (recorded 2026-08-17, kashi 1.0.6).
 # kashi's ADR 0001 says stdlib-linked consumers should take the LIBRARY FACE, and this project links
 # the full stdlib — so `src/font_data.cyr` looks like the wrong surface. Two reasons it is not:
@@ -164,5 +191,5 @@ path = "../setu"
 # every build and every test was green while this line still said 0.8.7; CI has no `../setu`, resolved
 # the tag, and `dist/dhancha.cyr` would not compile. The manifest note below said a green local build
 # is not evidence the declared graph resolves — this is that, measured.
-tag = "0.8.8"
+tag = "0.8.9"
 modules = ["dist/setu.cyr"]

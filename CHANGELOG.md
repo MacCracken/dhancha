@@ -5,6 +5,105 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.10.1] - 2026-09-21 — toolchain 6.6.6, sadish 0.11.2, rekha 0.9.0
+
+A pin-only release: no source change under `src/`. The toolchain moves two patch releases and the
+three draw-path deps that had moved since 0.10.0 are taken to their latest tags. What changed
+downstream of dhancha is the COST of a scalable-text frame, not its pixels — and two checks that had
+baked the 0.5.5-era cost in were rewritten to assert the relation they stood for.
+
+### Changed — dependencies
+
+- **sadish `0.5.5` → `0.11.2`** (six releases: styled strokes, gradient and pattern paint, exact
+  coverage, inline `SdPath` / `SdPolyline` points, a per-operation flatten budget, an API reference,
+  and 0.11.1's audit — four crashes, a heap overflow and a hang). Nothing dhancha calls changed
+  shape: the **18** `sd_*` names it calls resolve at the same arity (checked call site by call
+  site, comment lines excluded), and the `SdSurface` record `dh_surface_wrap` hand-builds is still
+  `w`/`h`/`pixels`/`stride` at 0/8/16/24, 32 B. dhancha never reads `SdPath` internals, so the
+  inline-point port rekha had to make (sadish 0.9.0's note: *"rekha must port, dhancha need not"*)
+  is not ours. ⛔ The 0.5.5 floor still stands beneath the pin (`sd_alloc_set`, `sd_alloc_get`,
+  `sd_canvas_blit_at`).
+- **rekha `0.3.10` → `0.9.0`.** The five `rekha_*` names dhancha calls (`font_open`,
+  `char_to_glyph`, `char_to_sdpath`, `char_advance_px`, `units_per_em`) keep their arity. ⚠ rekha
+  0.9.0 pins sadish **0.11.2 exactly** and its `dist/` is cut against it, so the two vendored bundles
+  are on ONE sadish — move them together, as this release does. `path = "../rekha"` stays (the
+  0.10.0 note said it was there because the 0.3.10 tag was not yet pushed; it has been, and the line
+  stays for cross-repo work as every other dep's does).
+- **kashi `1.0.8` → `1.0.10`** — no public-API change, and `src/font_data.cyr` (the vendored
+  freestanding core, `lib/kashi_font_data.cyr`) is byte-identical to 1.0.8's: the lock hash did not
+  move. **rupa `0.1.7`** and **setu `0.8.9`** were already the latest tags.
+- ⛔ **Verified with every `path` line disabled**, as the manifest demands before a release that
+  moves a tag: `rm -rf lib && cyrius deps` resolved all five from git (`cyrius.lock: 37 deps locked,
+  5 commit-pinned` — sadish `d9f41f3`, rupa `aa1a2d7`, rekha `47aabba`, kashi `f8f9c97`, setu
+  `cc4161f`), and each resolved bundle is **byte-identical** to the sibling checkout's `dist/` (kashi's
+  sibling is one comment-only commit past its tag; `src/font_data.cyr` is the same file). The whole
+  gate set below was then re-run in a scratch checkout with NO sibling repos at all — CI's shape —
+  and every build's output grepped for `undefined function`: none. ⚠ One snag, recorded because the
+  message is new: `cyrius deps` refused the cached `~/.cyrius/deps/kashi/1.0.10` as *"tampered — its
+  origin remote is not the URL this dep declares"*; it was a scratch-directory clone left by kashi's
+  own bundle-consumer test, and `rm -rf` of that one cache entry re-cloned it from GitHub.
+- The lock, resolved the normal way (path deps pin no `commit` line, as at 0.10.0), re-hashes 29
+  entries — 27 stdlib files plus the sadish and rekha bundles — and gains `lib/alloc_cx.cyr` (new in
+  6.6.6), 115 → 116 entries; `lib/` was re-synced `--full` from the 6.6.6 snapshot, so the lock is
+  that snapshot plus the five dep bundles.
+
+### Changed — toolchain `6.6.4` → `6.6.6`
+
+The toolchain and the deps were isolated from each other: on 6.6.6 with the OLD pins (sadish 0.5.5,
+rekha 0.3.10, kashi 1.0.8, resolved from their tags) all 18 suites pass, INCLUDING the unmodified
+0.10.0 `text_arena_test` with its 0.5.5 literals — so the two failures below are sadish's, not the
+toolchain's — and the rewritten `text_arena_test` passes there too, so its relations hold in both
+eras. Read for consumer-visible shapes, then grepped for each under `src/` and `programs/`:
+
+- **6.6.5:** *"re-run `cyrius deps` at the bump"* — done (`lib sync --full` + `deps`; the aarch64
+  syscall peer's `SYS_UNLINKAT` 35 → 263 is in the re-vendored `lib/syscalls_aarch64_linux.cyr`,
+  though CI builds x86_64 only). The aggregate-layout repair, the fn-local static-array naming and the
+  `private` diagnostics need a `struct`, a fn-local sized array or a `private` file to matter;
+  dhancha has none of the three. `cyrlint --strict-deferrals` widened its match — the lint gate is
+  0 warnings across `src/` and `programs/`.
+- **6.6.6:** the Windows `O_APPEND` / `O_TRUNC` corruption (18 repos exposed — dhancha writes no
+  file: zero `O_APPEND` / `O_TRUNC` sites outside vendored `lib/`); CVE-45's `#@file` forgery (no
+  `private` file here to be attributed wrongly); the nine new refusals — a global redeclared with a
+  different type or size (none), a `var` in a top-level block leaking out (none; the release's own
+  survey of 12,604 sources across `~/Repos` found no consumer that read one), a function-like
+  `#define` invoked from a comment (no function-like macro in the tree). The cx forward-read fix and
+  the PE/UEFI/Mach-O entry-base repairs are for targets this repo does not build.
+
+### Testing — `programs/text_arena_test.cyr` 92 → 93 checks; two rewritten from a figure to a relation
+
+Under sadish 0.11.2 the 12-label face frame costs the arena **122,328 B** (0.10.0: 417,056 — sadish
+0.9.0/0.10.0 store a path's points inline and a flattened point costs no allocation, so the per-glyph
+path is no longer a 4,144 B record plus point blocks), `'A'` 2,600 B, `'AAA'` 4,504 B (~950 B per
+further glyph), the 10-char label **10,312 B** (was 38,184), tree + layout 4,736 B unchanged; the
+no-arena first frame 1,114,576 B (sadish's one-time fill scratch grew with its exact-coverage
+rasterizer) and the second 122,328. The headline holds unchanged: **twenty frames with the face,
+global heap cost 0 B**; the wide run's accrow is still exactly `w*8` (6,176 B) once and 0 after; the
+pixel groups D/D5/G are identical. Two checks had the 0.5.5 numbers baked in and failed:
+
+- **#17** asserted the warm growable arena's capacity at the literal `524288` — one chain of 262,144
+  under 0.5.5; a frame now fits the first chunk and it is 262,144. What the check stood for is *"the
+  wide run drew from the warm arena and chained NO chunk"*, so it now compares against `cap_warm`,
+  captured after the twenty-frame warm-up.
+- **#20** asserted the 64 KiB fixed arena's spill at `> 300000` (*"most of the 417,056 B frame went
+  to the global heap"*); it is 56,808 B now. Rewritten as the IDENTITY the paragraph describes —
+  `spill + arena_used(fx) == g2 - g1`, the whole frame as group A measured it on the global heap
+  (every request is 8-byte rounded on both sides and lands on exactly one of the two) — plus
+  `spill > 0` (64 KiB does not hold a frame).
+
+Four mutations, each proven to fail the rewritten checks (in a scratch copy, sadish 0.11.2): a 300,000 B `arena_alloc` on the warm arena
+before #17 (chains a chunk) [17, 18]; `fx` made growable, so nothing spills [20]; `dh_falloc`'s
+fallback allocating `size + 8` [20]; a hidden 8 B global allocation per spilled request [20]. The
+header comment and the B2/B3 paragraphs record both eras' figures so the next sadish that moves the
+cost moves a `say` line and not a check.
+
+`dist/dhancha.cyr` 233,891 B unchanged but for its version stamp (4,629 lines); `dist/dhancha.deps`
+unchanged (13 leaves). ⚠ The vendored bundles are much larger sources now — `lib/sadish.cyr` 85,815 →
+471,512 B, `lib/rekha.cyr` 40,750 → 551,402 B — and a consumer that links without DCE pays for it: the
+plain `smoke` binary 397,912 → **747,512 B** (+88%), while the `CYRIUS_DCE=1` one is 123,480 →
+**133,112 B** (+9,632; 1,599 unreachable fns, 617,772 B NOPed). Build with `CYRIUS_DCE=1`. All
+**18** `programs/*_test.cyr` pass and the seven `setu_*` probes/demos build; `lint` 0 warnings,
+`fmt --check` clean, `vet` clean, `distlib` in sync, sidecar in sync.
+
 ## [0.10.0] - 2026-09-14 — scalable text costs the global heap nothing per frame
 
 ### ⭐⭐ The headline: the one draw path that never went through the frame arena now does

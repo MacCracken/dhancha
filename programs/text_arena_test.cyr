@@ -41,6 +41,17 @@
 # not "smaller than the surface"; it is that the cost FOLLOWS THE TEXT AND NOT THE SURFACE: the same
 # run on a surface four times the area costs the arena the same bytes, to the byte, and a frame costs
 # less than the old full-surface canvases alone would have.
+# ⚠ 0.10.1 (sadish 0.5.5 -> 0.11.2, rekha 0.3.10 -> 0.9.0) MOVED THE FIGURES, NOT THE INVARIANTS.
+# sadish 0.9.0/0.10.0 store a path's and a polyline's points INLINE and a flattened point costs no
+# allocation, so the per-glyph path is no longer a fixed 4,144 B record plus point blocks. MEASURED
+# here: the 12-label frame 417,056 B -> **122,328 B** on the arena (tree + layout 4,736 B unchanged),
+# 'A' 2,600 B, 'AAA' 4,504 B (~950 B per further glyph), the 10-char label 10,312 B; the no-arena
+# first frame 1,114,576 B (sadish's one-time fill scratch grew with its exact-coverage rasterizer),
+# the second 122,328 B. Two checks below had baked the 0.5.5 numbers in — the warm growable arena's
+# capacity (it chained once to 524,288 B; the frame now fits its first 262,144 B chunk) and the
+# 64 KiB fixed arena's spill ("> 300,000"; now 56,808 B) — and were rewritten to assert the RELATION
+# each stood for (the wide run does not chain; spill + arena_used is the whole frame) instead of the
+# figure, so the next sadish that moves the cost moves a `say` line and not a check.
 
 include "src/lib.cyr"
 
@@ -394,8 +405,9 @@ fn main(): i64 {
     # ⭐ EXACTLY 0. Canvas, coverage, rekha's outline scratch, the path per glyph, the flatten
     # mid-points — all of it on the arena, reclaimed at `dh_frame_begin`, re-walked next frame.
     check(b1 - b0, 0);
+    var cap_warm = arena_capacity_total(a);
     say("B: 20 frames with the face, global heap cost: ", b1 - b0);
-    say("B: arena_capacity_total after warm-up: ", arena_capacity_total(a));
+    say("B: arena_capacity_total after warm-up: ", cap_warm);
     # ⚠ B2. THE ONE GLOBAL COST THAT SURVIVES WARM-UP, MEASURED SO IT IS A KNOWN NUMBER AND NOT A
     # SURPRISE IN A CONSUMER'S GATE. sadish's per-row accumulator (`_sd_fill_accrow_for`, raster.cyr)
     # is re-allocated from the GLOBAL alloc — never the hook, a scratch on a resettable arena would
@@ -405,6 +417,10 @@ fn main(): i64 {
     # the arena, after warm-up. ⇒ A zero-heap gate warms up at the WIDEST run/clip/h it will draw.
     # The canvas this run gets: bx0 = 0 (x - h < 0), bx1 = cx_end + h with cx = x + 2, well inside
     # the 1200 px surface; every frame above was 380 px wide with 10-character labels.
+    # ⚠ The capacity check is against `cap_warm`, not a figure: it asserts the wide run drew from the
+    # warm arena and chained NO chunk (a chunk is >= 262,144 B from the global heap and would also
+    # fail the w*8 check). Under sadish 0.5.5 the warm arena was 524,288 B (one chain); under 0.11.2 a
+    # frame fits the first chunk and it is 262,144 — the relation is the invariant, the number is not.
     var s_wide = sd_surface_new(1200, 60);
     var wide = "AB AB AB AB AB AB AB AB AB AB AB AB AB AB AB AB AB AB AB AB ";
     var wide_w = 12 + 20;
@@ -416,7 +432,7 @@ fn main(): i64 {
     dh_draw_text_ink(s_wide, font, wide, 10, 10, 20, 0, 0, 1200, 60, ink);
     var w1 = alloc_used();
     check(w1 - w0, wide_w * 8);                  # the accrow re-grow, exactly w*8, on the global heap
-    check(arena_capacity_total(a), 524288);      # ...and not an arena chunk: the run fit the warm arena
+    check(arena_capacity_total(a), cap_warm);    # ...and not an arena chunk: the run fit the warm arena
     dh_frame_begin();
     dh_draw_text_ink(s_wide, font, wide, 10, 10, 20, 0, 0, 1200, 60, ink);
     check(alloc_used() - w1, 0);                 # never again at this width
@@ -428,9 +444,13 @@ fn main(): i64 {
     # from `arena_alloc` faults several layers away — so under `arena_new(65536)` the tree (4,736 B)
     # and the first few paths land on the arena, `arena_used` stops at the capacity, the hook is
     # restored correctly, and everything after the refusal is the pre-0.10.0 cost, every frame, with
-    # nothing failing. ⇒ A fixed arena must hold a whole frame (~417 KB for this one: ~4.3 KB per
-    # glyph drawn + 320 B per widget, `DH_WIDGET_SIZE`); `arena_new_growable` chains instead of
-    # refusing (0.9.15's advice, restated for text). Both halves measured, so the number is known.
+    # nothing failing. ⇒ A fixed arena must hold a whole frame (122,328 B for this one under sadish
+    # 0.11.2 — ~1 KB per glyph drawn + 320 B per widget, `DH_WIDGET_SIZE`; it was ~417 KB at ~4.3 KB
+    # per glyph under 0.5.5); `arena_new_growable` chains instead of refusing (0.9.15's advice,
+    # restated for text). Both halves measured, so the number is known — and the check is the
+    # IDENTITY, not the figure: every request is 8-byte rounded on both sides and lands on exactly
+    # one of the two, so `spill + arena_used(fx)` is the whole frame, which group A measured as the
+    # second no-arena frame (`g2 - g1`). A request lost or counted twice breaks it either way.
     var fx = arena_new(65536);
     check(fx != 0, 1);
     dh_frame_arena_set(fx);
@@ -438,7 +458,8 @@ fn main(): i64 {
     var fx0 = alloc_used();
     ta_frame(surf, font);
     var fx_spill = alloc_used() - fx0;
-    check(fx_spill > 300000, 1);                 # most of the 417,056 B frame went to the global heap
+    check(fx_spill + arena_used(fx), g2 - g1);   # the remainder of the frame, and nothing else, spilled
+    check(fx_spill > 0, 1);                      # ...and there WAS a remainder: 64 KiB does not hold a frame
     check(arena_used(fx) <= 65536, 1);           # ...and the arena is full to within one path
     check(arena_used(fx) > 65536 - 4400, 1);
     say("B3: fixed 64 KiB arena, one face frame, global heap (the spill): ", fx_spill);

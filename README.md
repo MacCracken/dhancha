@@ -1,6 +1,6 @@
 # dhancha
 
-Version: 0.10.0
+Version: 0.10.1
 
 **dhancha** (ढाँचा — Hindi/Sanskrit: *framework / structure / scaffold*)
 is a pure-Cyrius **client-side widget toolkit / desktop app framework**
@@ -158,15 +158,18 @@ scaffold. As the draw/present code lands (v0.2), add to `cyrius.cyml`:
   `syscalls`, `assert`, `bench`, `args`, plus `hashmap` (widget-id →
   handler routing), `fnptr` (event-callback dispatch), and `tagged`
   (tagged-value payloads). Resolved by `cyrius deps` into `lib/`.
-- **sadish** (0.5.5) + **rekha** (0.3.10) — the draw path: sadish fills/strokes
+- **sadish** (0.11.2) + **rekha** (0.9.0) — the draw path: sadish fills/strokes
   widget backgrounds/borders, rekha rasterizes text (via sadish). Wired as
   `[deps.*]` (local `../` path overrides for dev; git tags as published pins).
   ⛔ Both floors are HARD: 0.10.0's scalable text installs `dh_falloc` through
   sadish 0.5.5's `sd_alloc_set` and blits with `sd_canvas_blit_at`, and rekha
-  0.3.10 is the version whose outline scratch follows that hook.
+  0.3.10 is the version whose outline scratch follows that hook. The pins sit
+  well above both floors since 0.10.1; nothing dhancha calls changed shape
+  across sadish 0.6–0.11 or rekha 0.4–0.9, and rekha 0.9.0 is cut against
+  sadish 0.11.2 exactly, so the two move together.
 - **rupa** (0.1.7) — the shared desktop theme tokens (`dh_theme_*`), the same
   source the compositor reads.
-- **kashi** (1.0.8) — the VGA 8x16 system font the default (`font = 0`) text
+- **kashi** (1.0.10) — the VGA 8x16 system font the default (`font = 0`) text
   path blits; vendored as its freestanding core (see the manifest's ⛔).
 - **setu** (0.8.9) — the display-protocol contract and reference client that
   `dh_client_connect` / `dh_setu_*` delegate to.
@@ -174,7 +177,7 @@ scaffold. As the draw/present code lands (v0.2), add to `cyrius.cyml`:
   the native protocol; GPU upload later) is a later bite. The CPU draw is
   complete.
 
-The toolchain pin is `cyrius = "6.6.4"`.
+The toolchain pin is `cyrius = "6.6.6"`.
 
 ## Quick Start
 

@@ -239,6 +239,27 @@ fn dh_draw_text(sds, font, text, x, y, h, clx, cly, clw, clh): i64 {
     return dh_draw_text_ink(sds, font, text, x, y, h, clx, cly, clw, clh, dh_theme_ink());
 }
 
+# Scalable text runs whose flatten budget ran out (0.10.2) — see the ⭐ block inside
+# `dh_draw_text_ink`. A plain module-global scalar, monotonic for the life of the process; read it
+# through `dh_text_degraded_runs` and take DELTAS, the way this repo's gates read `alloc_used()`.
+var _dh_text_degraded_runs = 0;
+
+# @public — how many scalable text runs (one `dh_draw_text_ink` call with `font != 0`, one label)
+# have had at least one glyph curve cut to its CHORD by sadish's flatten budget, since the process
+# began. Monotonic: sample it before and after the span you care about — a frame, one draw — and a
+# delta of 0 means every glyph in that span was tessellated whole. A run that degrades is still
+# drawn (the cut curves are straight lines, so the picture is coarser, not blank); this count is the
+# witness that it happened, which sadish's own verdict cannot be for a consumer of this toolkit —
+# `sd_flatten_degraded()` answers for the LAST operation, and the last operation is whichever
+# glyph fill ran last, not the label.
+# ⚠ Under a consumer's own enclosing `sd_flatten_op_begin` / `_end` (one budget for a whole frame,
+# say), dhancha's per-run scope is NESTED and joins that operation, whose degraded flag is sticky
+# until it closes — so every run drawn after the operation first degrades counts too. The delta is
+# still 0 exactly when nothing degraded, which is what a gate asks; the exact count is per run only
+# when dhancha's scope is the outermost one.
+# ⚠ The bitmap path (`font == 0`) flattens nothing and never counts.
+fn dh_text_degraded_runs(): i64 { return _dh_text_degraded_runs; }
+
 # ============================================================================================
 # ⭐⭐ THE SCALABLE BRANCH COSTS THE GLOBAL HEAP NOTHING PER FRAME (0.10.0) — closes the 2026-09-13
 # filing, `scalable-text-allocates-per-call-outside-the-frame-arena`
@@ -288,7 +309,10 @@ fn dh_draw_text(sds, font, text, x, y, h, clx, cly, clw, clh): i64 {
 # capacity either way — and the canvas is 7,792 B (155 x 50: 40 B header + 7,750 B coverage, rounded
 # to 8). 30,392 + 7,792 = 38,184. A frame's arena high-water is therefore ~4.3 KB per glyph drawn,
 # and shrinking it further is a sadish/rekha question (a path sized to the outline, or one path
-# reused per run).
+# reused per run). ⭐ ANSWERED UPSTREAM, taken at 0.10.1: rekha 0.9.0 counts a contour before it
+# builds it and opens the path with `sd_path_new_cap` at exactly its size, and sadish 0.9.0/0.10.0
+# store a path's and a flatten's points inline, so the same label is **10,312 B** and the frame
+# **122,328 B** (`text_arena_test`, ~950 B per further glyph).
 #
 # ⚠ THE HOOK IS SCOPED, NOT INSTALLED. `sd_alloc_set` returns the PREVIOUS hook and this function
 # restores THAT, not 0 — a consumer that has its own sadish hook around its own drawing keeps it. No
@@ -418,6 +442,35 @@ fn dh_draw_text_ink(sds, font, text, x, y, h, clx, cly, clw, clh, ink): i64 {
     # coverage, so a glyph is rasterised into exactly the pixels it was before and cut at exactly
     # the same edge — and the cut now costs nothing, because a pixel outside the canvas is never
     # visited rather than visited and multiplied by 0. Glyph origins are canvas-relative.
+    #
+    # ⭐ ONE FLATTEN OPERATION FOR THE WHOLE RUN (0.10.2), NOT ONE PER GLYPH. sadish bounds the work
+    # a curve-dense outline can cost with a budget in points emitted (`SD_FLATTEN_BUDGET_DEFAULT`,
+    # 65,536; past it each remaining curve is cut to its CHORD and `sd_flatten_degraded()` says so),
+    # measured over an OPERATION — and since sadish 0.7.2 every fill opens one of its own, so
+    # without this scope each `sd_canvas_fill_union` below is its own operation and a label of N
+    # glyphs is N budgets. rekha admits 4,096 points to a simple glyph (`REKHA_COMPOSITE_MAXP`), so
+    # a hostile face can make one glyph spend a whole budget, and a 60-character label 60 of them,
+    # every frame — the shape rekha filed against sadish in the first place (it fills untrusted
+    # outlines every frame; the consumer that fills them is this function). Wrapping the loop makes
+    # the LABEL the operation: a nested fill joins the open one (sadish's own contract for
+    # `sd_flatten_op_begin`), so the run shares one budget and the verdict after `_end` is the run's.
+    # MEASURED (`text_budget_test`, a 250-quad spike glyph at 16,000 points, h = 20): a run of them
+    # is cut at its FIFTH glyph, sixty of them paint exactly what six do (five spikes; the rest are
+    # chords along the baseline) and take **75 ms** where the same sixty unbounded — sixty budgets,
+    # the per-fill cost — take **1,045 ms**. The trade is the same one sadish makes: a LEGITIMATE
+    # run that would emit more than the budget in one label degrades too, so its headroom is
+    # measured — a curved glyph emits 16 points at h = 20, a 60-glyph label 959 (1.5 % of the
+    # budget), the same label at h = 200 3,839 (5.9 %); sadish's own ASCII corpus puts the default's
+    # cut at ~1,889 glyphs in one label at a 32 px em, ~649 at 208 px — and a consumer that really
+    # draws one label longer than that raises `sd_flatten_budget_set` (0 = unbounded) or scopes a
+    # whole frame itself, which nests this scope inside its own. Neither call allocates; twenty
+    # frames of the 60-glyph label under an arena still cost the global heap 0 B.
+    # ⚠ THE SCOPE ALSO MAKES THE VERDICT MEAN SOMETHING HERE. sadish's flag belongs to the last
+    # operation, and a fill of a path with no curve verb opens none and leaves whatever was standing —
+    # so without a scope, a straight-lined glyph drawn after a degraded label would still read as
+    # degraded. Opening at depth 0 clears it; the read after `_end` is this run's, and it lands in
+    # `_dh_text_degraded_runs` (`dh_text_degraded_runs`) as a count a consumer's gate can delta.
+    sd_flatten_op_begin();
     var i = 0;
     while (load8(text + i) != 0) {
         var cp = load8(text + i);
@@ -428,6 +481,8 @@ fn dh_draw_text_ink(sds, font, text, x, y, h, clx, cly, clw, clh, ink): i64 {
         cx = cx + dh_text_advance(font, cp, h);
         i = i + 1;
     }
+    sd_flatten_op_end();
+    if (sd_flatten_degraded() != 0) { _dh_text_degraded_runs = _dh_text_degraded_runs + 1; }
     # ⛔ THIS WAS HARDCODED `sd_rgb(255, 255, 255)` AND IGNORED THE THEME ENTIRELY (fixed 0.9.20).
     # White glyphs on MUDRA light's 0xFBF8F0 paper is white-on-white — the scalable-font path was
     # unreadable on both light grounds, and had been since it was written. The bitmap path (what

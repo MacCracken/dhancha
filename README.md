@@ -1,6 +1,6 @@
 # dhancha
 
-Version: 0.10.1
+Version: 0.10.2
 
 **dhancha** (ढाँचा — Hindi/Sanskrit: *framework / structure / scaffold*)
 is a pure-Cyrius **client-side widget toolkit / desktop app framework**
@@ -112,6 +112,21 @@ compositor composites onto the screen over the native display protocol.
   rasterises, and the caret follows the face's advances (it was drawn at the bitmap font's
   `x + 3 + chars * 9` under every font — 23 px short after 'AB AB' at h = 20, 16 px tall in a 20 px
   box). RUN-tested (`text_arena_test`, 92 checks, thirteen mutations).
+- **v0.10.2 — a label is one flatten operation (shipped).** sadish bounds what a curve-dense outline
+  can cost with a budget in points per OPERATION (65,536; past it the remaining curves are cut to
+  chords and `sd_flatten_degraded()` says so), and since sadish 0.7.2 every fill opens one of its
+  own — so each glyph of a label was its own operation and a label of N glyphs was N budgets. rekha
+  admits 4,096 points to a simple glyph, and a hostile face is a real input (it is the case rekha
+  filed against sadish's flatten: untrusted outlines, filled every frame — by this toolkit).
+  `dh_draw_text_ink` now opens ONE operation around its glyph loop, so the label is the unit the
+  budget bounds; MEASURED with a 250-quad spike glyph at 16,000 points, a run of them is cut at its
+  fifth glyph and sixty of them take 75 ms where the per-fill cost is 1,045 ms. A legitimate curved
+  glyph emits 16 points at h = 20, so a 60-glyph label is 1.5 % of the budget (5.9 % at h = 200); a
+  consumer drawing one label past ~1,889 glyphs at a 32 px em raises `sd_flatten_budget_set` or
+  scopes a frame itself (dhancha's scope nests inside it). The scope also makes the verdict mean
+  something: `dh_text_degraded_runs()` counts the runs whose budget ran out — monotonic, delta it
+  across a frame the way a gate deltas `alloc_used()`; a run that degrades is still drawn, coarser.
+  Nothing here allocates. RUN-tested (`text_budget_test`, 108 checks, five mutations).
 - **v0.6+ — next.** The compositor-fd input source (decode the native display
   protocol's input wire bytes into events + block on its transport), and the
   present path (CPU buffer submit over the native protocol; mabda GPU upload

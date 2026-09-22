@@ -5,6 +5,113 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.10.2] - 2026-09-21 — a label is one flatten operation, and a degraded run is counted
+
+The follow-up 0.10.1 named: sadish 0.7.0's *"rekha and dhancha should wrap a glyph draw"* in
+`sd_flatten_op_begin` / `_end`, taken now that the pins are there — and taken at the unit that is
+still open, because sadish closed the other one itself.
+
+### ⭐ What sadish already does, and what it cannot
+
+sadish bounds the tessellation of a curve-dense outline with a budget in **points emitted per
+OPERATION** (`SD_FLATTEN_BUDGET_DEFAULT` = 65,536, sadish 0.7.1): past it each remaining curve is cut
+to its CHORD — no subdivision, no temporaries — and `sd_flatten_degraded()` says so. The 0.7.0 advice
+was written when every curve VERB was its own operation, so the budget bounded nothing a font could
+not exceed by adding curves; 0.7.2 made **the fill** the operation (`sd_fill_impl` opens one, lazily,
+at the first curve it flattens), so a lone glyph fill has been bounded since without any help from
+here. What a fill cannot know is where the label ends. Through 0.10.1 `dh_draw_text_ink` called
+`sd_canvas_fill_union` once per glyph, each its own operation, so a label of N glyphs was N budgets —
+and rekha admits **4,096 points** to a simple glyph (`REKHA_COMPOSITE_MAXP`), enough for one glyph to
+spend a whole budget on its own (2,048 quads at the 256-point depth cap is eight of them). A hostile
+face is a real input: it is the case rekha filed against sadish's flatten in the first place —
+untrusted outlines, filled every frame — and the consumer that fills them is this function.
+
+### Changed — `dh_draw_text_ink` opens one operation around its glyph loop
+
+`sd_flatten_op_begin()` before the loop, `sd_flatten_op_end()` after, nothing else moved. A nested
+begin joins the operation already open (sadish's own contract for the call), so every glyph's fill
+now draws from the LABEL's budget and the verdict after `_end` is the label's. Neither call
+allocates: the arena headline stands (twenty frames of a 60-glyph curved label under a growable
+arena, global heap **0 B**, pinned in the new suite's group F and unchanged in `text_arena_test`).
+
+**MEASURED** (`programs/text_budget_test.cyr`, a face built in memory: a curved 4-quad glyph, a
+straight-lined one, and a 250-quad spike glyph whose control points sit 600 px off their chords at
+h = 20 — sadish's own hostile path as a glyph, 64 points a quad, **16,000 points a glyph**):
+
+| | per-fill operations (0.10.1) | one operation per label (0.10.2) |
+|---|---|---|
+| points one hostile glyph spends | 16,000, of its own 65,536 | 16,000, of the label's 65,536 |
+| a label of hostile glyphs is cut at glyph… | never | the **fifth** (four whole, the fifth at 1,536 points in) |
+| ink of 6 hostile glyphs, then 60, at the default | 6 spikes, then 60 | **5 spikes, then 5** — everything past the cut is a chord along the baseline |
+| 60 hostile glyphs, wall clock | 1,045 ms (measured unbounded: sixty budgets' worth) | **75 ms** |
+
+The picture stops growing with the glyph count, which is the bound: the work a label can cost is
+now the budget, not the budget times its length.
+
+⚠ **The trade, measured rather than assumed.** A LEGITIMATE label that would emit more than the
+budget in one operation degrades too, where before each glyph had its own. The suite's curved glyph
+emits **16 points** at h = 20 (sadish's synthetic ASCII glyph: 60 at a ~13 px em, 960 at ~2,048 px),
+so the suite's widest legitimate run — 60 glyphs — is **959 points, 1.5 %** of the budget; the same label at
+h = 200 is 3,839 (5.9 %). sadish's own figures put the default's cut at ~1,889 glyphs in ONE label at a
+32 px em, ~649 at 208 px, ~236 at 2,048 px. A consumer that really draws a single label longer than
+that raises `sd_flatten_budget_set` (0 = unbounded, 0.7.0's behaviour) — or scopes a whole frame
+itself, which nests this scope inside its own and makes the frame the unit.
+
+### Added — `dh_text_degraded_runs()`
+
+How many scalable runs (one `dh_draw_text_ink` with `font != 0`, one label) have had a glyph curve
+cut to its chord by the budget, since the process began. **Monotonic**: sample it before and after
+the span you care about and delta it, the way this repo's gates delta `alloc_used()`; a delta of 0
+means every glyph in that span was tessellated whole. A run that degrades is still drawn (the cut
+curves are straight lines — coarser, not blank); the count is the witness, which sadish's own
+`sd_flatten_degraded()` cannot be for a consumer of this toolkit: it answers for the LAST operation,
+and before this release the last operation was whichever glyph fill ran last, not the label.
+⚠ **The scope is what makes the verdict mean anything here.** sadish leaves the flag standing when a
+fill of a path with no curve verb opens no operation — so without a scope, a straight-lined glyph
+drawn after a degraded label still read as degraded (group D pins the fix: a degraded run, then the
+triangle, reads 0). ⚠ Under a consumer's own enclosing `sd_flatten_op_begin` / `_end`, dhancha's scope
+is nested and the flag is the operation's, sticky until it closes, so every run drawn after the one
+that degraded counts too — MEASURED and pinned in group E: the same two runs count **2** inside a
+consumer scope and **1** outside. The delta is 0 exactly when nothing degraded either way, which is
+what a gate asks; the exact count is per run only when dhancha's scope is the outermost. The bitmap
+path (`font == 0`) flattens nothing and never counts.
+
+### Testing — `programs/text_budget_test.cyr` (new, 108 checks)
+
+Every instrument is public: `sd_flatten_budget_set` (returns the previous budget, so it can be
+scoped), the pixels, and the new counter. `thr(text)` is the smallest budget at which a draw does not
+degrade, found by bisection — sadish cuts a curve when the points already emitted reach the budget at
+that curve's ENTRY, so `thr` is a deterministic function of the run (integer origins and advances:
+every 'A' is flattened to the same points) and **additive in the glyph count exactly when the glyphs
+share one operation**: thr(60 × 'A') = thr('A') + 59 × (thr('AA') − thr('A')) = 15 + 59 × 16 = 959,
+checked exactly; under per-fill operations thr(n) == thr(1) and the per-glyph figure reads 0. That is
+the proof the scope spans the run (group B). Group C is the hostile face: one glyph within the default
+(thr 15,999 — per-fill scoping would never have degraded it), the cut at the fifth glyph as predicted
+from 16,000 a glyph, six glyphs painting six spikes unbounded and five at the default, sixty painting
+the same five, the wall clock said and not checked. D: the verdict does not leak (a degraded run,
+then 'C', 'CCC', 'A', the empty string — 0, 0, 0, 0). E: a consumer's enclosing scope — the
+over-count, two legitimate runs sharing one budget, and the budget set to exactly thr('AA') letting
+two 'A' runs through while one point short cuts the second. F: twenty frames under a growable arena
+cost the global heap 0 B, a degrading run included. G: the bitmap path never counts, the operation
+depth is 0 after every draw (`sd_flatten_op_begin()` returns 1, then closed), the budget is as it was.
+Five mutations of `surface.cyr`, each proven to fail it: no scope at all (17 checks across B, C, D,
+E and F — 0.10.1's behaviour, cleanly: the first cut of the suite divided by the per-glyph figure,
+which is 0 there, and died of SIGFPE at check 39); the scope kept but the run never counted (every delta); begin without end (the
+depth check and everything after); the verdict inverted; end without begin. A sixth — a scope per
+GLYPH nested inside the run's — passes, as it should: a nested begin joins the open operation and
+changes nothing. ⚠ The first cut of the hostile glyph traced each spike forward and back along the
+SAME curve — winding +1 then −1, zero area, nothing painted — and the ink checks read 0 = 0; a
+straight segment back along the baseline is what gives the spike its area, and the suite's header
+says so.
+
+`dist/dhancha.cyr` 233,891 → 238,663 B (4,629 → 4,684 lines); `dist/dhancha.deps` unchanged. The
+`CYRIUS_DCE=1` smoke binary 133,112 → **133,120 B** (+8, the counter — `smoke` never renders text,
+so the scope is eliminated there) and the plain one 747,512 → 751,616 B. All **19** `programs/*_test.cyr`
+pass; `lint` 0 warnings, `fmt --check` clean, `vet` clean, `distlib` in sync, sidecar in sync. ⚠ The
+0.10.0 note in `surface.cyr` that *"shrinking it further is a sadish/rekha question (a path sized to
+the outline…)"* now carries its answer: rekha 0.9.0's `sd_path_new_cap` and sadish's inline points,
+taken at 0.10.1 — 10,312 B per label, 122,328 B per frame.
+
 ## [0.10.1] - 2026-09-21 — toolchain 6.6.6, sadish 0.11.2, rekha 0.9.0
 
 A pin-only release: no source change under `src/`. The toolchain moves two patch releases and the

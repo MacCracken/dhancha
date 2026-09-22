@@ -1,0 +1,491 @@
+# text_budget_test — a scalable text RUN is one flatten operation, and a degraded run is counted
+# (0.10.2). RUN test: builds two faces in memory, draws through `dh_draw_text_ink`'s `font != 0`
+# branch, and measures sadish's flatten budget from OUTSIDE — the only instruments are public:
+# `sd_flatten_budget_set` (a budget in points; 0 = unbounded; returns the previous one), the pixels,
+# and dhancha's own `dh_text_degraded_runs` counter. Exit 0 iff every check passes.
+#
+# ⛔ WHY THE SCOPE EXISTS. sadish bounds the tessellation of a curve-dense outline with a budget in
+# POINTS EMITTED per OPERATION (`SD_FLATTEN_BUDGET_DEFAULT` = 65,536): past it, each remaining curve
+# is cut to its CHORD and `sd_flatten_degraded()` says so. Since sadish 0.7.2 every FILL opens an
+# operation of its own — so through dhancha 0.10.1 each glyph's `sd_canvas_fill_union` was its own
+# operation and a label of N glyphs was N budgets. rekha admits 4,096 points to a simple glyph, and
+# a hostile face is a real input (rekha's filing against sadish's flatten is about exactly this:
+# untrusted outlines, filled every frame — by THIS toolkit). `dh_draw_text_ink` now opens ONE
+# operation around its glyph loop, so the LABEL is the unit the budget bounds, and the verdict after
+# `sd_flatten_op_end` is the label's — which is what `dh_text_degraded_runs` counts.
+#
+# ⚠ HOW A RUN'S POINTS ARE MEASURED HERE: `thr(text)` is the smallest budget at which the run does
+# NOT degrade, found by bisection over `sd_flatten_budget_set`. sadish cuts a curve when the points
+# already emitted in the operation reach the budget AT THAT CURVE'S ENTRY, so `thr` is the points
+# emitted before the run's last curve plus one — a deterministic function of the run (integer
+# origins, integer advances: every 'A' is flattened to the same points), and ADDITIVE in the glyph
+# count exactly when the glyphs share one operation: thr(n glyphs) = thr(1) + (n - 1) * U, U the
+# points one glyph emits. Under per-fill operations thr(n) == thr(1) for every n. That difference
+# is the check that proves the scope spans the run (group B).
+#
+# ⚠ THE HOSTILE FACE. 'B' is 250 copies of the same spike — on (0,0), off (500,30000), on (1000,0),
+# then a straight segment back along the baseline to (0,0) — inside the em horizontally and 30 em
+# tall, the shape of sadish's own hostile path rendered as a glyph: at h = 20 each quad's control
+# point is 600 px off its chord, so the fill subdivides it to depth 6 (64 points) before it is flat
+# to a quarter pixel. All 250 spikes coincide, with the same orientation, so a glyph with any quad
+# whole paints exactly one spike (nonzero winding: 1 or 24 or 250 inside is the same pixel) and a
+# glyph whose quads were ALL cut to chords (lines along the baseline, zero area) paints nothing
+# above the baseline: the ink above the baseline counts the glyphs the budget let through, which is
+# how group C sees the bound in the picture. ⚠ The segment back matters: a spike traced forward
+# and back along the SAME curve has winding +1 then -1 and paints nothing at all.
+#
+# Groups: A the face and the scope's balance · B additivity (the operation spans the run) ·
+# C the hostile run: bounded at the default, unbounded at 0, sixty glyphs cost what five do ·
+# D the verdict does not leak (a straight-lined glyph after a degraded run reads 0) · E a
+# consumer's enclosing scope (nested; the documented over-count) · F nothing here allocates
+# (twenty frames under an arena, global heap 0) · G the bitmap path never counts, the budget is
+# restored.
+
+include "src/lib.cyr"
+
+var g_fails = 0;
+var g_n = 0;
+
+fn check(got, want): i64 {
+    g_n = g_n + 1;
+    if (got == want) { return 0; }
+    g_fails = g_fails + 1;
+    var m = "text_budget_test: check failed at #";
+    syscall(1, 2, m, strlen(m));
+    fmt_int_fd(2, g_n);
+    var nl = "\n";
+    syscall(1, 2, nl, 1);
+    return 1;
+}
+
+fn say(label, v): i64 {
+    syscall(1, 1, label, strlen(label));
+    fmt_int_fd(1, v);
+    var nl = "\n";
+    syscall(1, 1, nl, 1);
+    return 0;
+}
+
+fn put_u16(buf, off, v): i64 {
+    store8(buf + off, (v >> 8) & 255);
+    store8(buf + off + 1, v & 255);
+    return 0;
+}
+
+fn put_u32(buf, off, v): i64 {
+    put_u16(buf, off, (v >> 16) & 65535);
+    put_u16(buf, off + 2, v & 65535);
+    return 0;
+}
+
+fn dir_entry(buf, ent, tag, off, tlen): i64 {
+    put_u32(buf, ent, tag);
+    put_u32(buf, ent + 8, off);
+    put_u32(buf, ent + 12, tlen);
+    return 0;
+}
+
+# The hostile glyph's quad count. 250 quads = 751 points, under a fifth of rekha's 4,096-point cap,
+# and 16,000 points of flatten at h = 20 (64 a quad) — a quarter of the default budget, so ONE such
+# glyph is within it (the per-fill scope of 0.10.1 would never have degraded it) and a run of five
+# is not.
+var NQ = 250;
+
+# A simple glyph, every delta 16-bit: header, one contour, no instructions, flags, xs, ys.
+# `flags` is a cstring-free byte array of n entries, `dxs`/`dys` i64 arrays. Returns the byte
+# length written at `buf + g`.
+fn put_glyph(buf, g, n, flags, dxs, dys, xmin, ymin, xmax, ymax): i64 {
+    put_u16(buf, g + 0, 1);
+    put_u16(buf, g + 2, xmin & 65535);
+    put_u16(buf, g + 4, ymin & 65535);
+    put_u16(buf, g + 6, xmax & 65535);
+    put_u16(buf, g + 8, ymax & 65535);
+    put_u16(buf, g + 10, n - 1);           # endPts[0]
+    put_u16(buf, g + 12, 0);               # no instructions
+    var p = g + 14;
+    var i = 0;
+    while (i < n) { store8(buf + p + i, load8(flags + i)); i = i + 1; }
+    p = p + n;
+    i = 0;
+    while (i < n) { put_u16(buf, p + i * 2, load64(dxs + i * 8) & 65535); i = i + 1; }
+    p = p + n * 2;
+    i = 0;
+    while (i < n) { put_u16(buf, p + i * 2, load64(dys + i * 8) & 65535); i = i + 1; }
+    p = p + n * 2;
+    return p - g;
+}
+
+# Fill `buf` (8 KiB) with a face of three glyphs: gid 1 'A' = a curved "squircle" of four quads
+# (on (500,900) · off (900,900) · on (900,500) · off (900,100) · on (500,100) · off (100,100) ·
+# on (100,500) · off (100,900)), advance 1000; gid 2 'B' = the hostile spike glyph (NQ quads, each
+# closed by a baseline segment), advance 1000; gid 3 'C' = the triangle (10,10)(90,10)(50,90),
+# straight lines only, advance 600; gid 0 (.notdef, and so space) is empty at advance 250. One
+# format-4 segment 'A'..'C'.
+# Table set and layout as text_arena_test's build_prop_font: head maxp hhea hmtx loca glyf cmap.
+fn build_budget_font(buf): i64 {
+    var n_b = 1 + 3 * NQ;
+    var fl = alloc(n_b);
+    var dx = alloc(n_b * 8);
+    var dy = alloc(n_b * 8);
+
+    # glyf sizes: A = 14 + 8 + 16 + 16 = 54; B = 14 + 5 * n_b, padded even; C = 14 + 3 + 12 = 29 -> 30
+    var size_a = 54;
+    var size_b = 14 + 5 * n_b;
+    if ((size_b & 1) != 0) { size_b = size_b + 1; }
+    var size_c = 30;
+    var glyf_len = size_a + size_b + size_c;
+    var off_glyf = 276;
+    var off_cmap = off_glyf + glyf_len;
+    if ((off_cmap & 3) != 0) { off_cmap = off_cmap + 4 - (off_cmap & 3); }
+    check(off_cmap + 44 <= 8192, 1);
+
+    put_u32(buf, 0, 0x00010000);
+    put_u16(buf, 4, 7);
+    dir_entry(buf, 12, 0x68656164, 124, 54);          # head
+    dir_entry(buf, 28, 0x6D617870, 180, 32);          # maxp
+    dir_entry(buf, 44, 0x68686561, 212, 36);          # hhea
+    dir_entry(buf, 60, 0x686D7478, 248, 16);          # hmtx: 4 metrics
+    dir_entry(buf, 76, 0x6C6F6361, 264, 10);          # loca: 5 short entries
+    dir_entry(buf, 92, 0x676C7966, off_glyf, glyf_len);
+    dir_entry(buf, 108, 0x636D6170, off_cmap, 44);
+
+    put_u16(buf, 124 + 18, 1000);      # unitsPerEm
+    put_u16(buf, 124 + 50, 0);         # short loca
+    put_u16(buf, 180 + 4, 4);          # numGlyphs = 4
+    put_u16(buf, 212 + 34, 4);         # numberOfHMetrics = 4
+    put_u16(buf, 248 + 0, 250);  put_u16(buf, 248 + 2, 0);     # gid 0: adv 250
+    put_u16(buf, 248 + 4, 1000); put_u16(buf, 248 + 6, 0);     # gid 1 'A': adv 1000
+    put_u16(buf, 248 + 8, 1000); put_u16(buf, 248 + 10, 0);    # gid 2 'B': adv 1000
+    put_u16(buf, 248 + 12, 600); put_u16(buf, 248 + 14, 0);    # gid 3 'C': adv 600
+    put_u16(buf, 264 + 0, 0);
+    put_u16(buf, 264 + 2, 0);                                  # glyph 0 empty
+    put_u16(buf, 264 + 4, size_a / 2);
+    put_u16(buf, 264 + 6, (size_a + size_b) / 2);
+    put_u16(buf, 264 + 8, glyf_len / 2);
+
+    # 'A' — the squircle: on/off alternating, four quads.
+    var g = off_glyf;
+    store8(fl + 0, 1); store8(fl + 1, 0); store8(fl + 2, 1); store8(fl + 3, 0);
+    store8(fl + 4, 1); store8(fl + 5, 0); store8(fl + 6, 1); store8(fl + 7, 0);
+    store64(dx + 0, 500);  store64(dx + 8, 400);   store64(dx + 16, 0);   store64(dx + 24, 0);
+    store64(dx + 32, 0 - 400); store64(dx + 40, 0 - 400); store64(dx + 48, 0); store64(dx + 56, 0);
+    store64(dy + 0, 900);  store64(dy + 8, 0);     store64(dy + 16, 0 - 400); store64(dy + 24, 0 - 400);
+    store64(dy + 32, 0);   store64(dy + 40, 0);    store64(dy + 48, 400); store64(dy + 56, 400);
+    check(put_glyph(buf, g, 8, fl, dx, dy, 100, 100, 900, 900), size_a);
+
+    # 'B' — the spikes: P0 on (0,0); then per quad an off (500, 30000), an on (1000, 0), and an on
+    # back at (0, 0) — the segment that gives the spike its area.
+    g = g + size_a;
+    store8(fl + 0, 1); store64(dx + 0, 0); store64(dy + 0, 0);
+    var q = 0;
+    while (q < NQ) {
+        var k = 1 + 3 * q;
+        store8(fl + k, 0);                  # off-curve control (500, 30000)
+        store64(dx + k * 8, 500);
+        store64(dy + k * 8, 30000);
+        store8(fl + k + 1, 1);              # on-curve end (1000, 0)
+        store64(dx + (k + 1) * 8, 500);
+        store64(dy + (k + 1) * 8, 0 - 30000);
+        store8(fl + k + 2, 1);              # on-curve back to (0, 0)
+        store64(dx + (k + 2) * 8, 0 - 1000);
+        store64(dy + (k + 2) * 8, 0);
+        q = q + 1;
+    }
+    var wrote_b = put_glyph(buf, g, n_b, fl, dx, dy, 0, 0, 1000, 30000);
+    check(wrote_b <= size_b, 1);
+    check(wrote_b + 1 >= size_b, 1);
+
+    # 'C' — the triangle, all on-curve.
+    g = g + size_b;
+    store8(fl + 0, 1); store8(fl + 1, 1); store8(fl + 2, 1);
+    store64(dx + 0, 10); store64(dx + 8, 80); store64(dx + 16, 0 - 40);
+    store64(dy + 0, 10); store64(dy + 8, 0);  store64(dy + 16, 80);
+    check(put_glyph(buf, g, 3, fl, dx, dy, 10, 10, 90, 90), 29);
+
+    # cmap: 1 subtable (plat 3/enc 1), format 4, one segment 'A'..'C' -> gid 1..3
+    var c = off_cmap;
+    put_u16(buf, c + 0, 0);
+    put_u16(buf, c + 2, 1);
+    put_u16(buf, c + 4, 3);
+    put_u16(buf, c + 6, 1);
+    put_u32(buf, c + 8, 12);
+    var s = c + 12;
+    put_u16(buf, s + 0, 4);
+    put_u16(buf, s + 2, 32);
+    put_u16(buf, s + 4, 0);
+    put_u16(buf, s + 6, 4);
+    put_u16(buf, s + 8, 4);
+    put_u16(buf, s + 10, 1);
+    put_u16(buf, s + 12, 0);
+    put_u16(buf, s + 14, 0x43);        # endCode[0] = 'C'
+    put_u16(buf, s + 16, 0xFFFF);
+    put_u16(buf, s + 18, 0);
+    put_u16(buf, s + 20, 0x41);        # startCode[0] = 'A'
+    put_u16(buf, s + 22, 0xFFFF);
+    put_u16(buf, s + 24, 0xFFC0);      # idDelta = -64 -> 'A' 1, 'B' 2, 'C' 3
+    put_u16(buf, s + 26, 1);
+    put_u16(buf, s + 28, 0);
+    put_u16(buf, s + 30, 0);
+    return 0;
+}
+
+# A cstring of `n` copies of byte `ch`, on the global heap.
+fn repeat(ch, n): i64 {
+    var s = alloc(n + 1);
+    memset(s, ch, n);
+    store8(s + n, 0);
+    return s;
+}
+
+# Count the pixels of `sds` (w*h) that are not `bg` in rows [y0, y1).
+fn count_ink_rows(sds, w, y0, y1, bg): i64 {
+    var n = 0;
+    var y = y0;
+    while (y < y1) {
+        var x = 0;
+        while (x < w) {
+            if (sd_surface_pixel_at(sds, x, y) != bg) { n = n + 1; }
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    return n;
+}
+
+var SW = 1400;
+var SH = 80;
+var TX = 10;
+var TY = 30;
+var g_bg = 0;
+var g_ink = 0;
+
+# Draw `text` at height `h` on a cleared surface and answer whether THAT run degraded (0 / 1).
+fn draw_degraded(sds, font, text, h): i64 {
+    sd_clear(sds, g_bg);
+    var d0 = dh_text_degraded_runs();
+    dh_draw_text_ink(sds, font, text, TX, TY, h, 0, 0, SW, SH, g_ink);
+    return dh_text_degraded_runs() - d0;
+}
+
+# The smallest budget (points) at which one draw of `text` at `h` does not degrade — bisection
+# over sd_flatten_budget_set, the default restored after. 0 = the run never degrades at budget 1
+# (no curve was flattened at all).
+fn thr(sds, font, text, h): i64 {
+    var prev = sd_flatten_budget_set(1);
+    var lo = 1;
+    if (draw_degraded(sds, font, text, h) == 0) { sd_flatten_budget_set(prev); return 0; }
+    var hi = 1 << 22;
+    sd_flatten_budget_set(hi);
+    check(draw_degraded(sds, font, text, h), 0);
+    while (hi - lo > 1) {
+        var mid = lo + (hi - lo) / 2;
+        sd_flatten_budget_set(mid);
+        if (draw_degraded(sds, font, text, h) == 0) { hi = mid; } else { lo = mid; }
+    }
+    sd_flatten_budget_set(prev);
+    return hi;
+}
+
+fn main(): i64 {
+    alloc_init();
+    var fbuf = alloc(8192);
+    memset(fbuf, 0, 8192);
+    build_budget_font(fbuf);
+    var font = rekha_font_open(fbuf, 8192);
+    g_bg = sd_rgb(20, 20, 30);
+    g_ink = sd_rgb(230, 230, 230);
+
+    # ── A) THE FACE, AND THE SCOPE IS BALANCED ──────
+    check(font != 0, 1);
+    check(rekha_char_to_glyph(font, 0x41), 1);
+    check(rekha_char_to_glyph(font, 0x42), 2);
+    check(rekha_char_to_glyph(font, 0x43), 3);
+    check(dh_text_advance(font, 0x41, 20), 20);
+    check(dh_text_advance(font, 0x43, 20), 12);
+    check(sd_flatten_budget_get(), SD_FLATTEN_BUDGET_DEFAULT);
+    var sds = sd_surface_new(SW, SH);
+    check(sds != 0, 1);
+    # A draw leaves no operation open: the next begin is the OUTERMOST one (depth 1), then closed.
+    check(draw_degraded(sds, font, "AAA", 20), 0);
+    check(sd_flatten_op_begin(), 1);
+    check(sd_flatten_op_end(), 0);
+    # ...and each glyph really rasterises: the squircle and the spike both leave ink; the empty run
+    # and a run of spaces leave none.
+    check(count_ink_rows(sds, SW, 0, SH, g_bg) > 0, 1);
+    sd_clear(sds, g_bg);
+    dh_draw_text_ink(sds, font, "B", TX, TY, 20, 0, 0, SW, SH, g_ink);
+    var spike_ink = count_ink_rows(sds, SW, 0, TY + 20 - 2, g_bg);      # rows above the baseline
+    check(spike_ink > 0, 1);
+    say("A: one hostile glyph, ink above the baseline: ", spike_ink);
+    sd_clear(sds, g_bg);
+    dh_draw_text_ink(sds, font, "   ", TX, TY, 20, 0, 0, SW, SH, g_ink);
+    check(count_ink_rows(sds, SW, 0, SH, g_bg), 0);
+
+    # ── B) ADDITIVITY: THE OPERATION SPANS THE RUN ──────
+    # thr(n) = thr(1) + (n - 1) * U for the curved 'A'. Per-fill operations (0.10.1) give
+    # thr(n) == thr(1) for every n, and this fails at the second line.
+    var t1 = thr(sds, font, "A", 20);
+    var t2 = thr(sds, font, "AA", 20);
+    var t3 = thr(sds, font, "AAA", 20);
+    var a60 = repeat(0x41, 60);
+    var t60 = thr(sds, font, a60, 20);
+    var u = t2 - t1;
+    check(t1 > 0, 1);
+    check(u > 0, 1);                              # per-fill operations: thr('AA') == thr('A'), u == 0
+    check(t3 - t2, u);
+    check(t60 > t1, 1);
+    check(t60, t1 + 59 * u);
+    say("B: thr('A'): ", t1);
+    say("B: points per further 'A' at h = 20 (thr('AA') - thr('A')): ", u);
+    say("B: thr(60 x 'A'): ", t60);
+    # The whole 60-glyph run is a small fraction of the default budget, at h = 20 and at h = 200 —
+    # the headroom a LEGITIMATE curved label has under one operation.
+    check(t60 < SD_FLATTEN_BUDGET_DEFAULT / 10, 1);
+    check(draw_degraded(sds, font, a60, 20), 0);
+    var t60_200 = thr(sds, font, a60, 200);
+    check(t60_200 < SD_FLATTEN_BUDGET_DEFAULT / 4, 1);
+    check(draw_degraded(sds, font, a60, 200), 0);
+    say("B: thr(60 x 'A') at h = 200: ", t60_200);
+    # A space is advance without coverage and emits nothing: the points of "A A" are those of "AA".
+    check(thr(sds, font, "A A", 20), t2);
+
+    # ── C) THE HOSTILE RUN: BOUNDED AT THE DEFAULT, UNBOUNDED AT 0 ──────
+    var tb = thr(sds, font, "B", 20);
+    say("C: thr('B'), one hostile glyph of 250 quads at h = 20: ", tb);
+    check(tb > 10000, 1);                        # it IS hostile: a quarter of the budget in one glyph
+    check(tb < SD_FLATTEN_BUDGET_DEFAULT, 1);    # ...and within it alone: per-fill scoping never degrades it
+    var ub = thr(sds, font, "BB", 20) - tb;      # points one hostile glyph emits
+    say("C: points per hostile glyph: ", ub);
+    check(ub > 10000, 1);
+    # The run degrades at the first glyph count whose points reach the budget — expected from the
+    # per-glyph figure, and observed by drawing at the DEFAULT budget.
+    var expect_n = 0;                            # ⚠ guarded: without the scope `ub` is 0
+    if (ub > 0) { expect_n = SD_FLATTEN_BUDGET_DEFAULT / ub + 1; }
+    var n = 1;
+    var first_degraded = 0;
+    while (n <= 8) {
+        var bn = repeat(0x42, n);
+        var d = draw_degraded(sds, font, bn, 20);
+        if (d != 0) { if (first_degraded == 0) { first_degraded = n; } }
+        else { check(first_degraded, 0); }        # monotonic: once degraded, always degraded
+        n = n + 1;
+    }
+    say("C: hostile glyphs per run before the default budget cuts one: ", first_degraded - 1);
+    check(first_degraded, expect_n);
+    check(first_degraded > 1, 1);
+    check(first_degraded <= 8, 1);
+    # THE PICTURE STOPS GROWING WITH THE GLYPH COUNT. Unbounded, six hostile glyphs paint six spikes;
+    # at the default they paint as many as the budget let through — and sixty paint exactly the same
+    # as six, because everything past the cut is a chord along the baseline.
+    var b6 = repeat(0x42, 6);
+    var b60 = repeat(0x42, 60);
+    var prev = sd_flatten_budget_set(0);
+    check(draw_degraded(sds, font, b6, 20), 0);
+    var ink6_unbounded = count_ink_rows(sds, SW, 0, TY + 20 - 2, g_bg);
+    sd_flatten_budget_set(prev);
+    check(draw_degraded(sds, font, b6, 20), 1);
+    var ink6 = count_ink_rows(sds, SW, 0, TY + 20 - 2, g_bg);
+    var t_before = now_ns();
+    check(draw_degraded(sds, font, b60, 20), 1);
+    var t_default = now_ns() - t_before;
+    var ink60 = count_ink_rows(sds, SW, 0, TY + 20 - 2, g_bg);
+    check(ink6_unbounded, 6 * spike_ink);
+    check(ink6, first_degraded * spike_ink);       # the glyph that ran out mid-way still has whole quads
+    check(ink60, ink6);
+    check(ink60 < ink6_unbounded, 1);
+    say("C: ink above the baseline, 6 hostile glyphs unbounded: ", ink6_unbounded);
+    say("C: ink above the baseline, 6 hostile glyphs at the default: ", ink6);
+    say("C: ink above the baseline, 60 hostile glyphs at the default: ", ink60);
+    # Wall clock, said and not checked: the sixty-glyph run at the default against the same run
+    # unbounded, which is what a per-fill scope would have spent (sixty budgets' worth).
+    sd_flatten_budget_set(0);
+    t_before = now_ns();
+    check(draw_degraded(sds, font, b60, 20), 0);
+    var t_unbounded = now_ns() - t_before;
+    sd_flatten_budget_set(prev);
+    say("C: 60 hostile glyphs, one operation at the default, microseconds: ", t_default / 1000);
+    say("C: 60 hostile glyphs, unbounded (the per-fill cost), microseconds: ", t_unbounded / 1000);
+
+    # ── D) THE VERDICT DOES NOT LEAK ──────
+    # A degraded run, then a straight-lined glyph ('C' flattens nothing, opens no fill operation):
+    # without dhancha's scope, sadish's flag would still be standing from the run before and the
+    # triangle would read as degraded. Then the curved glyph, then a degraded run again.
+    check(draw_degraded(sds, font, b6, 20), 1);
+    check(draw_degraded(sds, font, "C", 20), 0);
+    check(draw_degraded(sds, font, "CCC", 20), 0);
+    check(draw_degraded(sds, font, "A", 20), 0);
+    check(draw_degraded(sds, font, b6, 20), 1);
+    check(draw_degraded(sds, font, "", 20), 0);
+    check(sd_flatten_op_begin(), 1);
+    check(sd_flatten_op_end(), 0);
+
+    # ── E) A CONSUMER'S ENCLOSING SCOPE ──────
+    # Two runs inside one consumer operation: the flag is the OPERATION's and sticky until it closes,
+    # so a run drawn after the one that degraded counts too — the documented over-count. The same
+    # two runs outside any scope count once. Either way the delta is 0 iff nothing degraded.
+    var e0 = dh_text_degraded_runs();
+    check(sd_flatten_op_begin(), 1);
+    check(draw_degraded(sds, font, b6, 20), 1);
+    check(draw_degraded(sds, font, "A", 20), 1);
+    check(sd_flatten_op_end(), 0);
+    check(dh_text_degraded_runs() - e0, 2);
+    e0 = dh_text_degraded_runs();
+    check(draw_degraded(sds, font, b6, 20), 1);
+    check(draw_degraded(sds, font, "A", 20), 0);
+    check(dh_text_degraded_runs() - e0, 1);
+    # And inside a consumer scope two LEGITIMATE runs share the budget and neither degrades.
+    e0 = dh_text_degraded_runs();
+    sd_flatten_op_begin();
+    check(draw_degraded(sds, font, a60, 20), 0);
+    check(draw_degraded(sds, font, a60, 20), 0);
+    check(sd_flatten_op_end(), 0);
+    check(dh_text_degraded_runs() - e0, 0);
+    # The consumer's scope makes ITS operation the budget's unit: thr over two runs is the sum.
+    sd_flatten_budget_set(t1 + u);                 # exactly "AA"'s threshold: two 'A' runs share it
+    sd_flatten_op_begin();
+    check(draw_degraded(sds, font, "A", 20), 0);
+    check(draw_degraded(sds, font, "A", 20), 0);
+    sd_flatten_op_end();
+    sd_flatten_budget_set(t1 + u - 1);             # one short: the second run is cut
+    sd_flatten_op_begin();
+    check(draw_degraded(sds, font, "A", 20), 0);
+    check(draw_degraded(sds, font, "A", 20), 1);
+    sd_flatten_op_end();
+    sd_flatten_budget_set(SD_FLATTEN_BUDGET_DEFAULT);
+
+    # ── F) NOTHING HERE ALLOCATES: THE ARENA HEADLINE HOLDS ──────
+    var a = arena_new_growable(262144);
+    check(a != 0, 1);
+    check(dh_frame_arena_set(a), DHANCHA_OK);
+    var w = 0;
+    while (w < 4) { dh_frame_begin(); draw_degraded(sds, font, a60, 20); w = w + 1; }
+    var f0 = alloc_used();
+    var f = 0;
+    while (f < 20) { dh_frame_begin(); check(draw_degraded(sds, font, a60, 20), 0); f = f + 1; }
+    check(alloc_used() - f0, 0);
+    say("F: 20 frames of the 60-glyph curved run under the arena, global heap: ", alloc_used() - f0);
+    # ...and a degrading run under the arena: the cut is free too.
+    f0 = alloc_used();
+    dh_frame_begin();
+    check(draw_degraded(sds, font, b6, 20), 1);
+    dh_frame_begin();
+    check(draw_degraded(sds, font, b6, 20), 1);
+    say("F: two hostile frames under the arena, global heap (the wider run's accrow, once): ", alloc_used() - f0);
+    dh_frame_arena_set(0);
+
+    # ── G) THE BITMAP PATH NEVER COUNTS; THE BUDGET IS AS IT WAS ──────
+    check(draw_degraded(sds, 0, "BBBBBB", 20), 0);
+    check(sd_flatten_op_begin(), 1);
+    check(sd_flatten_op_end(), 0);
+    check(sd_flatten_budget_get(), SD_FLATTEN_BUDGET_DEFAULT);
+
+    say("text_budget_test: checks run: ", g_n);
+    if (g_fails != 0) {
+        var fm = "text_budget_test: FAIL\n";
+        syscall(1, 2, fm, strlen(fm));
+        return 2;
+    }
+    var ok = "text_budget_test: PASS (one flatten operation per run; degraded runs counted)\n";
+    syscall(1, 1, ok, strlen(ok));
+    return 0;
+}

@@ -1,6 +1,6 @@
 # dhancha
 
-Version: 0.10.3
+Version: 0.10.4
 
 **dhancha** (ढाँचा — Hindi/Sanskrit: *framework / structure / scaffold*)
 is a pure-Cyrius **client-side widget toolkit / desktop app framework**
@@ -18,8 +18,9 @@ It owns:
 - an **event loop** and **input dispatch** — keyboard / pointer / scroll, focus + `Tab` traversal,
   hover, activation, capture + bubble propagation, and a drag-drop state machine,
 - the **draw** — the tree into a sadish `SdSurface`: backgrounds and borders via sadish, text via
-  kashi (the bitmap system font) or rekha (a scalable face), colours from rupa's theme tokens; with a
-  per-frame arena so a rendered frame costs the global heap nothing, and
+  kashi (the bitmap system font, CP437 cells for what the code page has) or rekha (a scalable face),
+  one glyph per UTF-8 character either way, colours from rupa's theme tokens; with a per-frame arena
+  so a rendered frame costs the global heap nothing, and
 - the **client connection** — `dh_client_connect` / `_present` / `_next_event` / `_poll_event`
   over setu, the display-protocol contract shared with the aethersafha compositor.
 
@@ -54,8 +55,9 @@ compositor composites onto the screen over the native display protocol.
    aethersafha                      ← compositor / server (composites to screen)
 ```
 
-The present path is CPU pixels over setu; a GPU upload (mabda) is a later bite that waits on setu
-carrying a buffer handle — see the roadmap.
+The present path is complete: sadish's pixels go into a kernel-owned shared buffer that setu asks
+for GPU-visible on hardware, and aethersafha composites it on the GPU. dhancha draws on the CPU by
+design and makes no GPU call of its own.
 
 ## Consumers
 
@@ -89,8 +91,8 @@ carrying a buffer handle — see the roadmap.
   path blits; vendored as its freestanding core (see the manifest's ⛔).
 - **setu** (0.8.9) — the display-protocol contract and reference client that
   `dh_client_connect` / `dh_setu_*` delegate to.
-- **mabda** (GPU) — not a dependency yet: the present path is CPU pixels over
-  setu, and a GPU upload waits on setu carrying a buffer handle (roadmap).
+- **mabda** (GPU) — not a dependency, by design: dhancha draws on the CPU and
+  the hardware path is the buffer's (setu) and the compositor's (aethersafha).
 
 Every `[deps.*]` resolves from its published git tag, and `cyrius.lock` carries
 the commit each tag resolved to. The `path = "../sibling"` overrides are kept

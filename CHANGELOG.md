@@ -5,6 +5,102 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.10.4] - 2026-09-21 — the draw reads characters, not bytes; and nothing is blocked on a sibling
+
+The roadmap's top pinned item, taken: every walk over a label's text decodes UTF-8 and draws one
+glyph per CHARACTER, in both arms and the caret. And a correction to the roadmap 0.10.3 opened: it
+listed two items as *blocked on a sibling*, and a check before filing them found neither is.
+
+### Fixed — one glyph per character (`dh_text_decode`, `dh_text_cp437`)
+
+Through 0.10.3 every walk took `load8` as the codepoint: the bitmap arm drew one kashi cell per
+BYTE, the scalable arm one glyph per BYTE, and the caret under a face summed advances per BYTE —
+while `TEXTINPUT` stepped, deleted and counted whole UTF-8 characters (`dh_text__next`,
+`dh_text_char_index`). "Ä" (C3 84) was two cells under kashi ('├' then 'ä') and two `.notdef`s under
+a face; a file named "Über.txt" in a file manager drew as "Ãœber.txt"; and the bitmap caret, which
+was already per character, sat one cell short of the draw after every non-ASCII character. crab's
+help text carries "—" and "⚠" today, and its file names come from the filesystem.
+
+- **`dh_text_decode(s, at, cpp)`** (`src/textinput.cyr`, beside the encoder it inverts) — stores the
+  scalar at an 8-byte slot, returns the bytes consumed (>= 1), reads nothing past the terminator.
+  ⚠ Invalid input is decoded the way the editor already treats it, so the draw, the caret and
+  `dh_text_char_index` agree byte for byte on every string: a stray continuation byte (0x80..0xBF
+  where a character should start) belongs to no character — `-1`, one byte, and a draw advances
+  nothing for it; an invalid lead (0xC0/0xC1, 0xF5..0xFF, missing continuations, overlong,
+  surrogate, > U+10FFFF) is one character, its RAW byte, one byte consumed — a caller tells a raw
+  0xC4 from a decoded U+00C4 by the length it got back.
+- **`dh_text_cp437(cp)`** (`src/surface.cyr`) — the CP437 cell for a scalar, or 0. kashi's built-in
+  face is a BYTE font (its Unicode tables exist only for runtime PSF fonts in the library face this
+  repo does not vendor), so the bitmap arm needs the map: ASCII is itself; the upper half is the
+  Unicode Consortium's CP437.TXT — Latin-1 accents, box drawing, the Greek and maths cells — as 128
+  eight-byte slots built once (nothing allocated) and searched linearly, a cost only a label's
+  non-ASCII characters pay; a scalar the page has no cell for draws **'?'**, one cell, so the
+  caret's character count still lands. ⚠ `var _dh_cp437_uni[128]`, not `[1024]`: a module-global
+  `[N]` is N EIGHT-BYTE slots (setu's *N\*u64 footgun*), MEASURED — the `CYRIUS_DCE=1` smoke binary
+  is 141,328 B at `[1024]` and 134,160 B at `[128]`, 8 B a slot exactly, with a probe writing all 128
+  slots and reading its neighbouring globals back intact.
+- **`dh_draw_text_ink`** — the bitmap arm decodes and maps (an invalid lead is drawn as the raw cell
+  it always was; a stray continuation byte draws and advances nothing); the scalable arm's advance
+  pre-pass and glyph loop decode, and rekha's cmap takes the scalar (a face without the character
+  answers `.notdef`, as it answered every high byte before); the caret in `dh_draw_widget_ink` sums
+  advances over the CHARACTERS in the first `cbytes` bytes. ⚠ **Raw CP437 is not an input to this
+  path any more.** Its bytes 0xC0..0xFF survive only because they happen not to spell a sequence;
+  0x80..0xBF are continuation bytes and draw nothing. Spell the cell in UTF-8 — that is what the map
+  is for. No consumer passes raw CP437 (swept crab and puka: none).
+
+**MEASURED** (`programs/text_utf8_test.cyr`, new, **126 checks**; a face whose cmap maps U+00C4 to
+A's glyph and advance, so the scalable arm is checked by pixel identity): "ÄB" draws exactly as "AB"
+under the face (0.10.3: two empty `.notdef`s, then B 2 px early) and exactly as the cells 0x8E 'B'
+painted straight from kashi (0.10.3: B in cell 2); twelve Ä's then B draw as "AAAAAAAAAAAAB" — the
+case that proves the advance PRE-PASS decodes too, because a byte-wise extent there is 24 px short
+and cuts B off the canvas, where one Ä is 2 px short and the em of slack hides it; "ΔB" is "?B"
+under kashi and " B" under the face (`.notdef`'s 5 px is a space's); a stray 0x84 between A and B
+is invisible in both arms; raw box-drawing bytes draw cell for cell and equal their UTF-8 spelling;
+the caret after Ä sits where the caret after A sits — column 44 under the face, 42 under kashi;
+twenty frames of UTF-8 text under a warm arena cost the global heap 0 B in both arms. The decoder is
+pinned at every length boundary (U+0080, U+07FF, U+0800, U+FFFF, U+10FFFF) and refusal (overlong at
+each length, a surrogate, U+110000, 0xF5, 0xFF, a lead cut off by the terminator, a 3-byte lead with
+one continuation). `text_arena_test` G moves with it: the caret after 'AB' + C3 84 is at column 69,
+not 74 — one `.notdef` for the one character, 93 → 95 checks. **Ten mutations, each proven to fail**:
+the bitmap arm back to bytes (13 checks), the glyph loop back to bytes (6), the pre-pass back to
+bytes (1 — the twelve-Ä case, added when the first nine did not catch it), the caret back to bytes
+(2 here, 2 in `text_arena_test`), overlong accepted (4), surrogates accepted (2), a stray
+continuation drawn as a raw cell (6), two table cells swapped (3), '?' replaced by a blank (1), a
+stray byte still advancing (1). ⚠ The suite's first cut used raw 0x8E as the oracle for the Ä cell
+and read 0 == 0 pixels of nothing — 0x8E alone IS a stray continuation byte; the oracle is now the
+cell painted directly from kashi, and that corner is pinned.
+
+### Fixed — the roadmap, README and manifest: nothing is blocked on a sibling
+
+- **"A proportional face on the target — agnos-owned."** Filed by crab on 2026-09-13 and **resolved
+  by agnos 1.57.2 the same day**: a kernel-owned `/fonts/default.ttf` (Liberation Sans Regular 2.1.5
+  via rekha 0.3.8, FNV-1a-verified at boot), archived at
+  `agnos/docs/development/issues/archived/2026-09-13-no-proportional-face-on-the-target.md`, with
+  crab's mirror closed the same way. dhancha's 0.10.0 filing named it in *Related* at its unarchived
+  path and 0.10.3's roadmap copied the path without looking.
+- **"GPU present — needs setu to carry a buffer handle."** setu has carried it since its shared-
+  buffer bite: `setu_buf_create` asks **`shm_create_gpu#86`** — a GPU-visible kernel slot — before
+  falling back to system-RAM `#71` (`setu/src/buf.cyr`, *"GPU-VISIBLE FIRST, and this is THE line
+  that gates hardware compositing for the whole desktop"*), `setu_client_present` uses it
+  (`setu_attach_buf`), and aethersafha composites that slot on the GPU (`gpu_shader_op#92` op 0x01
+  with the `#87` blit as fallback; proven on archaemenid at its 0.11.1). aethersafha has also
+  **ruled mabda out** for compositing. So the hardware half of the present path is the buffer's and
+  the compositor's, and dhancha's CPU draw is the design, not a first cut. The roadmap moves the
+  item to *Out of scope — committed* (*Drawing on the GPU*), the README's two "a GPU upload waits on
+  setu" sentences say what the path is, and `cyrius.cyml`'s `[package] description` no longer
+  claims dhancha *"draws via … mabda"* and *"emits Wayland client surfaces"*.
+- The roadmap's *Blocked on a sibling* section is gone, its *GPU present* reopen trigger with it,
+  and its top pinned item — *the draw reads bytes, not scalars* — leaves, closed by this release;
+  what remains under kashi is the code page's own limit (*Only what CP437 has*), pinned with the
+  reopen trigger that names it.
+
+`dist/dhancha.cyr` 239,592 → 249,318 B (4,697 → 4,855 lines); `dist/dhancha.deps` unchanged;
+`cyrius.lock` unchanged (`37 deps locked, 5 commit-pinned`). The `CYRIUS_DCE=1` smoke binary
+133,120 → **134,160 B** (+1,040: the 128-slot table and its flag — `smoke` never draws text) and the
+plain one 751,616 → 756,752 B. All **20** `programs/*_test.cyr` pass; `lint` 0 warnings,
+`fmt --check` clean, `vet` clean, `distlib` in sync, sidecar in sync — in a scratch checkout with no
+sibling repos.
+
 ## [0.10.3] - 2026-09-21 — the lock pins commits, the count is exact, and the roadmap has a file
 
 Two repairs the last two releases noted and left, the README cut down to what the toolkit IS, and a

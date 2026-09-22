@@ -88,6 +88,50 @@ fn dh_text__encode(buf, at, cp): i64 {
     return 0;
 }
 
+# @public — decode the UTF-8 character that starts at `s + at`: its scalar is stored at `cpp` (an
+# 8-byte slot the caller owns) and the bytes it occupies are returned (>= 1). The inverse of
+# `dh_text__encode`, and the ONE reading of "a character" the draw, the caret and
+# `dh_text_char_index` all share (0.10.4) — until then `dh_draw_text_ink` iterated `load8` and drew
+# one glyph per BYTE, so "Ä" (C3 84) was two glyphs under a face and two cells under kashi while the
+# caret and the editor stepped it as one character.
+# ⚠ INVALID INPUT IS DECODED THE WAY THE REST OF THIS MODULE ALREADY TREATS IT, so the three agree
+# byte for byte on every string, not just well-formed ones:
+#   · a CONTINUATION byte (0x80..0xBF) where a character should start belongs to no character —
+#     `dh_text__next` steps over it and `dh_text_char_index` does not count it — so `-1` is stored
+#     ("nothing here") and 1 byte is consumed; a draw advances nothing for it;
+#   · an INVALID LEAD — 0xC0 / 0xC1, 0xF5..0xFF, a lead whose continuation bytes are missing (the
+#     terminator counts as missing: nothing here reads past it), or an overlong / surrogate /
+#     > U+10FFFF encoding — is one character, exactly as `dh_text_char_index` counts it: the RAW BYTE
+#     (0xC0..0xFF) is stored and 1 is consumed, and the bytes that were supposed to follow it decode
+#     on their own turn as continuations, i.e. as nothing. A caller can tell a raw 0xC4 from a decoded
+#     U+00C4 by the length it got back: a real one is 2.
+# ⇒ A string that is not UTF-8 at all — raw CP437 box-drawing, say — still draws one cell per byte
+# under kashi, as every byte did before, except where its bytes happen to spell a valid sequence.
+fn dh_text_decode(s, at, cpp): i64 {
+    var b = load8(s + at);
+    if (b < 0x80) { store64(cpp, b); return 1; }
+    if (dh_text__is_cont(b) != 0) { store64(cpp, 0 - 1); return 1; }
+    var need = 0;                       # continuation bytes this lead announces
+    var cp = 0;
+    var lo = 0;                         # the smallest scalar this length may carry (overlong guard)
+    if (b >= 0xC2) { if (b <= 0xDF) { need = 1; cp = b & 0x1F; lo = 0x80; } }
+    if (b >= 0xE0) { if (b <= 0xEF) { need = 2; cp = b & 0x0F; lo = 0x800; } }
+    if (b >= 0xF0) { if (b <= 0xF4) { need = 3; cp = b & 0x07; lo = 0x10000; } }
+    if (need == 0) { store64(cpp, b); return 1; }
+    var k = 1;
+    while (k <= need) {
+        var c = load8(s + at + k);
+        if (dh_text__is_cont(c) == 0) { store64(cpp, b); return 1; }
+        cp = (cp << 6) | (c & 0x3F);
+        k = k + 1;
+    }
+    if (cp < lo) { store64(cpp, b); return 1; }
+    if (cp >= 0xD800) { if (cp <= 0xDFFF) { store64(cpp, b); return 1; } }
+    if (cp > 0x10FFFF) { store64(cpp, b); return 1; }
+    store64(cpp, cp);
+    return need + 1;
+}
+
 # @public — a new TEXTINPUT with a `cap`-byte buffer (capacity INCLUDES the NUL terminator).
 fn dh_text_new(cap): i64 {
     var w = dh_widget_new(DhWidgetKind.TEXTINPUT);

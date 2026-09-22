@@ -1,7 +1,7 @@
 [package]
 name = "dhancha"
 version = "${file:VERSION}"
-description = "dhancha (ढाँचा — framework) — pure-Cyrius client-side widget toolkit / desktop app framework for AGNOS (Qt/GTK-equivalent): widget tree, box/flex layout, event loop, input dispatch (keyboard/pointer/focus/drag-drop). Apps build UIs here; draws via sadish + rekha + mabda; emits Wayland client surfaces for the aethersafha compositor."
+description = "dhancha (ढाँचा — framework) — pure-Cyrius client-side widget toolkit / desktop app framework for AGNOS (Qt/GTK-equivalent): widget tree, box/flex layout, event loop, input dispatch (keyboard/pointer/focus/drag-drop). Apps build UIs here; draws via sadish + rekha + kashi + rupa; presents client surfaces over setu to the aethersafha compositor."
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/dhancha"
 language = "cyrius"
@@ -11,9 +11,9 @@ cyrius = "6.6.6"
 # program that links the full include chain to prove lib.cyr parses clean.
 # It is the CLIENT-side widget toolkit (Qt/GTK-equivalent) — the counterpart
 # to aethersafha (the compositor/server). Desktop apps build UIs on dhancha
-# instead of hand-rolling raw GPU + raw Wayland the way puka (the first
-# windowed program) does today; dhancha is the spiritual extraction of
-# puka's windowing code.
+# instead of hand-rolling raw GPU + a raw compositor connection the way puka
+# (the first windowed program) does today; dhancha is the spiritual extraction
+# of puka's windowing code.
 [build]
 entry = "programs/smoke.cyr"
 output = "build/dhancha-smoke"
@@ -90,7 +90,9 @@ stdlib = [
 # tag from git and the lock pins its commit — the state CI has always built from. Uncomment one for
 # cross-repo work on a sibling that is not yet pushed, and put it back before the commit; the ⚠
 # paragraphs that follow each one are the history of why it exists.
-# mabda (GPU) + the aethersafha Wayland commit are a later bite — CPU draw first.
+# ⚠ No mabda and no Wayland, by design (0.10.4 corrects the older note here): dhancha draws on the CPU,
+# the present buffer is GPU-visible on hardware through setu, and aethersafha composites it on the GPU;
+# Wayland is refused, not ported (docs/development/sovereign-desktop.md).
 [deps.sadish]
 git = "https://github.com/MacCracken/sadish.git"
 # ⚠ `path` added 0.9.23, for the same reason rupa carries one: without it dhancha can only build

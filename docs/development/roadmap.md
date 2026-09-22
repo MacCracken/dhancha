@@ -1,6 +1,6 @@
 # dhancha — Roadmap
 
-> **Last updated:** 2026-09-21, at **0.10.3**.
+> **Last updated:** 2026-09-21, at **0.10.4**.
 >
 > This file tracks **forward-facing work only**. A finished item leaves. What already shipped is in
 > [`CHANGELOG.md`](../../CHANGELOG.md), release by release, with the measurement each claim rests
@@ -19,10 +19,21 @@ rekha + kashi + rupa, the frame arena, and the setu connection — `dh_client_co
 `dh_client_present` / `dh_client_next_event` / `dh_client_poll_event` / `dh_client_close`
 (`src/dh_client.cyr`) over setu's reference client. A consumer (crab) renders a real face with a
 frame costing the global heap **0 B** (0.10.0), a label is one bounded flatten operation (0.10.2),
-and every dependency resolves from a published tag with its commit in `cyrius.lock` (0.10.3).
+every dependency resolves from a published tag with its commit in `cyrius.lock` (0.10.3), and the
+draw reads UTF-8 characters, not bytes, in both arms and the caret (0.10.4).
+
+The present path is complete end to end, and the hardware half of it is not dhancha's to build:
+`dh_client_present` hands sadish's pixels to `setu_client_present`, which copies them into a
+**kernel-owned shared buffer** that on hardware is **GPU-visible** — `setu_buf_create` asks
+`shm_create_gpu#86` before falling back to system RAM (`setu/src/buf.cyr`, *"GPU-VISIBLE FIRST"*) —
+and aethersafha composites that buffer on the GPU (`#92` / `#87`; proven on archaemenid at its
+0.11.1, `aethersafha/docs/development/roadmap.md`). A proportional face exists on the target too:
+agnos 1.57.2's kernel-owned `/fonts/default.ttf` (Liberation Sans via rekha 0.3.8;
+`agnos/docs/development/issues/archived/2026-09-13-no-proportional-face-on-the-target.md`). ⚠ 0.10.3
+listed both as *blocked on a sibling*; neither was — see CHANGELOG 0.10.4.
 
 What remains is **scheduled** (a booked bite with a consumer waiting), **pinned** (real, evidenced,
-unscheduled), **blocked on a sibling**, or an explicit **non-goal**.
+unscheduled), or an explicit **non-goal**. Nothing is blocked on a sibling at this release.
 
 ---
 
@@ -66,15 +77,14 @@ needs; when one does, the design rule above is the whole of the requirement.
 
 ## Pinned — real, evidenced, unscheduled
 
-- **The draw reads bytes, not scalars.** Both branches of `dh_draw_text_ink` take
-  `load8(text + i)` as the codepoint (`src/surface.cyr:476`, and the advance pre-pass at `:419`),
-  so a UTF-8 multibyte character draws as its two to four bytes — Latin-1 glyphs under a face, CP437
-  cells under kashi. The canvas-slack measurement is honest about it (*"cp 32..255, what `load8` can
-  reach"*, `src/surface.cyr`). `TEXTINPUT` is UTF-8 throughout for editing and the caret
-  (`src/textinput.cyr:14`, `dh_text_utf8_len`, `dh_text_char_index`) — the buffer is right, the draw
-  of it is not. Closing it is a decoder in the two loops and a `rekha_char_to_glyph` that takes the
-  scalar; the kashi arm stays byte-wise by construction (CP437 is a byte font). Unscheduled because
-  nothing in the stack draws a non-ASCII label yet; it reopens the day one does.
+- **Only what CP437 has, under kashi.** Since 0.10.4 every text walk decodes UTF-8
+  (`dh_text_decode`, `src/textinput.cyr`) and the bitmap arm maps the scalar to its CP437 cell
+  (`dh_text_cp437`, `src/surface.cyr`); a scalar the code page has no cell for — Δ, CJK, emoji —
+  draws '?', one cell wide. That is the built-in face's limit, not the decoder's: kashi's Unicode
+  tables exist only for runtime-loaded PSF fonts in its library face (`kashi_attach_unicode_table`),
+  which this repo does not vendor (`cyrius.cyml`, the `[deps.kashi]` ⛔). A consumer that needs more
+  than the code page under the system font needs a wider bitmap font first; under a scalable face
+  the scalar reaches rekha's cmap and the face answers.
 - **No kerning.** `dh_text_advance` (`src/surface.cyr:218`) is `rekha_char_advance_px` per
   codepoint. rekha publishes pair kerning — `rekha_kern_pair_px`, `rekha_gpos_kern_pair`
   (`lib/rekha.cyr`, 0.6.5 / 0.6.6) — and nothing here reads it. A run's width and its caret would
@@ -97,21 +107,6 @@ needs; when one does, the design rule above is the whole of the requirement.
 
 ---
 
-## Blocked on a sibling
-
-- **GPU present — mabda.** The present path is CPU shared-buffer by decision
-  (`sovereign-desktop.md` §*The seam*, item 3; `cyrius.cyml`: *"mabda (GPU) + … are a later bite —
-  CPU draw first"*). `dh_client_present` sends pixels (`setu_client_present`); a GPU upload
-  (a mabda texture / dmabuf-shaped handle over setu) needs setu to carry it and aethersafha to
-  composite it before dhancha has anything to call. `mabda` appears in `src/` only in two comments,
-  never a call, by design.
-- **A proportional face on the target.** crab's other blocker on a real face is agnos-owned
-  (`agnos/docs/development/issues/2026-09-13-no-proportional-face-on-the-target.md`, named in the
-  archived 2026-09-13 filing's *Related*). dhancha's side closed at 0.10.0; a face arriving is what
-  makes it observable.
-
----
-
 ## Out of scope — committed
 
 - **Wayland.** Not ported, not shimmed: no `wl_*`, no `xdg-shell`, no `wl_shm`, no copy of puka's
@@ -122,6 +117,12 @@ needs; when one does, the design rule above is the whole of the requirement.
 - **Text shaping.** GSUB, complex scripts, BiDi — a shaping library's job; rekha is the glyph-data
   provider and dhancha draws runs. (Pair kerning is the one positioning feature rekha already
   answers, and it is pinned above, not here.)
+- **Drawing on the GPU (mabda).** dhancha rasterises on the CPU with sadish by design
+  (`sovereign-desktop.md` §*The seam*, item 3: *"CPU shared-memory first"*), and the hardware path
+  belongs to the buffer and the compositor — setu's GPU-visible slot and aethersafha's blit, above —
+  not to the toolkit. aethersafha has ruled mabda out for compositing (its roadmap, *"mabda remains
+  ruled out"*); a mabda-drawn widget tree is a different product nobody has asked for. `mabda`
+  appears in `src/` only in two comments, never a call.
 - **Naming a colour.** Widgets and chrome draw with rupa's tokens (`dh_theme_*`, `src/theme.cyr`);
   a widget that would make an app paint its own highlight is refused a kind on that ground
   (CHANGELOG 0.9.23, 0.9.25).
@@ -130,8 +131,7 @@ needs; when one does, the design rule above is the whole of the requirement.
 
 - A retained-mode consumer that wants `dh_run` on the transport fd → *The compositor-connected loop*.
 - A consumer naming the state a TREE or a miller browser must keep → the design rule above.
-- A non-ASCII label anywhere in the stack → *The draw reads bytes, not scalars*.
-- setu carrying a GPU buffer handle → *GPU present*.
+- A non-ASCII label that CP437 cannot show, under the system font → *Only what CP437 has*.
 
 ## Where to look for…
 

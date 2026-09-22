@@ -1,0 +1,556 @@
+# text_utf8_test — the draw reads CHARACTERS, not bytes (0.10.4). RUN test, exit 0 iff every check
+# passes; nothing is blitted to a device.
+#
+# ⛔ WHAT MOVED. Through 0.10.3 every walk over a label's text took `load8` as the codepoint: the
+# bitmap arm drew one kashi cell per BYTE, the scalable arm one glyph per BYTE, and the caret under a
+# face summed advances per BYTE — while the editor (`TEXTINPUT`) stepped, deleted and counted whole
+# UTF-8 characters. "Ä" (C3 84) was two cells ('├' 'ä') and two `.notdef`s; a file named "Über.txt"
+# in a file manager drew as "Ãœber.txt". The three walks now share `dh_text_decode` (textinput.cyr),
+# and the bitmap arm maps the scalar to its CP437 cell through `dh_text_cp437`.
+#
+# ⚠ RAW CP437 IS NOT AN INPUT TO THIS PATH ANY MORE, and the suite's first cut assumed it was: it
+# drew the raw cell byte 0x8E through `dh_draw_text_ink` as the oracle for "Ä" and read 0 == 0
+# pixels of nothing. 0x80..0xBF are UTF-8 continuation bytes; alone they belong to no character
+# (the editor already steps over them) and draw nothing. A raw byte in 0xC0..0xFF survives only
+# because it happens not to spell a sequence. So the oracle for a cell is the cell painted straight
+# from kashi (`ref_cells`, the arm's own inner loop), and the raw-byte passthrough is checked only
+# where it holds — Ω (0xEA) and the box-drawing bytes.
+#
+# Groups: A the decoder, well-formed and not · B the CP437 map, every cell round-tripped · C the
+# bitmap arm, by pixel identity against kashi cells painted directly (the cell the character SHOULD
+# be) · D the scalable arm, by pixel identity against an ASCII run the face maps to the same glyphs
+# · E the caret agrees with the draw in both arms · F none of it allocates.
+
+include "src/lib.cyr"
+
+var g_fails = 0;
+var g_n = 0;
+
+fn check(got, want): i64 {
+    g_n = g_n + 1;
+    if (got == want) { return 0; }
+    g_fails = g_fails + 1;
+    var m = "text_utf8_test: check failed at #";
+    syscall(1, 2, m, strlen(m));
+    fmt_int_fd(2, g_n);
+    var nl = "\n";
+    syscall(1, 2, nl, 1);
+    return 1;
+}
+
+fn say(label, v): i64 {
+    syscall(1, 1, label, strlen(label));
+    fmt_int_fd(1, v);
+    var nl = "\n";
+    syscall(1, 1, nl, 1);
+    return 0;
+}
+
+fn put_u16(buf, off, v): i64 {
+    store8(buf + off, (v >> 8) & 255);
+    store8(buf + off + 1, v & 255);
+    return 0;
+}
+
+fn put_u32(buf, off, v): i64 {
+    put_u16(buf, off, (v >> 16) & 65535);
+    put_u16(buf, off + 2, v & 65535);
+    return 0;
+}
+
+fn dir_entry(buf, ent, tag, off, tlen): i64 {
+    put_u32(buf, ent, tag);
+    put_u32(buf, ent + 8, off);
+    put_u32(buf, ent + 12, tlen);
+    return 0;
+}
+
+# text_arena_test's proportional face — gid 1 'A' = the triangle at advance 600, gid 2 'B' = the box
+# at advance 1000, gid 0 (.notdef, and so space and every unmapped scalar) empty at advance 250 —
+# with a THREE-segment cmap: 'A'..'B' -> 1..2 as before, and **U+00C4 'Ä' -> gid 1**, so the face
+# draws Ä with A's outline and A's advance. That is what lets group D check the scalable arm by
+# pixel identity: "ÄB" must draw exactly as "AB", and did not (two `.notdef`s, then B) before.
+fn build_face(buf): i64 {
+    put_u32(buf, 0, 0x00010000);
+    put_u16(buf, 4, 7);
+    dir_entry(buf, 12, 0x68656164, 124, 54);     # head
+    dir_entry(buf, 28, 0x6D617870, 180, 32);     # maxp
+    dir_entry(buf, 44, 0x68686561, 212, 36);     # hhea
+    dir_entry(buf, 60, 0x686D7478, 248, 12);     # hmtx
+    dir_entry(buf, 76, 0x6C6F6361, 260, 8);      # loca
+    dir_entry(buf, 92, 0x676C7966, 268, 60);     # glyf
+    dir_entry(buf, 108, 0x636D6170, 328, 52);    # cmap
+
+    put_u16(buf, 124 + 18, 1000);      # unitsPerEm
+    put_u16(buf, 124 + 50, 0);         # short loca
+    put_u16(buf, 180 + 4, 3);          # numGlyphs = 3
+    put_u16(buf, 212 + 34, 3);         # numberOfHMetrics = 3
+    put_u16(buf, 248 + 0, 250);  put_u16(buf, 248 + 2, 0);    # gid 0: adv 250
+    put_u16(buf, 248 + 4, 600);  put_u16(buf, 248 + 6, 0);    # gid 1 'A': adv 600
+    put_u16(buf, 248 + 8, 1000); put_u16(buf, 248 + 10, 0);   # gid 2 'B': adv 1000
+    put_u16(buf, 260 + 0, 0);
+    put_u16(buf, 260 + 2, 0);
+    put_u16(buf, 260 + 4, 13);
+    put_u16(buf, 260 + 6, 30);
+
+    var g = 268;                       # glyph 1: triangle (10,10)(90,10)(50,90)
+    put_u16(buf, g + 0, 1);
+    put_u16(buf, g + 2, 10);
+    put_u16(buf, g + 4, 10);
+    put_u16(buf, g + 6, 90);
+    put_u16(buf, g + 8, 90);
+    put_u16(buf, g + 10, 2);
+    put_u16(buf, g + 12, 0);
+    store8(buf + g + 14, 0x01);
+    store8(buf + g + 15, 0x21);
+    store8(buf + g + 16, 0x03);
+    put_u16(buf, g + 17, 10);
+    put_u16(buf, g + 19, 80);
+    store8(buf + g + 21, 40);
+    put_u16(buf, g + 22, 10);
+    put_u16(buf, g + 24, 80);
+
+    g = 294;                           # glyph 2: box (100,0)(900,0)(900,700)(100,700)
+    put_u16(buf, g + 0, 1);
+    put_u16(buf, g + 2, 100);
+    put_u16(buf, g + 4, 0);
+    put_u16(buf, g + 6, 900);
+    put_u16(buf, g + 8, 700);
+    put_u16(buf, g + 10, 3);
+    put_u16(buf, g + 12, 0);
+    store8(buf + g + 14, 0x01);
+    store8(buf + g + 15, 0x01);
+    store8(buf + g + 16, 0x01);
+    store8(buf + g + 17, 0x01);
+    put_u16(buf, g + 18, 100);
+    put_u16(buf, g + 20, 800);
+    put_u16(buf, g + 22, 0);
+    put_u16(buf, g + 24, 0xFCE0);
+    put_u16(buf, g + 26, 0);
+    put_u16(buf, g + 28, 0);
+    put_u16(buf, g + 30, 700);
+    put_u16(buf, g + 32, 0);
+
+    # cmap @328: one subtable (plat 3 / enc 1), format 4, THREE segments:
+    #   'A'..'B' idDelta -64 -> gid 1..2 · U+00C4..U+00C4 idDelta -195 -> gid 1 · the 0xFFFF sentinel.
+    put_u16(buf, 328 + 0, 0);
+    put_u16(buf, 328 + 2, 1);
+    put_u16(buf, 328 + 4, 3);
+    put_u16(buf, 328 + 6, 1);
+    put_u32(buf, 328 + 8, 12);
+    var s = 340;
+    put_u16(buf, s + 0, 4);            # format
+    put_u16(buf, s + 2, 40);           # length: 14 + 3 segments x 8 + 2
+    put_u16(buf, s + 4, 0);            # language
+    put_u16(buf, s + 6, 6);            # segCountX2
+    put_u16(buf, s + 8, 4);            # searchRange = 2 * 2^floor(log2 3)
+    put_u16(buf, s + 10, 1);           # entrySelector
+    put_u16(buf, s + 12, 2);           # rangeShift = 6 - 4
+    put_u16(buf, s + 14, 0x42);        # endCode
+    put_u16(buf, s + 16, 0xC4);
+    put_u16(buf, s + 18, 0xFFFF);
+    put_u16(buf, s + 20, 0);           # reservedPad
+    put_u16(buf, s + 22, 0x41);        # startCode
+    put_u16(buf, s + 24, 0xC4);
+    put_u16(buf, s + 26, 0xFFFF);
+    put_u16(buf, s + 28, 0xFFC0);      # idDelta: -64 -> 'A' 1, 'B' 2
+    put_u16(buf, s + 30, 0xFF3D);      # idDelta: -195 -> U+00C4 1
+    put_u16(buf, s + 32, 1);
+    put_u16(buf, s + 34, 0);           # idRangeOffset
+    put_u16(buf, s + 36, 0);
+    put_u16(buf, s + 38, 0);
+    return 0;
+}
+
+# A cstring of up to 7 bytes given as values (0 ends it early), on the global heap.
+fn bytes7(a, b, c, d, e, f, g): i64 {
+    var s = alloc(8);
+    store8(s, a); store8(s + 1, b); store8(s + 2, c); store8(s + 3, d);
+    store8(s + 4, e); store8(s + 5, f); store8(s + 6, g); store8(s + 7, 0);
+    return s;
+}
+
+# Decode at `s + at`; returns the scalar and stores the length at `lenp`.
+fn dec(s, at, lenp): i64 {
+    var cpv[8];
+    store64(lenp, dh_text_decode(s, at, &cpv));
+    return load64(&cpv);
+}
+
+fn count_diff(s1, s2, w, h): i64 {
+    var n = 0;
+    var y = 0;
+    while (y < h) {
+        var x = 0;
+        while (x < w) {
+            if (sd_surface_pixel_at(s1, x, y) != sd_surface_pixel_at(s2, x, y)) { n = n + 1; }
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    return n;
+}
+
+fn count_nonbg(sds, w, h, bg): i64 {
+    var n = 0;
+    var y = 0;
+    while (y < h) {
+        var x = 0;
+        while (x < w) {
+            if (sd_surface_pixel_at(sds, x, y) != bg) { n = n + 1; }
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    return n;
+}
+
+# Rightmost column with any non-bg pixel, or -1.
+fn ink_right(sds, w, h, bg): i64 {
+    var r = 0 - 1;
+    var y = 0;
+    while (y < h) {
+        var x = 0;
+        while (x < w) {
+            if (sd_surface_pixel_at(sds, x, y) != bg) { if (x > r) { r = x; } }
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    return r;
+}
+
+var SW = 240;
+var SH = 44;
+var g_bg = 0;
+var g_ink = 0;
+
+# Paint kashi cells `cells[0..n)` at the bitmap arm's own geometry for a draw at (10, 10, h 20) —
+# origin x + 3, 9 px a cell, 16 rows from y + (20 - 16) / 2, `ink | 0xFF000000` per pixel — the
+# oracle for what a character's cell SHOULD look like, independent of the text path.
+fn ref_cells(sds, cells, n): i64 {
+    sd_clear(sds, g_bg);
+    kashi_font_init();
+    var pix = sd_surface_pixels(sds);
+    var sstride = sd_surface_stride(sds) / 4;
+    var k = 0;
+    while (k < n) {
+        var kc = load8(cells + k);
+        var kx = 10 + 3 + k * 9;
+        var ky = 10 + 2;
+        var kr = 0;
+        while (kr < 16) {
+            var kb = kashi_glyph_row(0, kc, kr);
+            var kcol = 0;
+            while (kcol < 8) {
+                if ((kb & (1 << (7 - kcol))) != 0) {
+                    store32(pix + ((ky + kr) * sstride + kx + kcol) * 4, g_ink | 0xFF000000);
+                }
+                kcol = kcol + 1;
+            }
+            kr = kr + 1;
+        }
+        k = k + 1;
+    }
+    return 0;
+}
+
+# Draw `text` on `sa` through the bitmap arm and count its pixels differing from `n` cells on `sb`.
+fn diff_cells(sa, sb, text, cells, n): i64 {
+    sd_clear(sa, g_bg);
+    dh_draw_text_ink(sa, 0, text, 10, 10, 20, 0, 0, SW, SH, g_ink);
+    ref_cells(sb, cells, n);
+    return count_diff(sa, sb, SW, SH);
+}
+
+# Clear `sds` and draw `text` at (10, 10, h 20) with `font`; the pixels are the answer.
+fn draw(sds, font, text): i64 {
+    sd_clear(sds, g_bg);
+    dh_draw_text_ink(sds, font, text, 10, 10, 20, 0, 0, SW, SH, g_ink);
+    return 0;
+}
+
+# Draw two strings and count the pixels at which they differ.
+fn diff2(sa, sb, font, ta, tb): i64 {
+    draw(sa, font, ta);
+    draw(sb, font, tb);
+    return count_diff(sa, sb, SW, SH);
+}
+
+# The column of a 1-px, `rows`-row caret on `sds` — the only column with exactly `rows` ink pixels in
+# the band; -1 if none, -2 if more than one. Glyph columns never reach a full band.
+fn caret_col(sds, y, rows, ink): i64 {
+    var found = 0 - 1;
+    var cx = 0;
+    while (cx < SW) {
+        var n = 0;
+        var r = y;
+        while (r < y + rows) {
+            if (sd_surface_pixel_at(sds, cx, r) == ink) { n = n + 1; }
+            r = r + 1;
+        }
+        if (n == rows) {
+            if (found != (0 - 1)) { return 0 - 2; }
+            found = cx;
+        }
+        cx = cx + 1;
+    }
+    return found;
+}
+
+fn main(): i64 {
+    alloc_init();
+    var fbuf = alloc(400);
+    memset(fbuf, 0, 400);
+    build_face(fbuf);
+    var font = rekha_font_open(fbuf, 400);
+    check(font != 0, 1);
+    check(rekha_char_to_glyph(font, 0x41), 1);
+    check(rekha_char_to_glyph(font, 0x42), 2);
+    check(rekha_char_to_glyph(font, 0xC4), 1);       # Ä -> A's glyph: the face is what group D needs
+    check(rekha_char_to_glyph(font, 0x394), 0);      # Δ -> .notdef
+    check(dh_text_advance(font, 0xC4, 20), 12);
+    check(dh_text_advance(font, 0x394, 20), 5);
+    var lenv[8];
+
+    # ── A) THE DECODER ──────
+    var s2 = bytes7(0xC3, 0x84, 0, 0, 0, 0, 0);                   # Ä
+    var s3 = bytes7(0xE2, 0x94, 0x80, 0, 0, 0, 0);                # ─ U+2500
+    var s4 = bytes7(0xF0, 0x9F, 0x98, 0x80, 0, 0, 0);             # U+1F600
+    check(dec("A", 0, &lenv), 0x41);            check(load64(&lenv), 1);
+    check(dec(s2, 0, &lenv), 0xC4);             check(load64(&lenv), 2);
+    check(dec(s3, 0, &lenv), 0x2500);           check(load64(&lenv), 3);
+    check(dec(s4, 0, &lenv), 0x1F600);          check(load64(&lenv), 4);
+    check(dec("", 0, &lenv), 0);                check(load64(&lenv), 1);    # the terminator itself
+    # The boundaries of each length, and a mid-string start.
+    var sb = bytes7(0xC2, 0x80, 0xDF, 0xBF, 0x41, 0, 0);
+    check(dec(sb, 0, &lenv), 0x80);             check(load64(&lenv), 2);
+    check(dec(sb, 2, &lenv), 0x7FF);            check(load64(&lenv), 2);
+    check(dec(sb, 4, &lenv), 0x41);             check(load64(&lenv), 1);
+    var sc = bytes7(0xE0, 0xA0, 0x80, 0xEF, 0xBF, 0xBF, 0);
+    check(dec(sc, 0, &lenv), 0x800);            check(load64(&lenv), 3);
+    check(dec(sc, 3, &lenv), 0xFFFF);           check(load64(&lenv), 3);
+    var sd = bytes7(0xF4, 0x8F, 0xBF, 0xBF, 0, 0, 0);
+    check(dec(sd, 0, &lenv), 0x10FFFF);         check(load64(&lenv), 4);
+    # ⚠ INVALID INPUT, decoded as `dh_text_char_index` counts it: a stray continuation byte is
+    # nobody's (-1, length 1); an invalid lead is its raw byte, length 1, and what should have
+    # followed it comes back as stray continuations on their own turns.
+    var lone = bytes7(0x84, 0x41, 0, 0, 0, 0, 0);
+    check(dec(lone, 0, &lenv), 0 - 1);          check(load64(&lenv), 1);
+    check(dec(lone, 1, &lenv), 0x41);           check(load64(&lenv), 1);
+    var c0 = bytes7(0xC0, 0x80, 0, 0, 0, 0, 0);                   # overlong 2-byte form of U+0000
+    check(dec(c0, 0, &lenv), 0xC0);             check(load64(&lenv), 1);
+    check(dec(c0, 1, &lenv), 0 - 1);            check(load64(&lenv), 1);
+    var c1 = bytes7(0xC1, 0xBF, 0, 0, 0, 0, 0);                   # overlong U+007F
+    check(dec(c1, 0, &lenv), 0xC1);             check(load64(&lenv), 1);
+    var ov3 = bytes7(0xE0, 0x80, 0x80, 0, 0, 0, 0);               # overlong 3-byte U+0000
+    check(dec(ov3, 0, &lenv), 0xE0);            check(load64(&lenv), 1);
+    var ov4 = bytes7(0xF0, 0x80, 0x80, 0x80, 0, 0, 0);            # overlong 4-byte U+0000
+    check(dec(ov4, 0, &lenv), 0xF0);            check(load64(&lenv), 1);
+    var sur = bytes7(0xED, 0xA0, 0x80, 0, 0, 0, 0);               # U+D800, a surrogate
+    check(dec(sur, 0, &lenv), 0xED);            check(load64(&lenv), 1);
+    var big = bytes7(0xF4, 0x90, 0x80, 0x80, 0, 0, 0);            # U+110000, past the last scalar
+    check(dec(big, 0, &lenv), 0xF4);            check(load64(&lenv), 1);
+    var f5 = bytes7(0xF5, 0x80, 0x80, 0x80, 0, 0, 0);             # 0xF5..0xFF are never leads
+    check(dec(f5, 0, &lenv), 0xF5);             check(load64(&lenv), 1);
+    var ff = bytes7(0xFF, 0, 0, 0, 0, 0, 0);
+    check(dec(ff, 0, &lenv), 0xFF);             check(load64(&lenv), 1);
+    var trunc = bytes7(0xC3, 0, 0, 0, 0, 0, 0);                   # a lead, then the terminator
+    check(dec(trunc, 0, &lenv), 0xC3);          check(load64(&lenv), 1);
+    var trunc3 = bytes7(0xE2, 0x94, 0x41, 0, 0, 0, 0);            # a 3-byte lead, one continuation, then 'A'
+    check(dec(trunc3, 0, &lenv), 0xE2);         check(load64(&lenv), 1);
+    check(dec(trunc3, 1, &lenv), 0 - 1);        check(load64(&lenv), 1);
+    check(dec(trunc3, 2, &lenv), 0x41);         check(load64(&lenv), 1);
+    var bad = bytes7(0xC4, 0x41, 0, 0, 0, 0, 0);                  # raw CP437 '─' then 'A'
+    check(dec(bad, 0, &lenv), 0xC4);            check(load64(&lenv), 1);
+    check(dec(bad, 1, &lenv), 0x41);            check(load64(&lenv), 1);
+
+    # ── B) THE CP437 MAP ──────
+    check(dh_text_cp437(0x41), 0x41);
+    check(dh_text_cp437(0x20), 0x20);
+    check(dh_text_cp437(0x7F), 0x7F);
+    check(dh_text_cp437(0xC4), 0x8E);            # Ä
+    check(dh_text_cp437(0xE9), 0x82);            # é
+    check(dh_text_cp437(0xDF), 0xE1);            # ß
+    check(dh_text_cp437(0x2500), 0xC4);          # ─
+    check(dh_text_cp437(0x2588), 0xDB);          # █
+    check(dh_text_cp437(0x3A9), 0xEA);           # Ω
+    check(dh_text_cp437(0xA0), 0xFF);            # NBSP
+    check(dh_text_cp437(0x394), 0);              # Δ is not on the page
+    check(dh_text_cp437(0x1F600), 0);
+    check(dh_text_cp437(0x80), 0);               # C1 controls are not cells
+    check(dh_text_cp437(0 - 1), 0);
+    # Every cell round-trips, and no two cells claim one scalar: the map is a bijection on its range.
+    var rt = 0;
+    var cell = 0x80;
+    while (cell <= 0xFF) {
+        var u = load64(&_dh_cp437_uni + (cell - 0x80) * 8);
+        if (u > 0x7F) { if (dh_text_cp437(u) == cell) { rt = rt + 1; } }
+        cell = cell + 1;
+    }
+    check(rt, 128);
+
+    # ── C) THE BITMAP ARM ──────
+    var sa = sd_surface_new(SW, SH);
+    var sb2 = sd_surface_new(SW, SH);
+    g_bg = sd_rgb(20, 20, 30);
+    g_ink = sd_rgb(230, 230, 230);
+    var cp_ae = bytes7(0x8E, 0, 0, 0, 0, 0, 0);                   # the CP437 cell for Ä
+    var u_ae = s2;                                                # "Ä" in UTF-8
+    draw(sa, 0, u_ae);
+    var ae_ink = count_nonbg(sa, SW, SH, g_bg);
+    check(ae_ink > 0, 1);
+    check(diff_cells(sa, sb2, u_ae, cp_ae, 1), 0);                # one cell, the right one
+    # ...and NOT what 0.10.3 drew — the two cells '├' 'ä' — which is what the raw bytes painted
+    # straight from kashi look like: a different picture, and one that ends a cell further right.
+    var old_ae = bytes7(0xC3, 0x84, 0, 0, 0, 0, 0);
+    check(diff_cells(sa, sb2, u_ae, old_ae, 2) > 0, 1);
+    check(ink_right(sa, SW, SH, g_bg) < 10 + 3 + 9, 1);
+    check(ink_right(sb2, SW, SH, g_bg) >= 10 + 3 + 9, 1);
+    draw(sa, 0, "AB");
+    var ab_right = ink_right(sa, SW, SH, g_bg);
+    check(ab_right >= 10 + 3 + 9, 1);                             # 'B' is in the second cell
+    # "ÄB" == the cells 0x8E 'B': Ä in cell 0, B in cell 1 (0.10.3: B in cell 2).
+    var u_aeb = bytes7(0xC3, 0x84, 0x42, 0, 0, 0, 0);
+    var cp_aeb = bytes7(0x8E, 0x42, 0, 0, 0, 0, 0);
+    check(diff_cells(sa, sb2, u_aeb, cp_aeb, 2), 0);
+    draw(sa, 0, u_aeb);
+    check(ink_right(sa, SW, SH, g_bg), ab_right);                 # ...exactly where "AB"'s B ends
+    # A scalar the page has no cell for is '?', one cell: "ΔB" == "?B".
+    var u_dl = bytes7(0xCE, 0x94, 0x42, 0, 0, 0, 0);
+    check(diff2(sa, sb2, 0, u_dl, "?B"), 0);
+    # A stray continuation byte is nobody's: "A" 0x84 "B" == "AB".
+    var stray = bytes7(0x41, 0x84, 0x42, 0, 0, 0, 0);
+    check(diff2(sa, sb2, 0, stray, "AB"), 0);
+    # Raw CP437 box drawing still draws, cell for cell — and equals its UTF-8 spelling.
+    var raw_box = bytes7(0xC4, 0xC4, 0xC4, 0, 0, 0, 0);
+    var u8_box = alloc(16);
+    store8(u8_box, 0xE2); store8(u8_box + 1, 0x94); store8(u8_box + 2, 0x80);
+    store8(u8_box + 3, 0xE2); store8(u8_box + 4, 0x94); store8(u8_box + 5, 0x80);
+    store8(u8_box + 6, 0xE2); store8(u8_box + 7, 0x94); store8(u8_box + 8, 0x80); store8(u8_box + 9, 0);
+    check(diff2(sa, sb2, 0, raw_box, u8_box), 0);
+    draw(sa, 0, raw_box);
+    check(count_nonbg(sa, SW, SH, g_bg) > 0, 1);
+    check(ink_right(sa, SW, SH, g_bg) >= 10 + 3 + 18, 1);         # three cells
+    check(ink_right(sa, SW, SH, g_bg) < 10 + 3 + 27, 1);
+    # An invalid lead before ASCII is the raw cell it always was: 0xC4 'A' draws '─' then 'A'.
+    check(diff2(sa, sb2, 0, bad, bad), 0);
+    draw(sa, 0, bad);
+    check(ink_right(sa, SW, SH, g_bg), ab_right);                 # two cells, like "AB"
+    # Latin-1 accents and the Greek and maths cells reach their glyphs: "é" == cell 0x82, "Ω" == cell
+    # 0xEA — and the raw byte 0xEA, an invalid lead, still passes through to the same cell.
+    var u_e = bytes7(0xC3, 0xA9, 0, 0, 0, 0, 0);
+    var cp_e = bytes7(0x82, 0, 0, 0, 0, 0, 0);
+    check(diff_cells(sa, sb2, u_e, cp_e, 1), 0);
+    var u_om = bytes7(0xCE, 0xA9, 0, 0, 0, 0, 0);
+    var cp_om = bytes7(0xEA, 0, 0, 0, 0, 0, 0);
+    check(diff_cells(sa, sb2, u_om, cp_om, 1), 0);
+    check(diff2(sa, sb2, 0, u_om, cp_om), 0);
+    check(diff_cells(sa, sb2, u_e, cp_om, 1) > 0, 1);             # é and Ω are different cells
+    # ⚠ And the corner the first cut of this suite tripped on, pinned: a raw 0x8E ALONE is a stray
+    # continuation byte and draws nothing — spell the cell in UTF-8.
+    draw(sa, 0, cp_ae);
+    check(count_nonbg(sa, SW, SH, g_bg), 0);
+
+    # ── D) THE SCALABLE ARM ──────
+    # The face maps Ä to A's glyph and A's advance, so "ÄB" must be "AB" to the pixel; 0.10.3 drew
+    # two `.notdef`s (5 px each, empty) and then B at 12 px where A's advance would have put it.
+    check(diff2(sa, sb2, font, u_aeb, "AB"), 0);
+    draw(sa, font, "AB");
+    check(count_nonbg(sa, SW, SH, g_bg) > 0, 1);
+    var ab_face_right = ink_right(sa, SW, SH, g_bg);
+    # Δ is `.notdef` in this face: empty, advance 250 = 5 px — exactly a space's, so "ΔB" == " B".
+    check(diff2(sa, sb2, font, u_dl, " B"), 0);
+    # A stray continuation byte draws and advances nothing: "A" 0x84 "B" == "AB".
+    check(diff2(sa, sb2, font, stray, "AB"), 0);
+    # The advance pre-pass sizes the canvas from the same decode: "ÄB" is not cut where the byte-wise
+    # extent (5 + 5 + 20 px) would have ended the canvas — B's right edge lands where "AB"'s does.
+    draw(sa, font, u_aeb);
+    check(ink_right(sa, SW, SH, g_bg), ab_face_right);
+    # ⚠ THE PRE-PASS HAS TO DECODE TOO, and one Ä cannot prove it: the byte-wise extent of "ÄB" is only
+    # 2 px short (two 5 px `.notdef`s for one 12 px A) and the em of slack past `cx_end` hides that.
+    # Twelve Ä's are 24 px short — past the 20 px slack — so a byte-wise pre-pass cuts B's right edge
+    # off the canvas while a character-wise one draws it whole, exactly as "AAAAAAAAAAAAB" is drawn.
+    var many = alloc(32);
+    var mi = 0;
+    while (mi < 12) { store8(many + mi * 2, 0xC3); store8(many + mi * 2 + 1, 0x84); mi = mi + 1; }
+    store8(many + 24, 0x42); store8(many + 25, 0);
+    check(diff2(sa, sb2, font, many, "AAAAAAAAAAAAB"), 0);
+    draw(sa, font, "AAAAAAAAAAAAB");
+    check(ink_right(sa, SW, SH, g_bg), 10 + 2 + 12 * 12 + 18 - 1);   # B's box ends 18 px into its cell
+    # A 4-byte scalar is one `.notdef` (5 px), not four: U+1F600 then B == " B".
+    var u_4b = alloc(8);
+    store8(u_4b, 0xF0); store8(u_4b + 1, 0x9F); store8(u_4b + 2, 0x98); store8(u_4b + 3, 0x80);
+    store8(u_4b + 4, 0x42); store8(u_4b + 5, 0);
+    check(diff2(sa, sb2, font, u_4b, " B"), 0);
+
+    # ── E) THE CARET AGREES WITH THE DRAW, IN BOTH ARMS ──────
+    var fld = dh_text_new(32);
+    dh_widget_set_bounds(fld, 30, 10, 180, 20);
+    dh_focus_set(fld);
+    var gink = dh_theme_ink();
+    check(gink != g_bg, 1);
+    # Under the face: "ÄB" with the caret after Ä (byte 2) sits exactly where "AB"'s caret after A
+    # (byte 1) does — the caret sums A's advance for Ä, as the draw spent it.
+    check(dh_text_set(fld, u_aeb), 3);
+    check(dh_text_caret_move(fld, 0 - 1), 2);
+    check(dh_text_char_index(fld, 2), 1);
+    sd_clear(sa, g_bg);
+    dh_draw_widget(sa, fld, font, 0, 0, SW, SH);
+    var col_u = caret_col(sa, 11, 18, gink);
+    check(dh_text_set(fld, "AB"), 2);
+    check(dh_text_caret_move(fld, 0 - 1), 1);
+    sd_clear(sb2, g_bg);
+    dh_draw_widget(sb2, fld, font, 0, 0, SW, SH);
+    var col_a = caret_col(sb2, 11, 18, gink);
+    check(col_a, 30 + 2 + 12);
+    check(col_u, col_a);
+    check(count_diff(sa, sb2, SW, SH), 0);                        # the whole picture, caret included
+    say("E: caret column after Ä, face, h 20: ", col_u);
+    # Under kashi: "Ä " with the caret after Ä (byte 2) sits at cell 1, where "A "'s caret after A
+    # (byte 1) sits — and the picture is the Ä cell, a blank cell, and the caret's 16 rows, nothing
+    # else. Through 0.10.3 the bitmap caret was already per character (cell 1) while the draw put
+    # the next cell at 2: the caret sat inside the 'ä' half of the two cells Ä became.
+    var u_aesp = bytes7(0xC3, 0x84, 0x20, 0, 0, 0, 0);
+    check(dh_text_set(fld, u_aesp), 3);
+    check(dh_text_caret_move(fld, 0 - 1), 2);
+    sd_clear(sa, g_bg);
+    dh_draw_widget(sa, fld, 0, 0, 0, SW, SH);
+    var kcol_u = caret_col(sa, 12, 16, gink);
+    check(dh_text_set(fld, "A "), 2);
+    check(dh_text_caret_move(fld, 0 - 1), 1);
+    sd_clear(sb2, g_bg);
+    dh_draw_widget(sb2, fld, 0, 0, 0, SW, SH);
+    var kcol_a = caret_col(sb2, 12, 16, gink);
+    check(kcol_a, 30 + 3 + 9);
+    check(kcol_u, kcol_a);
+    say("E: caret column after Ä, kashi: ", kcol_u);
+
+    # ── F) NONE OF IT ALLOCATES ──────
+    # The decoder is arithmetic; the CP437 slots are this module's. Under a warm arena a UTF-8 draw
+    # costs the global heap 0 B in both arms, and with NO arena the bitmap arm costs 0 B outright.
+    var before = alloc_used();
+    draw(sa, 0, u_aeb);
+    draw(sa, 0, u_om);
+    check(alloc_used() - before, 0);
+    var a = arena_new_growable(262144);
+    check(a != 0, 1);
+    check(dh_frame_arena_set(a), DHANCHA_OK);
+    var w = 0;
+    while (w < 4) { dh_frame_begin(); draw(sa, font, u_aeb); w = w + 1; }
+    before = alloc_used();
+    var f = 0;
+    while (f < 20) { dh_frame_begin(); draw(sa, font, u_aeb); draw(sa, font, u_4b); f = f + 1; }
+    check(alloc_used() - before, 0);
+    dh_frame_arena_set(0);
+
+    say("text_utf8_test: checks run: ", g_n);
+    if (g_fails != 0) {
+        var fm = "text_utf8_test: FAIL\n";
+        syscall(1, 2, fm, strlen(fm));
+        return 2;
+    }
+    var ok = "text_utf8_test: PASS (one glyph per character in both arms; the caret agrees)\n";
+    syscall(1, 1, ok, strlen(ok));
+    return 0;
+}

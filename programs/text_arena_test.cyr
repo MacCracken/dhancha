@@ -706,18 +706,23 @@ fn main(): i64 {
     sd_clear(s_car, bg);
     dh_draw_widget(s_car, fld, font, 0, 0, 200, 60);
     check(ta_find_col(s_car, 0, 200, 20, 20, gink, 18), 101);
-    # ⛔ BYTES, NOT CHARACTERS. 'AB' + the 2-byte sequence C3 84: `dh_draw_text_ink` iterates `load8`,
-    # so each of the two bytes is one `.notdef` glyph at 5 px and the run ends at 2 + 12 + 20 + 5 + 5.
-    # `dh_text_char_index` counts 3 characters; a caret summed over three would land 5 px short.
+    # ⭐ CHARACTERS, NOT BYTES (0.10.4). 'AB' + the 2-byte sequence C3 84 is THREE characters, and the
+    # draw, the caret and `dh_text_char_index` now agree on that: U+00C4 is one glyph — `.notdef` in
+    # this face, 5 px — so the run ends at 2 + 12 + 20 + 5 and the caret sits there. Through 0.10.3
+    # both the draw and the caret walked BYTES, spending two `.notdef`s (42, the figure this check
+    # carried) — consistent with each other and one glyph wrong for every non-ASCII character;
+    # `ta_adv_sum` is still that byte-wise sum, kept here as the measure of what moved.
     var u8 = alloc(8);
     store8(u8, 65); store8(u8 + 1, 66); store8(u8 + 2, 0xC3); store8(u8 + 3, 0x84); store8(u8 + 4, 0);
     check(dh_text_set(fld, u8), 4);
     check(dh_text_char_index(fld, 4), 3);
-    check(ta_adv_sum(font, u8, 4, 20), 42);
+    check(ta_adv_sum(font, u8, 4, 20), 42);      # the byte-wise sum: what 0.10.3 drew AND caret-ed
+    check(dh_text_advance(font, 0xC4, 20), 5);   # the character: one `.notdef`
     sd_clear(s_car, bg);
     dh_draw_widget(s_car, fld, font, 0, 0, 200, 60);
     var ucol = ta_find_col(s_car, 0, 200, 20, 20, gink, 18);
-    check(ucol, 30 + 2 + 42);
+    check(ucol, 30 + 2 + 12 + 20 + 5);
+    check(ucol, 69);                             # 0.10.3: 74
     say("G: caret column after 'AB' + C3 84 (4 bytes, 3 characters): ", ucol);
     # ⚠ THE BITMAP ARM IS UNCHANGED: `font = 0`, 'AB AB' at byte 5 → x + 3 + 5 * 9 = 78, 16 rows from
     # y + 2; at byte 0 → x + 3. The path everything ships with did not move a pixel.

@@ -37,7 +37,8 @@
 # Groups: A the face and the scope's balance · B additivity (the operation spans the run) ·
 # C the hostile run: bounded at the default, unbounded at 0, sixty glyphs cost what five do ·
 # D the verdict does not leak (a straight-lined glyph after a degraded run reads 0) · E a
-# consumer's enclosing scope (nested; the documented over-count) · F nothing here allocates
+# consumer's enclosing scope (nested; the run at which the operation crossed counts, once) · F
+# nothing here allocates
 # (twenty frames under an arena, global heap 0) · G the bitmap path never counts, the budget is
 # restored.
 
@@ -420,19 +421,32 @@ fn main(): i64 {
     check(sd_flatten_op_end(), 0);
 
     # ── E) A CONSUMER'S ENCLOSING SCOPE ──────
-    # Two runs inside one consumer operation: the flag is the OPERATION's and sticky until it closes,
-    # so a run drawn after the one that degraded counts too — the documented over-count. The same
-    # two runs outside any scope count once. Either way the delta is 0 iff nothing degraded.
+    # Inside one consumer operation the flag is the OPERATION's and sticky until it closes, so
+    # dhancha counts the run at which the operation CROSSED into degraded — once — and not every run
+    # drawn after it (0.10.2 counted those too, and said so; 0.10.3 reads the standing verdict when
+    # nested). Outside any scope every run is its own operation and the count is per run. Either way
+    # the delta is 0 iff nothing degraded.
     var e0 = dh_text_degraded_runs();
     check(sd_flatten_op_begin(), 1);
-    check(draw_degraded(sds, font, b6, 20), 1);
-    check(draw_degraded(sds, font, "A", 20), 1);
+    check(draw_degraded(sds, font, b6, 20), 1);     # the crossing: counted
+    check(draw_degraded(sds, font, "A", 20), 0);    # drawn in an operation that had already degraded
+    check(draw_degraded(sds, font, b6, 20), 0);     # ...as was this one; the operation crossed once
     check(sd_flatten_op_end(), 0);
-    check(dh_text_degraded_runs() - e0, 2);
+    check(dh_text_degraded_runs() - e0, 1);
+    # The crossing can come at a later run: a legitimate run first, then the one that spends it.
+    e0 = dh_text_degraded_runs();
+    sd_flatten_op_begin();
+    check(draw_degraded(sds, font, "A", 20), 0);
+    check(draw_degraded(sds, font, b6, 20), 1);
+    check(draw_degraded(sds, font, "A", 20), 0);
+    check(sd_flatten_op_end(), 0);
+    check(dh_text_degraded_runs() - e0, 1);
+    # Outside any scope the same runs are each their own operation: two degraded runs count twice.
     e0 = dh_text_degraded_runs();
     check(draw_degraded(sds, font, b6, 20), 1);
     check(draw_degraded(sds, font, "A", 20), 0);
-    check(dh_text_degraded_runs() - e0, 1);
+    check(draw_degraded(sds, font, b6, 20), 1);
+    check(dh_text_degraded_runs() - e0, 2);
     # And inside a consumer scope two LEGITIMATE runs share the budget and neither degrades.
     e0 = dh_text_degraded_runs();
     sd_flatten_op_begin();

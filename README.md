@@ -1,6 +1,6 @@
 # dhancha
 
-Version: 0.10.2
+Version: 0.10.3
 
 **dhancha** (ढाँचा — Hindi/Sanskrit: *framework / structure / scaffold*)
 is a pure-Cyrius **client-side widget toolkit / desktop app framework**
@@ -11,149 +11,51 @@ spiritual extraction of puka's windowing code.
 
 It owns:
 
-- a retained-mode **widget tree** (window / box / label / button / text
-  input),
-- **layout** (box + flex measure/arrange),
-- an **event loop**, and
-- **input dispatch** — keyboard / pointer, focus, and drag-drop.
+- a retained-mode **widget tree** (`WINDOW` / `BOX` / `LABEL` / `BUTTON` / `TEXTINPUT` / `LIST` /
+  `CANVAS` / `PROGRESS` / `GRID`, plus MENU and SHEET composed from an overlay layer),
+- **layout** (flexbox-style `BOX_V` / `BOX_H` — grow / shrink, padding, gap, cross-axis alignment —
+  and intrinsic measure),
+- an **event loop** and **input dispatch** — keyboard / pointer / scroll, focus + `Tab` traversal,
+  hover, activation, capture + bubble propagation, and a drag-drop state machine,
+- the **draw** — the tree into a sadish `SdSurface`: backgrounds and borders via sadish, text via
+  kashi (the bitmap system font) or rekha (a scalable face), colours from rupa's theme tokens; with a
+  per-frame arena so a rendered frame costs the global heap nothing, and
+- the **client connection** — `dh_client_connect` / `_present` / `_next_event` / `_poll_event`
+  over setu, the display-protocol contract shared with the aethersafha compositor.
 
 It is the **CLIENT-side counterpart to `aethersafha`** (the
 compositor/server) — analogous to how `cmdit` is the arg/CLI lib for
 terminal apps. dhancha produces client surfaces that the aethersafha
 compositor composites onto the screen over the native display protocol.
 
-## Scope
+## Where things are
 
-- **v0.1.0 — scaffold.** A buildable, link-checkable pure-Cyrius
-  skeleton — **not** the functional toolkit yet. Real types and real
-  function signatures with small/stub bodies, so the include chain
-  (stdlib + domain modules) compiles clean and `cyrius distlib` can
-  bundle it. The domain modules present their public API surface:
-  - `src/error.cyr` — `DhanchaErr` model (`DHANCHA_OK` / `_ERR_OOM` /
-    `_ERR_BAD_WIDGET` / `_ERR_NO_SURFACE` / `_ERR_LAYOUT` /
-    `_ERR_UNSUPPORTED` / `_ERR_OTHER`), a 16-byte record, and
-    `dhancha_err_name`.
-  - `src/widget.cyr` — `DhWidget` (first-child / next-sibling tree),
-    `DhWidgetKind { WINDOW / BOX / LABEL / BUTTON / TEXTINPUT / LIST / CANVAS / PROGRESS / GRID }`,
-    `dh_widget_new` / `dh_widget_add_child` + bounds accessors.
-  - `src/layout.cyr` — `DhRect`, `DhLayout { NONE / BOX_H / BOX_V /
-    FLEX }`, and a `dh_layout_apply` tree-walk skeleton.
-  - `src/event.cyr` — the **input-dispatch** module: `DhEventKind`,
-    `DhEvent`, `dh_event_new`, hit-testing, `dh_dispatch` (route to the
-    focused / hit widget), and the `dh_run` event-loop skeleton.
-  - `src/surface.cyr` — `DhSurface` (client window + RGBA8 pixel
-    buffer), `dh_surface_new` / `dh_surface_present` skeleton.
-  - `programs/smoke.cyr` — the link-check entry.
-- **v0.2.0 — the toolkit draws (shipped).** sadish + rekha wired; real box
-  layout (`dh_layout_at` — `BOX_V` / `BOX_H` stacking); a render path
-  (`dh_surface_render`) that draws the widget tree into a sadish `SdSurface` —
-  backgrounds/borders via sadish, `LABEL` / `BUTTON` text via rekha. The full
-  draw stack (dhancha → rekha → sadish → pixels) is RUN-tested.
-- **v0.3.0 — the toolkit responds (shipped).** Event dispatch: hit-testing,
-  keyboard focus + `Tab` traversal, per-widget handlers (fnptr) with bubble
-  propagation, hover enter/leave, click + keyboard activation, and an
-  event-loop pump over a `DhQueue` (`dh_run` / `dh_quit`). Buttons hover, click,
-  and keyboard-activate; the whole path is RUN-tested (`event_test`).
-- **v0.4.0 — the event model completes (shipped).** Capture-phase propagation
-  (`dh_propagate` — capture root→target then bubble, opt-in capture handlers)
-  and a drag-drop state machine (draggable / drop-target flags, a move
-  threshold, `DRAG_START` / `MOVE` / `DROP` / `END`); a drag suppresses the
-  click. RUN-tested (`event_test`, sub-tests A–Q).
-- **v0.5.0 — the layout engine (shipped).** `BOX_V` / `BOX_H` are flexbox-style
-  containers: flex grow/shrink, padding, gap, and cross-axis alignment, plus
-  intrinsic measure (`dh_measure` / `dh_layout_fit`) that sizes a container to
-  its content. RUN-tested (`layout_test`).
-- **v0.9.7 — the two containers apps were hand-rolling (shipped).** `LIST` — a scrolling,
-  selectable container (`src/list.cyr`), with the scroll offset applied at **layout** time so
-  hit-testing needs no knowledge of scrolling — and an editable `TEXTINPUT` (`src/textinput.cyr`)
-  with a UTF-8 buffer and a caret that steps whole characters. The painter now **clips** to each
-  widget's box, closing a standing disagreement in which `dh_hit_test` rejected points outside a
-  widget while `dh_draw_widget` happily drew there. RUN-tested (`list_test`, `textinput_test`).
-- **v0.9.24 — the toolkit works for an IMMEDIATE-MODE app (shipped).** dhancha identified a widget by
-  its **pointer**, and a per-frame arena invalidates every pointer at `dh_frame_begin` — so focus,
-  hover, press and drag were all unreachable from an app that rebuilds its tree every frame. That was
-  diagnosed three times as three separate features before it was recognised as **one** cause.
-  `dh_widget_set_key` gives a widget a caller-supplied identity that is an *integer*, so
-  `arena_reset` cannot invalidate it; `dh_surface_set_root` re-resolves key → widget against the
-  freshly built tree each frame. **Drag now works under a frame arena** (0.9.21 could only refuse it),
-  and `dh_text_attach` lets an app own the edit buffer instead of leaking one per frame.
-  ⚠ **Additive**: key 0 means "no identity", every existing widget has it, and nothing shipped
-  changes behaviour. RUN-tested (`key_test`, 50 checks, six mutations).
-- **v0.9.25 — GRID (shipped).** A wrapping, selectable grid of fixed-size cells (`src/grid.cyr`),
-  with the arithmetic every consumer would otherwise re-derive: how many cells a width admits (`n`
-  cells carry `n - 1` gaps), the ceiling division that turns cells into rows, arrow keys that move by
-  a whole **row** vertically and do not wrap horizontally, keep-selected-visible at minimum move, and
-  hit-testing from the laid-out cells so the gaps between them belong to nobody.
-  ⛔ **It earns a kind by this repo's own rule** — the one 0.9.23 applied when it REFUSED one to MENU
-  and SHEET: a grid composed from boxes would make the app paint its own selection highlight, which
-  means the app naming `accent`. RUN-tested (`grid_test`, 66 checks, six mutations).
-- **v0.9.26 — the list goes sideways (shipped).** `dh_list_new_h` lays the same container
-  left-to-right, with `DH_W_SCROLL_X` as the second axis's own offset. ⛔ **A menu bar, a tab strip,
-  a toolbar and a view switcher are one thing** — a row of items with the current one highlighted —
-  and composing it from boxes would make the app paint that highlight, which means naming a colour.
-  The toolkit owns it, and needs no new kind to. ⚠ Also fixes a bug present since 0.9.7:
-  `dh_widget_set_pref` on a list silently rewrote its row height, because both lived in
-  `DH_W_PREF_*`. RUN-tested (`list_test`, 104 checks, five mutations).
-- **v0.10.0 — scalable text on the frame arena (shipped).** `dh_draw_text_ink`'s `font != 0`
-  branch opened a full-surface canvas per label per frame and a sadish path per glyph, all from the
-  global bump allocator with no `free()` — MEASURED at 26,640,472 B per 12-label frame on the global
-  heap UNDER a frame arena, which is the thing the arena exists to prevent (filed by crab,
-  2026-09-13). The draw now installs `dh_falloc` as sadish's allocation hook (sadish 0.5.5's seam,
-  which rekha 0.3.10 draws from too) for the duration of one text draw and sizes its canvas to the
-  clip ∩ surface ∩ run, so a frame of proportional text at a fixed maximum run / clip / h costs the
-  global heap **exactly 0 bytes** and 417,056 B of arena, reclaimed at `dh_frame_begin` (⚠ the first
-  run WIDER than any before still costs the global heap w*8 once — sadish's per-row accumulator,
-  never on the hook — so a zero-heap gate warms up at the widest run it will draw; MEASURED 6,176 B
-  for a 772 px canvas, 0 on the repeat; ⚠ and a FIXED arena that cannot hold a whole frame — ~417 KB
-  for that one, ~4.3 KB per glyph drawn + 320 B per widget — spills the text to the global heap per
-  frame with nothing failing, MEASURED 351,520 B per frame under `arena_new(65536)`, so prefer
-  `arena_new_growable`, which chains instead of refusing). ⛔ The gate that missed it rendered
-  `font = 0` only; `text_arena_test` renders the branch that was not running, with a face that
-  rasterises, and the caret follows the face's advances (it was drawn at the bitmap font's
-  `x + 3 + chars * 9` under every font — 23 px short after 'AB AB' at h = 20, 16 px tall in a 20 px
-  box). RUN-tested (`text_arena_test`, 92 checks, thirteen mutations).
-- **v0.10.2 — a label is one flatten operation (shipped).** sadish bounds what a curve-dense outline
-  can cost with a budget in points per OPERATION (65,536; past it the remaining curves are cut to
-  chords and `sd_flatten_degraded()` says so), and since sadish 0.7.2 every fill opens one of its
-  own — so each glyph of a label was its own operation and a label of N glyphs was N budgets. rekha
-  admits 4,096 points to a simple glyph, and a hostile face is a real input (it is the case rekha
-  filed against sadish's flatten: untrusted outlines, filled every frame — by this toolkit).
-  `dh_draw_text_ink` now opens ONE operation around its glyph loop, so the label is the unit the
-  budget bounds; MEASURED with a 250-quad spike glyph at 16,000 points, a run of them is cut at its
-  fifth glyph and sixty of them take 75 ms where the per-fill cost is 1,045 ms. A legitimate curved
-  glyph emits 16 points at h = 20, so a 60-glyph label is 1.5 % of the budget (5.9 % at h = 200); a
-  consumer drawing one label past ~1,889 glyphs at a 32 px em raises `sd_flatten_budget_set` or
-  scopes a frame itself (dhancha's scope nests inside it). The scope also makes the verdict mean
-  something: `dh_text_degraded_runs()` counts the runs whose budget ran out — monotonic, delta it
-  across a frame the way a gate deltas `alloc_used()`; a run that degrades is still drawn, coarser.
-  Nothing here allocates. RUN-tested (`text_budget_test`, 108 checks, five mutations).
-- **v0.6+ — next.** The compositor-fd input source (decode the native display
-  protocol's input wire bytes into events + block on its transport), and the
-  present path (CPU buffer submit over the native protocol; mabda GPU upload
-  later). Wayland is refused — see
-  [`docs/development/sovereign-desktop.md`](docs/development/sovereign-desktop.md).
+- **What shipped, and what each claim measured** — [`CHANGELOG.md`](CHANGELOG.md), newest first.
+- **What is next** — [`docs/development/roadmap.md`](docs/development/roadmap.md): forward-facing
+  work only, every item with its evidence in the tree.
+- **The display-seam direction** — [`docs/development/sovereign-desktop.md`](docs/development/sovereign-desktop.md).
+  Wayland is refused, not ported.
+- **Filed issues** — [`docs/development/issues/`](docs/development/issues/) while open,
+  [`issues/archived/`](docs/development/issues/archived/) once a release addresses them.
+- **The gates** — `programs/*_test.cyr`, nineteen self-checking RUN suites; CI runs them all, plus
+  lint / fmt / vet / distlib / sidecar.
 
 ## Place in the stack
 
 ```
   desktop apps  (build UIs on dhancha)
         │
-     dhancha            ← client-side widget toolkit (this repo)
+     dhancha                        ← client-side widget toolkit (this repo)
         │  draws via
-   sadish · rekha · mabda   ← 2D vector · fonts · GPU  (DEFERRED cross-deps)
-        │  presents a client surface (native protocol) to
-   aethersafha         ← compositor / server (composites to screen)
+   sadish · rekha · kashi · rupa    ← 2D vector · scalable fonts · the system font · theme tokens
+        │  presents a client surface over
+   setu                             ← the native display protocol (contract + reference client)
+        │  to
+   aethersafha                      ← compositor / server (composites to screen)
 ```
 
-The draw/present path — **sadish** (2D vector), **rekha** (fonts), and
-**mabda** (GPU) — is a **deferred cross-dependency**: not wired at the
-scaffold. As the draw/present code lands (v0.2), add to `cyrius.cyml`:
-
-```toml
-[deps.sadish] path = "../sadish"
-[deps.rekha]  path = "../rekha"
-[deps.mabda]  path = "../mabda"
-```
+The present path is CPU pixels over setu; a GPU upload (mabda) is a later bite that waits on setu
+carrying a buffer handle — see the roadmap.
 
 ## Consumers
 
@@ -174,32 +76,36 @@ scaffold. As the draw/present code lands (v0.2), add to `cyrius.cyml`:
   handler routing), `fnptr` (event-callback dispatch), and `tagged`
   (tagged-value payloads). Resolved by `cyrius deps` into `lib/`.
 - **sadish** (0.11.2) + **rekha** (0.9.0) — the draw path: sadish fills/strokes
-  widget backgrounds/borders, rekha rasterizes text (via sadish). Wired as
-  `[deps.*]` (local `../` path overrides for dev; git tags as published pins).
-  ⛔ Both floors are HARD: 0.10.0's scalable text installs `dh_falloc` through
-  sadish 0.5.5's `sd_alloc_set` and blits with `sd_canvas_blit_at`, and rekha
-  0.3.10 is the version whose outline scratch follows that hook. The pins sit
-  well above both floors since 0.10.1; nothing dhancha calls changed shape
-  across sadish 0.6–0.11 or rekha 0.4–0.9, and rekha 0.9.0 is cut against
-  sadish 0.11.2 exactly, so the two move together.
+  widget backgrounds/borders, rekha rasterizes text (via sadish). ⛔ Both floors
+  are HARD: 0.10.0's scalable text installs `dh_falloc` through sadish 0.5.5's
+  `sd_alloc_set` and blits with `sd_canvas_blit_at`, and rekha 0.3.10 is the
+  version whose outline scratch follows that hook. The pins sit well above both
+  floors since 0.10.1; nothing dhancha calls changed shape across sadish 0.6–0.11
+  or rekha 0.4–0.9, and rekha 0.9.0 is cut against sadish 0.11.2 exactly, so the
+  two move together.
 - **rupa** (0.1.7) — the shared desktop theme tokens (`dh_theme_*`), the same
   source the compositor reads.
 - **kashi** (1.0.10) — the VGA 8x16 system font the default (`font = 0`) text
   path blits; vendored as its freestanding core (see the manifest's ⛔).
 - **setu** (0.8.9) — the display-protocol contract and reference client that
   `dh_client_connect` / `dh_setu_*` delegate to.
-- **mabda** (GPU) — still deferred; the present path (CPU buffer submit over
-  the native protocol; GPU upload later) is a later bite. The CPU draw is
-  complete.
+- **mabda** (GPU) — not a dependency yet: the present path is CPU pixels over
+  setu, and a GPU upload waits on setu carrying a buffer handle (roadmap).
+
+Every `[deps.*]` resolves from its published git tag, and `cyrius.lock` carries
+the commit each tag resolved to. The `path = "../sibling"` overrides are kept
+commented out in the manifest for cross-repo work on an unpushed sibling — ⛔
+`path` wins over `tag` and pins no commit, so never commit one live.
 
 The toolchain pin is `cyrius = "6.6.6"`.
 
 ## Quick Start
 
 ```bash
-cyrius deps                                          # resolve stdlib into lib/
+cyrius deps                                          # resolve the stdlib and every [deps.*] tag into lib/
 cyrius build programs/smoke.cyr build/dhancha-smoke  # link-check
 ./build/dhancha-smoke                                # prints the banner
+for t in programs/*_test.cyr; do cyrius build "$t" build/t && ./build/t || break; done   # the gates
 ```
 
 ## License

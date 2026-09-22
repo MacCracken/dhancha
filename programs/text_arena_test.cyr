@@ -8,7 +8,7 @@
 # **2,513,248 B per call, every call**; a frame of 12 such labels **26,645,208 B**; and under a frame
 # arena the arena took 4,736 B (the widgets) while the global heap still took 26,640,472 B per frame —
 # 532,809,440 B over twenty frames. Filed by crab as
-# `docs/development/issues/2026-09-13-scalable-text-allocates-per-call-outside-the-frame-arena.md`.
+# `docs/development/issues/archived/2026-09-13-scalable-text-allocates-per-call-outside-the-frame-arena.md`.
 # 0.10.0 installs `dh_falloc` as sadish's allocation hook (sadish 0.5.5 — and rekha 0.3.10 draws its
 # outline scratch from the same seam) for the duration of one text draw, and sizes the canvas to the
 # clip ∩ surface ∩ run instead of the surface.

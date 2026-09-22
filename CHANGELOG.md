@@ -5,6 +5,78 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.10.3] - 2026-09-21 — the lock pins commits, the count is exact, and the roadmap has a file
+
+Two repairs the last two releases noted and left, the README cut down to what the toolkit IS, and a
+roadmap that lives where the stack keeps one. Both repairs are filed and archived in one move —
+`docs/development/issues/archived/2026-09-21-*` — since this is the release that closes them.
+
+### Changed — every `[deps.*]` resolves from its tag; `cyrius.lock` pins the commit
+
+(`issues/archived/2026-09-21-live-path-overrides-keep-commit-pins-out-of-the-lock.md`.) All five
+`path = "../sibling"` lines are **dormant** — commented out, one note each, the rule and its history
+in the `[deps]` header. `cyrius deps` prefers `path` to `tag` and a `path` dep pins no commit, so
+while any was live the lock could not carry that dep's `commit` line and a green build proved
+nothing about the tag — the ⛔ each block carried, and the step 0.10.1 did by hand. Now:
+`cyrius.lock: 37 deps locked, 5 commit-pinned` — sadish `d9f41f3`, rupa `aa1a2d7`, rekha `47aabba`,
+kashi `f8f9c97`, setu `cc4161f` — regenerated from a clean `lib/`, which is the state CI builds from
+(`rm -rf lib && cyrius deps`); the 115–116-entry full-snapshot lock of 0.10.0–0.10.2 was the dev
+box's `lib sync --full` hygiene, and CI never had it. MEASURED both ways: uncomment `../sadish` and
+the lock reads `4 commit-pinned`; comment it back and `5`. Uncommenting one is the documented move
+for cross-repo work on a sibling that is not yet pushed, and it goes back before the commit. No
+byte of `src/` or of any vendored bundle moved (0.10.1 verified the tag resolve byte-identical to
+every sibling checkout).
+
+### Fixed — `dh_text_degraded_runs` counts the run in which an operation crossed, once
+
+(`issues/archived/2026-09-21-degraded-run-count-inflates-under-a-consumer-scope.md`.) 0.10.2 counted
+a run if sadish's degraded flag read 1 after its scope closed — right when dhancha's scope is the
+outermost (every run its own operation), inflated under a consumer's enclosing
+`sd_flatten_op_begin` / `_end`, whose flag is sticky until it closes: every run after the one that
+spent the consumer's budget counted too, and 0.10.2 said so. `dh_draw_text_ink` now reads the depth
+`sd_flatten_op_begin` returns; at depth > 1 it reads the standing verdict at entry and counts only a
+0 → 1 transition across its own loop. At depth 1 the begin cleared the flag, so nothing changes
+there. MEASURED (`text_budget_test` E, 108 → **115** checks): inside one consumer scope `b6`, `"A"`,
+`b6` counts **1** (was 3); `"A"`, `b6`, `"A"` counts **1**, at the second run; outside any scope
+`b6`, `"A"`, `b6` counts **2**. Three new mutations: 0.10.2's count (never reading the standing
+verdict) fails E; never counting when nested fails E; a second begin fails the depth checks. A
+fourth — reading the verdict at depth 1 too — passes, and should: a depth-0 begin has just cleared
+it. No consumer wraps a frame today (swept crab, puka, agnos, aethersafha for the call: 0 hits
+outside vendored sadish), so only the figure was ever wrong, never the zero / non-zero answer.
+
+### Changed — the README is what the toolkit is; the roadmap is `docs/development/roadmap.md`
+
+- **README.md** — the release-by-release *Scope* ledger (0.1.0 → 0.10.2, ~100 lines that restated
+  the changelog) and its *v0.6+ — next* item are gone; so is the *Place in the stack* block that
+  still called sadish / rekha / mabda *"deferred cross-deps"* and told the reader to *"add
+  `[deps.sadish] path = …` as the draw/present code lands (v0.2)"* — eight releases after it did.
+  What is left: what dhancha owns, brought current (nine widget kinds, the draw, the client
+  connection), a *Where things are* section pointing at the changelog, the roadmap, the direction
+  doc, the issues and the gates, the stack diagram with setu and the four draw deps in it, consumers,
+  dependencies (with the dormant-`path` rule in two sentences), quick start. 113 lines, was 207.
+- **`docs/development/roadmap.md`** (new) — forward-facing work only, in the shape rekha's and
+  kashi's keep: *Scheduled* (the compositor-connected `dh_run` over the transport fd, which
+  `src/event.cyr:17-20` and `:790-792` have called *"a later bite"* since 0.3.0 — both halves it
+  needs exist in `dh_client.cyr` and it ships when a retained-mode consumer asks; TREE and a miller
+  browser, designed with caller-owned state per the archived 2026-08-31 filing), *Pinned* (the draw
+  reads bytes not scalars — `load8` is the codepoint at `src/surface.cyr:476` while `TEXTINPUT` is
+  UTF-8 throughout; no kerning, though rekha publishes `rekha_kern_pair_px`; the w*8 accrow; the
+  silent fixed-arena spill; the one-budget-per-label edge), *Blocked on a sibling* (GPU present on
+  setu carrying a buffer handle; a face on the target, agnos-owned), *Out of scope — committed*
+  (Wayland; the paradigm; shaping; naming a colour), what would reopen each, and where to look.
+  Every item carries a `path:line` or a grep, checked against the tree at this release.
+- **`docs/development/issues/`** — the two closed filings (2026-08-31, addressed 0.9.24; 2026-09-13,
+  addressed 0.10.0) moved to `issues/archived/`, the stack's convention; the retained-tree filing's
+  standing ask (*"is why this file stays here"*) now lives in the roadmap instead.
+  `programs/text_arena_test.cyr`'s header follows the moved path.
+
+`dist/dhancha.cyr` 238,663 → 239,592 B (4,684 → 4,697 lines); `dist/dhancha.deps` unchanged. The
+`CYRIUS_DCE=1` smoke binary **133,120 B** and the plain one 751,616 B, both the same size as at
+0.10.2 (the change is inside a function `smoke` never reaches under DCE, and is three loads and a
+branch in one that `text_budget_test` does). All **19** `programs/*_test.cyr` pass; `lint` 0 warnings, `fmt --check`
+clean, `vet` clean, `distlib` in sync, sidecar in sync — run in a scratch checkout with no sibling
+repos, which is now also the shape of the committed manifest.
+
 ## [0.10.2] - 2026-09-21 — a label is one flatten operation, and a degraded run is counted
 
 The follow-up 0.10.1 named: sadish 0.7.0's *"rekha and dhancha should wrap a glyph draw"* in

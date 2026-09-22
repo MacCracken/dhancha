@@ -81,9 +81,15 @@ stdlib = [
 
 # Draw-path deps: sadish (2D vector fills/strokes) + rekha (glyph outlines,
 # which itself pulls sadish). The widget draw walks the tree filling
-# backgrounds/borders via sadish and text via rekha. Pinned to git tags (the dev
-# `path` overrides were dropped for reproducible builds; re-add
-# `path = "../sibling"` locally for cross-repo work on uncommitted siblings).
+# backgrounds/borders via sadish and text via rekha. Pinned to git tags.
+# ⛔ EVERY `path = "../sibling"` LINE BELOW IS DORMANT (0.10.3), AND STAYS THAT WAY IN A COMMIT.
+# `path` WINS over `tag` and skips the commit-pin verify, so while one is live `cyrius.lock` cannot
+# carry that dep's `commit` line and a green local build is not evidence the declared tag resolves
+# (0.10.1 found setu's tag stale under a green build for exactly that reason, and the 0.8.7/0.8.8
+# note in [deps.setu] is the earlier instance). With all five dormant, `cyrius deps` resolves each
+# tag from git and the lock pins its commit — the state CI has always built from. Uncomment one for
+# cross-repo work on a sibling that is not yet pushed, and put it back before the commit; the ⚠
+# paragraphs that follow each one are the history of why it exists.
 # mabda (GPU) + the aethersafha Wayland commit are a later bite — CPU draw first.
 [deps.sadish]
 git = "https://github.com/MacCracken/sadish.git"
@@ -115,7 +121,8 @@ git = "https://github.com/MacCracken/sadish.git"
 # still stands beneath this pin. ⚠ rekha 0.9.0 pins sadish 0.11.2 exactly, so both vendored bundles
 # are cut against ONE sadish; move the two together. Verified with this `path` line disabled: the
 # 0.11.2 tag resolves from git and its `dist/sadish.cyr` is byte-identical to the sibling checkout.
-path = "../sadish"
+# ⚠ dormant (0.10.3) — uncomment for local work on an unpushed sibling; never commit it live.
+# path = "../sadish"
 tag = "0.11.2"
 modules = ["dist/sadish.cyr"]
 
@@ -127,7 +134,8 @@ modules = ["dist/sadish.cyr"]
 git = "https://github.com/MacCracken/rupa.git"
 # ⚠ `path` — every other dep in this stack carries both; without it a local rupa change cannot be
 # built against until it is pushed, which is how a burn ends up testing last week's tokens.
-path = "../rupa"
+# ⚠ dormant (0.10.3) — uncomment for local work on an unpushed sibling; never commit it live.
+# path = "../rupa"
 tag = "0.1.7"
 modules = ["dist/rupa.cyr"]
 
@@ -139,7 +147,8 @@ git = "https://github.com/MacCracken/rekha.git"
 # does. ⛔ `path` WINS over `tag`, so a green build here is NOT evidence the declared tag resolves —
 # re-verify with this line disabled before any release that moves the tag (0.10.1 did: 0.9.0
 # resolves from git, `dist/rekha.cyr` byte-identical to the sibling checkout).
-path = "../rekha"
+# ⚠ dormant (0.10.3) — uncomment for local work on an unpushed sibling; never commit it live.
+# path = "../rekha"
 # ⛔ FLOOR >= 0.3.10, HARD. rekha 0.3.10 draws its glyph scratch — the loca span, the point arrays,
 # the outline record, a composite's merge buffers — from sadish's `sd_alloc` seam instead of the
 # global heap. That is what lets this repo's frame arena own the WHOLE scalable-text cost: dhancha
@@ -161,7 +170,8 @@ modules = ["dist/rekha.cyr"]
 [deps.kashi]
 git = "https://github.com/MacCracken/kashi.git"
 # ⚠ `path` — kashi is VENDORED (lib/kashi_font_data.cyr); every other dep in this stack carries both.
-path = "../kashi"
+# ⚠ dormant (0.10.3) — uncomment for local work on an unpushed sibling; never commit it live.
+# path = "../kashi"
 # 1.0.10 (0.10.1's pin): no public-API change, and `src/font_data.cyr` is byte-identical to 1.0.8's.
 tag = "1.0.10"
 # ⛔⛔ THE FREESTANDING CORE IS A MEASURED CHOICE, NOT A SHORTCUT (recorded 2026-08-17, kashi 1.0.6).
@@ -195,7 +205,8 @@ git = "https://github.com/MacCracken/setu.git"
 # pushed — and the wheel needed setu, dhancha and crab moving together. ⛔ `path` WINS over `tag`, so a
 # green build here is NOT evidence the declared graph resolves; re-verify the tag against setu's
 # VERSION at every cut, and prefer disabling `path` and re-resolving over trusting the local tree.
-path = "../setu"
+# ⚠ dormant (0.10.3) — uncomment for local work on an unpushed sibling; never commit it live.
+# path = "../setu"
 # ⛔⛔ 0.8.8 IS A HARD FLOOR, NOT A PREFERENCE — `SETU_INPUT_PTR_SCROLL` (kind 12) is an ENUM CONSTANT,
 # and `cyrius distlib` compiles the generated bundle: an undefined *function* is downgraded to a
 # warning (dhancha calls setu functions it does not carry), but an undefined *variable* is a hard

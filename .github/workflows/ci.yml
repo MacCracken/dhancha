@@ -40,6 +40,20 @@ jobs:
           mkdir lib
           cyrius deps
 
+      - name: No lone ! in src/
+        # ⛔ src/ ships as dist/dhancha.cyr, and each consumer compiles that on ITS pin: crab is on 6.6.6.
+        # Below cyrius 6.7.3 the lexer DROPS a lone `!`, so `if (!ok)` compiles as `if (ok)`, with no
+        # warning, and no build here can see it because this repo's own pin reads `!` correctly.
+        # Measured, one source: exits 7 on 6.6.6 and 6.6.20, 3 on 6.7.9. Spell it `(x == 0)`.
+        # Retire this once no consumer is below 6.7.3. The pattern reads code before any `#` or `"` on
+        # the line, so comments and strings are safe, and `!=` is not matched.
+        run: |
+          if grep -nE '^[^#"]*![^=]' src/*.cyr; then
+            echo "ERROR: a lone ! in src/ is silently dropped by consumers below cyrius 6.7.3."
+            exit 1
+          fi
+          echo "no lone ! in src/"
+
       - name: Lint
         # Hard gate: any `warn` line (warning or untracked-deferral) fails CI.
         run: |

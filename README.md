@@ -1,6 +1,6 @@
 # dhancha
 
-Version: 0.10.5
+Version: 0.11.0
 
 **dhancha** (ढाँचा — Hindi/Sanskrit: *framework / structure / scaffold*)
 is a pure-Cyrius **client-side widget toolkit / desktop app framework**
@@ -77,34 +77,36 @@ design and makes no GPU call of its own.
   `syscalls`, `assert`, `bench`, `args`, plus `hashmap` (widget-id →
   handler routing), `fnptr` (event-callback dispatch), and `tagged`
   (tagged-value payloads). Resolved by `cyrius deps` into `lib/`.
-- **sadish** (0.11.3) + **rekha** (1.0.0) — the draw path: sadish fills/strokes
+- **sadish** (0.12.0) + **rekha** (1.1.0) — the draw path: sadish fills/strokes
   widget backgrounds/borders, rekha rasterizes text (via sadish). ⛔ Both floors
   are HARD: 0.10.0's scalable text installs `dh_falloc` through sadish 0.5.5's
   `sd_alloc_set` and blits with `sd_canvas_blit_at`, and rekha 0.3.10 is the
   version whose outline scratch follows that hook. The pins sit well above both
-  floors since 0.10.1; nothing dhancha calls changed shape across sadish 0.6–0.11
-  or rekha 0.4–1.0. rekha 1.0.0 is cut against sadish 0.11.2, and 0.11.3 is that
-  code but for its version number, so the two still share one sadish; a sadish
-  move that changes code moves rekha with it.
-- **rupa** (0.1.9) — the shared desktop theme tokens (`dh_theme_*`), the same
+  floors since 0.10.1; nothing dhancha calls changed shape across sadish 0.6–0.12
+  or rekha 0.4–1.1. rekha 1.1.0 is cut against sadish 0.12.0, so the two share
+  one sadish; a sadish move that changes code moves rekha with it.
+- **rupa** (0.2.0) — the shared desktop theme tokens (`dh_theme_*`), the same
   source the compositor reads.
-- **kashi** (1.1.1) — the VGA 8x16 system font the default (`font = 0`) text
+- **kashi** (1.2.0) — the VGA 8x16 system font the default (`font = 0`) text
   path blits, and the map from a Unicode scalar to its cell; vendored as its
   freestanding core (see the manifest's ⛔). ⛔ The floor is HARD at 1.1.0: the
   bundle calls `kashi_cp437_from_unicode`, so a consumer vendoring kashi needs
   that too, and a build below it is refused.
-- **setu** (0.8.14) — the display-protocol contract and reference client that
+- **setu** (0.9.0) — the display-protocol contract and reference client that
   `dh_client_connect` / `dh_setu_*` delegate to.
 - **mabda** (GPU) — not a dependency, by design: dhancha draws on the CPU and
   the hardware path is the buffer's (setu) and the compositor's (aethersafha).
 
 Every `[deps.*]` resolves from its published git tag, and `cyrius.lock` carries
 the commit each tag resolved to. The `path = "../sibling"` overrides are kept
-commented out in the manifest for cross-repo work on an unpushed sibling — ⛔
-`path` wins over `tag` and pins no commit, so never commit one live.
+commented out in the manifest for cross-repo work on an unpushed sibling. Since
+cyrius 6.7.6 one takes effect only under `--local` or `CYRIUS_LOCAL=1`; a default
+build always builds the tag.
 
-The toolchain pin is `cyrius = "6.6.20"`, and each dep above is the tag its repo
-cut for that toolchain.
+The toolchain pin is `cyrius = "6.7.9"`, and each dep above is the tag its repo
+cut for that toolchain. ⚠ `src/` still has to compile below that pin, because
+consumers build `dist/dhancha.cyr` on their own: crab is on 6.6.6, where a lone
+`!` is silently dropped. CI refuses one.
 
 ## Quick Start
 

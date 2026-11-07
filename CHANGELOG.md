@@ -5,6 +5,106 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.11.0] - 2026-11-07 — onto cyrius's 6.7 line, and nothing moved
+
+The toolchain moves 6.6.20 → 6.7.9, onto cyrius's language minor, where the language itself changes
+meaning, and all five deps move to the tag their repos cut for it. That move is why this is a minor,
+as it was for sadish 0.12.0, rekha 1.1.0, rupa 0.2.0, kashi 1.2.0 and setu 0.9.0. **dhancha's API, ABI
+and output do not change.** No file under `src/` or `programs/` moved, `dist/dhancha.cyr` differs from
+0.10.5's in its version stamp alone, and crab and puka build to byte-identical binaries against it.
+
+### Changed — each dep to its 6.7.9 tag
+
+As at 0.10.5 the selector is the pinned language version, not the latest tag: all five have since
+moved to cyrius 6.7.18, so each pin is the one tag whose own `[package].cyrius` is `6.7.9`.
+
+| dep | from | to | what moved in the code this repo vendors |
+|---|---|---:|---|
+| sadish | 0.11.3 | **0.12.0** | `sadish_version`'s return, nothing else |
+| rekha | 1.0.0 | **1.1.0** | nothing |
+| rupa | 0.1.9 | **0.2.0** | nothing |
+| kashi | 1.1.1 | **1.2.0** | nothing; the floor stays 1.1.0 |
+| setu | 0.8.14 | **0.9.0** | nothing |
+
+- rekha 1.1.0 names sadish 0.12.0, so the two agree by tag again as well as by code. Under the old
+  pins 6.7.9 says so itself: `note: sadish 0.11.2 (wanted by rekha) not used`. That line is gone.
+- The lock is regenerated from no lock, for the reason 0.10.5 found, which still holds on 6.7.9:
+  `cyrius deps` over an old lock keeps the old tags' `commit` lines, `cyrius deps --lock` keeps them,
+  and `cyrius deps --locked` passes on the result. **37 entries, 5 commit-pinned** — sadish `1e0f344`,
+  rupa `4511b15`, rekha `d00190a`, kashi `d3f7307`, setu `06742f1`. 22 of the 37 hashes change.
+
+### Changed — toolchain `6.6.20` → `6.7.9`
+
+Each row is a fresh clone with only that toolchain installed and an empty deps cache:
+
+| | smoke (`CYRIUS_DCE=1`) | `text_test` (no DCE) | RUN suites |
+|---|---:|---:|---|
+| 6.6.20, old pins (0.10.5) | 47,640 B | 698,960 B | 20 / 20 |
+| 6.7.9, old pins | 47,656 B | 698,976 B | 20 / 20 |
+| 6.7.9, new pins (this release) | **47,656 B** | **698,976 B** | 20 / 20 |
+
+No lint warning, no fmt drift, and no compiler warning in any build. Agnos DCE smoke 43,880 → 43,896 B.
+
+⛔ **A build catches what 6.7 refuses. It cannot catch what 6.7 compiles with a different meaning**, so
+the 6.7.0 – 6.7.9 migration notes were checked against the source, not only the build: all 46 files
+under `src/` and `programs/`, with comments, strings and character literals stripped. Zero sites each:
+
+- **6.7.3, a lone `!`.** The lexer dropped it before 6.7.3, so `if (!ok)` meant `if (ok)`.
+- **6.7.9, unary `-` / `~` on a constant before a literal operator** (`-K + 10` was 15, is 5). Zero `~`,
+  and zero unary `-` on a name. The two unary `-` in this repo are on numeric literals
+  (`DH_BORDER_INHERIT`, `DH_BORDER_NONE`), which 6.7.9 leaves alone.
+- **Reserved or contextual:** `trait`, `const`, `true`, `false`, `do`, `dyn`, `loop`.
+- **6.7.8 / 6.7.9, typed pointers:** narrow `*p`, the pointer-step and `&q` rules. Zero `*T`.
+- **`bool`, `struct`, `impl`, `self`, slices, `u128`, `f32`, sized typed arrays, `OP=`:** zero of each.
+- **6.7.6, `fncall8`'s argument order:** this repo calls `fncall2`, and nothing past it.
+- **`#bounds` lines**, a directive since 6.7.8: zero. **`exec` family, `callptr`:** zero.
+
+What 6.7 newly refuses (an unmatched module-scope `}`, a `for` step on an undeclared name, forward-call
+arity, a top-level pair bind) the build would report, and it reports nothing.
+
+### Output does not move, and that is measured
+
+The two draw entry points and the widget walk were hooked in scratch copies, so every frame the suites
+draw was hashed and written out, then 0.10.5 on 6.6.20 was compared with this tree on 6.7.9:
+**969 frames across the 12 suites that draw, byte-identical**, and all 20 suites match on exit code,
+stdout and stderr. The only difference anywhere is two wall-clock microsecond lines in
+`text_budget_test`. **Negative control:** drawing bitmap text one pixel to the right moves 8 suites.
+
+crab and puka, each on its own toolchain, built against 0.10.5 and against this tree, with the vendored
+`# Version:` line read to confirm which dhancha each got:
+
+| consumer | cyrius | Linux | agnos | binary |
+|---|---|---:|---:|---|
+| crab | 6.6.6 | 524,312 B | 790,520 B | byte-identical |
+| puka | 6.7.18 | 1,423,536 B | 1,410,368 B | byte-identical |
+
+⚠ crab's declared kashi `tag = "1.0.10"` is still below the floor 0.10.5 set. It builds through its live
+`path`, as it did at 0.10.5.
+
+### Added — CI refuses a lone `!` in `src/`
+
+This pin is not the only compiler that reads `src/`. Consumers compile `dist/dhancha.cyr` on their own
+pins, and crab is on 6.6.6, so `src/` can use no 6.7 syntax yet. Most of it would fail loudly there, but
+`!` does not, and nothing in this repo could see it, because 6.7.9 reads `!` correctly. Measured, one
+source: exits **7** on 6.6.6 and 6.6.20, **3** on 6.7.9, no warning on any. The new step fails on one,
+and fires on a planted `if (!x)`. Retire it once no consumer is below 6.7.3.
+
+### Fixed — "`path` wins over `tag`" stopped being true
+
+From cyrius 6.7.6 a default build always builds the tag and checks its commit pin, and a `path` beside
+a `tag` is a dev override used only under `--local` or `CYRIUS_LOCAL=1`. The manifest said otherwise in
+five places and the README in one. They now give the current rule, and keep the old one as history,
+since it still holds for a consumer below 6.7.6. The `path` lines stay commented out in a commit.
+
+### Verified
+
+The final tree was replayed through CI's whole build job in a fresh clone holding only the 6.7.9 slot,
+with an empty deps cache, so all five tags resolved from GitHub; neither `cyrius.lock` nor `dist/` moved
+under it. All 32 vendored stdlib files are byte-equal to the 6.7.9 snapshot, and `dist/dhancha.deps`
+stays absent. The bundle's `--no-deps` closure holds for `smoke` and six suites, and all 8 non-test
+programs build for Linux and `--agnos` with no undefined name. CI's installer was run against a
+throwaway home and installs a `cycc` byte-identical to that slot.
+
 ## [0.10.5] - 2026-11-06 — toolchain 6.6.20, every dep on the tag cut for it, and one CP437 map
 
 The toolchain moves fourteen releases to the close of the 6.6.x line, and all five deps move to the

@@ -5,7 +5,7 @@ description = "dhancha (ढाँचा — framework) — pure-Cyrius client-si
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/dhancha"
 language = "cyrius"
-cyrius = "6.7.9"
+cyrius = "6.7.18"
 # ⛔ THIS IS NOT THE ONLY COMPILER THAT READS src/ (0.11.0). Consumers compile `dist/dhancha.cyr` on
 # THEIR pins, and crab is on 6.6.6. Most 6.7 syntax fails loudly there, but a lone `!` does not: below
 # 6.7.3 the lexer drops it, so `if (!ok)` compiles as `if (ok)`. MEASURED, one source: exits 7 on 6.6.6
@@ -108,6 +108,9 @@ stdlib = [
 # that reason, and the 0.8.7/0.8.8 note in [deps.setu] is the earlier instance). That is the rule the
 # ⚠ paragraphs below were written under, and they are the history of why each line exists. It still
 # holds for a CONSUMER below 6.7.6: crab, on 6.6.6, builds its live `path` lines and not its tags.
+# ⚠ A TAG MOVE RE-PINS BY DELETING `cyrius.lock`, THEN `cyrius deps`. cyrius keeps a moved tag's old
+# `commit` row on purpose (fail-closed since 6.6.20, CYRIUS-2026-0030), `--lock` keeps it, `--locked`
+# passes on it, and from 6.7.12 every resolve prints a `note:` naming it. Five deps, five `commit` lines.
 # ⚠ No mabda and no Wayland, by design (0.10.4 corrects the older note here): dhancha draws on the CPU,
 # the present buffer is GPU-visible on hardware through setu, and aethersafha composites it on the GPU;
 # Wayland is refused, not ported (docs/development/sovereign-desktop.md).
@@ -145,9 +148,10 @@ git = "https://github.com/MacCracken/sadish.git"
 # about code, not tag numbers: a sadish move that changes code still moves rekha with it.
 # 0.11.0 moved this pin 0.11.3 -> 0.12.0, the tag cut for cyrius 6.7.9: `sadish_version` is the only
 # code line that moved, and rekha 1.1.0 names this same tag, so the two agree by tag again as well.
+# 0.11.1 moved this pin 0.12.0 -> 0.12.1, the latest tag, cut for cyrius 6.7.18: `sadish_version` again.
 # ⚠ dormant (0.10.3) — uncomment for local work on an unpushed sibling; never commit it live.
 # path = "../sadish"
-tag = "0.12.0"
+tag = "0.12.1"
 modules = ["dist/sadish.cyr"]
 
 # rupa (रूप — form / appearance) — the shared desktop theme-token core. Widgets +
@@ -160,8 +164,8 @@ git = "https://github.com/MacCracken/rupa.git"
 # built against until it is pushed, which is how a burn ends up testing last week's tokens.
 # ⚠ dormant (0.10.3) — uncomment for local work on an unpushed sibling; never commit it live.
 # path = "../rupa"
-# 0.2.0 is rupa's tag for cyrius 6.7.9 (0.11.0's pin): no code line changed from 0.1.9.
-tag = "0.2.0"
+# 0.2.1 is rupa's latest tag, cut for cyrius 6.7.18 (0.11.1's pin): no code line changed from 0.2.0.
+tag = "0.2.1"
 modules = ["dist/rupa.cyr"]
 
 [deps.rekha]
@@ -187,7 +191,12 @@ git = "https://github.com/MacCracken/rekha.git"
 # 0.10.5 moved this pin 0.9.0 -> 1.0.0, the surface freeze and rekha's tag for cyrius 6.6.20: zero code
 # lines of `dist/rekha.cyr` changed, and the sidecar it used to publish is gone (rekha ADR 0010).
 # 0.11.0 moved this pin 1.0.0 -> 1.1.0, rekha's tag for cyrius 6.7.9: zero code lines changed again.
-tag = "1.1.0"
+# 0.11.1 moved this pin 1.1.0 -> 1.1.2, the latest tag: 1.1.1 is the 6.7.18 cut and 1.1.2 a full audit, so
+# unlike its neighbours this move is real code. No public signature changed, and two answers reach us:
+# `rekha_units_per_em` is 0 for a `unitsPerEm` outside 16..16384 (the draw then returns, as it always
+# did on 0), and `rekha_char_to_sdpath` is 0 for a refused glyph (`sd_fill_impl` guards a 0 path, so that
+# glyph draws nothing and the pen still advances). ⚠ A hand-built test face needs a sane `head`; ours use 1000.
+tag = "1.1.2"
 modules = ["dist/rekha.cyr"]
 
 # kashi (काशि) — the AGNOS system console font (full CP437, VGA 8x16). dh_draw_text
@@ -208,8 +217,9 @@ git = "https://github.com/MacCracken/kashi.git"
 # the draw builds with only the `undefined function` warning (this repo's smoke does), and has nothing
 # to fault on. ⚠ Below cyrius 6.7.6 a live `path` hides a stale tag here exactly as it did for setu:
 # crab, on 6.6.6, builds because of its `path = "../kashi"`, while its declared tag sits below this floor.
-# 1.2.0 (0.11.0's pin, its tag for cyrius 6.7.9) changes no code line of this core; the floor stays 1.1.0.
-tag = "1.2.0"
+# 1.3.0 (0.11.1's pin, the latest tag, cut for cyrius 6.7.18) changes one code line of this core, a clamp
+# in `kashi_cp437_from_unicode`'s search, which only bounds a read. The floor stays 1.1.0.
+tag = "1.3.0"
 # ⛔⛔ THE FREESTANDING CORE IS A MEASURED CHOICE, NOT A SHORTCUT (recorded 2026-08-17, kashi 1.0.6).
 # kashi's ADR 0001 says stdlib-linked consumers should take the LIBRARY FACE, and this project links
 # the full stdlib — so `src/font_data.cyr` looks like the wrong surface. Two reasons it is not:
@@ -252,7 +262,7 @@ git = "https://github.com/MacCracken/setu.git"
 # is not evidence the declared graph resolves — this is that, measured.
 # ⚠ 0.8.11 IS THE FLOOR `programs/poll_test.cyr` NOW GATES (0.10.5). Below it, on Linux,
 # `setu_client_poll_input` read EOF and every error as "nothing pending", so `dh_client_poll_event`
-# could not report a dead compositor. 0.9.0 is setu's tag for cyrius 6.7.9: no code line changed from
-# 0.8.14, which was its tag for 6.6.20.
-tag = "0.9.0"
+# could not report a dead compositor. 0.9.1 is setu's latest tag, cut for cyrius 6.7.18: two agnos
+# refusal messages now write their newline, and nothing else in the bundle moved.
+tag = "0.9.1"
 modules = ["dist/setu.cyr"]

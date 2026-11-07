@@ -5,6 +5,89 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.11.1] - 2026-11-07 — cyrius 6.7.18, and every dep on its latest tag
+
+The toolchain moves 6.7.9 → 6.7.18 and all five deps move to their latest tags, each of which is that
+repo's cut for 6.7.18, so nothing here is pinned ahead of the toolchain. No file under `src/` or
+`programs/` moved, `dist/dhancha.cyr` differs from 0.11.0's in its version stamp alone, and crab and
+puka build to byte-identical binaries against it. Unlike the last two moves this one carries real
+code underneath: rekha 1.1.2 is a full audit, so it was tested on real fonts, not only on the suites.
+
+### Changed — each dep to its latest tag
+
+| dep | from | to | what moved in the code this repo vendors |
+|---|---|---:|---|
+| sadish | 0.12.0 | **0.12.1** | `sadish_version`'s return, nothing else |
+| rupa | 0.2.0 | **0.2.1** | nothing |
+| setu | 0.9.0 | **0.9.1** | two agnos refusal messages write their newline |
+| kashi | 1.2.0 | **1.3.0** | one clamp in `kashi_cp437_from_unicode`'s search, which only bounds a read |
+| rekha | 1.1.0 | **1.1.2** | the audit: 702 code-diff lines, no public signature |
+
+**37 lock entries, 5 commit-pinned** — sadish `8671900`, rupa `fc3d461`, rekha `5cdf0fc`, kashi
+`8821447`, setu `959cd1e`. 27 of the 37 hashes change.
+
+### rekha 1.1.2 — what reaches this repo
+
+The audit fixes three out-of-bounds reads reachable from a font alone, and refuses inputs 1.1.1 took.
+Its surface file is byte-identical, and rekha swept every refusal against this host's 2,155 faces.
+Two changed answers meet dhancha's code, and both were read at the call site:
+
+- **`rekha_units_per_em` is 0 for a `unitsPerEm` outside 16..16384.** `dh_draw_text_ink` already
+  returns on 0, and every face the suites hand-build uses 1000.
+- **`rekha_char_to_sdpath` is 0 for a refused glyph.** `src/surface.cyr` passes that to
+  `sd_canvas_fill_union` unchecked, which looked like a new null dereference. It is not: `sd_fill_impl`
+  guards a 0 path, so the glyph draws nothing and the pen still advances.
+
+**Output does not move, measured two ways.** Every frame the suites draw, 0.11.0 on 6.7.9 against this
+tree on 6.7.18: **969 frames across 12 suites, byte-identical**, and all 20 suites match on exit code,
+stdout and stderr. ⚠ Those frames use hand-built TrueType faces, which reach little of what the audit
+changed. So **320 real faces**, an even spread of this host's 2,155 (259 TTF, 61 OTF), were drawn
+through both trees at four sizes, with a 40-character mixed run and three advances: all open, and all
+are identical, with 274 distinct pixel hashes and none blank.
+
+| consumer | cyrius | Linux | agnos | binary against 0.11.0 |
+|---|---|---:|---:|---|
+| crab | 6.6.6 | 524,312 B | 790,520 B | byte-identical |
+| puka | 6.7.18 | 1,423,536 B | 1,410,368 B | byte-identical |
+
+### Changed — toolchain `6.7.9` → `6.7.18`
+
+| | smoke (`CYRIUS_DCE=1`) | `text_test` (no DCE) | RUN suites |
+|---|---:|---:|---|
+| 6.7.9, old pins (0.11.0) | 47,656 B | 698,976 B | 20 / 20 |
+| 6.7.18, old pins | 43,584 B | 699,000 B | 20 / 20 |
+| 6.7.18, latest pins (this release) | **43,728 B** | **715,528 B** | 20 / 20 |
+
+No lint warning, no fmt drift, and no compiler warning in any build. Agnos DCE smoke 43,896 → 44,168 B.
+
+The 6.7.10 – 6.7.18 migration notes are 591 KB and 1,554 bullets, most about shapes this repo has none
+of (no struct, trait, closure, generic or typed pointer, as the 0.11.0 audit measured). They were read
+by filter, not whole: every bullet naming one of the 30 stdlib names this repo calls, plus the tooling
+ones. What the filter left that could reach untyped code, each checked:
+
+- **`var x = fncall2(fp, ..)`** stays one word: the 6.7.13 rule is for a callee written `&f`.
+- **The declaration-zone rules** (6.7.14, 6.7.15) need a global declared after an initialiser that
+  writes it, or declared twice. Every top-level `var rc = main();` here is the program's last line.
+- **New refusals** (a statement headed by `load8`, an enum with no separators, a top-level `return`)
+  and **new lint rules** (a literal write length, `load*(&a + K)` past a local) report nothing here.
+
+### Fixed — the roadmap called a cyrius design a defect
+
+0.11.0's roadmap said cyrius keeping a moved tag's old `commit` row was *"the defect"*. It is deliberate:
+fail-closed since 6.6.20 (CYRIUS-2026-0030), and from 6.7.12 every resolve prints a `note:` naming the
+row and the remedy, which is to delete `cyrius.lock` and re-resolve. That is what the 0.10.5 and 0.11.0
+locks did, so both are right; the diagnosis was not. The manifest now states the rule, and the item
+leaves the roadmap, as does *The 6.7.18 pin move*, which this release is.
+
+### Verified
+
+The final tree was replayed through CI's whole build job in a fresh clone holding only the 6.7.18 slot,
+with an empty deps cache, so all five tags resolved from GitHub; neither `cyrius.lock` nor `dist/` moved
+under it. All 32 vendored stdlib files are byte-equal to the 6.7.18 snapshot, `dist/dhancha.deps` stays
+absent, and `cyrius deps --locked` is clean with no note. The bundle's `--no-deps` closure holds for
+`smoke` and six suites, all 8 non-test programs build for Linux and `--agnos` with no undefined name, the
+lone `!` gate still fires on a planted one, and a plain `cyrius deps` over a stale `lib/` refreshes it.
+
 ## [0.11.0] - 2026-11-07 — onto cyrius's 6.7 line, and nothing moved
 
 The toolchain moves 6.6.20 → 6.7.9, onto cyrius's language minor, where the language itself changes

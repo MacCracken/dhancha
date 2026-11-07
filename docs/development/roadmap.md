@@ -1,6 +1,6 @@
 # dhancha — Roadmap
 
-> **Last updated:** 2026-11-07, at **0.11.0**.
+> **Last updated:** 2026-11-07, at **0.11.1**.
 >
 > This file tracks **forward-facing work only**. A finished item leaves. What already shipped is in
 > [`CHANGELOG.md`](../../CHANGELOG.md), release by release, with the measurement each claim rests
@@ -21,7 +21,7 @@ rekha + kashi + rupa, the frame arena, and the setu connection — `dh_client_co
 frame costing the global heap **0 B** (0.10.0), a label is one bounded flatten operation (0.10.2),
 every dependency resolves from a published tag with its commit in `cyrius.lock` (0.10.3), the
 draw reads UTF-8 characters, not bytes, in both arms and the caret (0.10.4), and the toolchain and
-all five deps sit on the cyrius 6.7.9 cut (0.11.0).
+all five deps sit on the cyrius 6.7.18 cut (0.11.1).
 
 The present path is complete end to end, and the hardware half of it is not dhancha's to build:
 `dh_client_present` hands sadish's pixels to `setu_client_present`, which copies them into a
@@ -99,18 +99,10 @@ needs; when one does, the design rule above is the whole of the requirement.
   0.8.12 note names the tools: `setu_read_timed_out()` tells a timeout from an EOF, and
   `setu_read_msg_ms(fd, m, -1)` waits indefinitely, by spinning on agnos. Whether to wait or to
   surface the timeout is a design call, not a one-liner.
-- **The 6.7.18 pin move.** 0.11.0 took each dep to the tag cut for cyrius 6.7.9, on purpose, and all
-  five have a later tag pinned to 6.7.18: sadish 0.12.1, rekha 1.1.2, rupa 0.2.1, kashi 1.3.0, setu
-  0.9.1 (`git -C ../sadish show 0.12.1:cyrius.cyml | grep '^cyrius = '`). puka is on that line already
-  and pins this repo at 0.10.4. The move is the same shape as 0.11.0: every pin to one toolchain's cut.
 - **`src/` compiles below this pin until crab moves.** crab builds `dist/dhancha.cyr` on cyrius 6.6.6
   (`grep '^cyrius = ' ../crab/cyrius.cyml`), so no 6.7 syntax can land here yet: most would fail loudly
   there, and a lone `!` would invert silently. CI's `No lone ! in src/` step holds the second case
   (`.github/workflows/ci.yml`); retire it when no consumer is below 6.7.3.
-- **A pin move has to regenerate `cyrius.lock` from no lock.** `cyrius deps` over an old lock keeps a
-  moved tag's old `commit` line beside the new one, `cyrius deps --lock` keeps it, and `cyrius deps
-  --locked` passes on the result (measured on 6.7.9: 10 commit lines for 5 deps). So no CI gate here
-  would catch it. `grep -c '^commit' cyrius.lock` must equal the dep count: 5. The defect is cyrius's.
 - **No kerning.** `dh_text_advance` (`src/surface.cyr:218`) is `rekha_char_advance_px` per
   codepoint. rekha publishes pair kerning — `rekha_kern_pair_px`, `rekha_gpos_kern_pair`
   (`lib/rekha.cyr`, 0.6.5 / 0.6.6) — and nothing here reads it. A run's width and its caret would

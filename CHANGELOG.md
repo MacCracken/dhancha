@@ -5,13 +5,14 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.10.5] - 2026-11-06 — toolchain 6.6.20, and every dep on the tag cut for it
+## [0.10.5] - 2026-11-06 — toolchain 6.6.20, every dep on the tag cut for it, and one CP437 map
 
 The toolchain moves fourteen releases to the close of the 6.6.x line, and all five deps move to the
-tag their repos cut for that toolchain. Nothing dhancha itself does changed: the code lines of
-`dist/dhancha.cyr` are identical to 0.10.4's (2,550; comments and the version stamp moved). What
-changes for a consumer is what the deps fixed underneath it: a poll that reports a dead compositor
-on Linux, a present that cannot strand an ATTACH, and 88 KB back in every binary.
+tag their repos cut for that toolchain. One thing dhancha does changed, on purpose: the bitmap arm's
+Unicode map is now kashi's, not a copy of it here, which makes **kashi >= 1.1.0 a hard floor for
+every consumer of this bundle**. Everything else a consumer sees is what the deps fixed underneath
+it: a poll that reports a dead compositor on Linux, a present that cannot strand an ATTACH, and
+88 KB back in every binary.
 
 ### Changed — each dep to its 6.6.20 tag
 
@@ -29,9 +30,8 @@ lines are in the roadmap.
 
 - **kashi.** The three glyph buffers declared their byte counts as u64 slots and reserved 8× what
   they use, 88,576 B of zeros in the image of every binary linking the core. That is why smoke fell
-  (below). No glyph, signature or accessor result changed. ⚠ 1.1.0 also added
-  `kashi_cp437_from_unicode` to the vendored core, which overlaps `dh_text_cp437`; both stay for now
-  (roadmap, *Two CP437 maps*).
+  (below). No glyph, signature or accessor result changed. 1.1.0 also added
+  `kashi_cp437_from_unicode` to the vendored core, which this release adopts (below).
 - **setu**, what reaches dhancha, all checked against its call sites:
   - **0.8.11: `setu_client_poll_input` reports a dead peer on Linux.** EOF and read errors read as
     "nothing pending" until then, so a client whose compositor died without `SETU_CLOSE` polled
@@ -63,7 +63,8 @@ toolchain installed and an empty deps cache:
 |---|---:|---:|---|
 | 6.6.6, old pins (0.10.4) | 134,160 B | 760,904 B | 20 / 20 |
 | 6.6.20, old pins | 135,560 B | 799,168 B | 20 / 20 |
-| 6.6.20, new pins (this release) | **48,672 B** | **699,992 B** | 20 / 20 |
+| 6.6.20, new pins | 48,672 B | 699,992 B | 20 / 20 |
+| 6.6.20, new pins, kashi's map (this release) | **47,640 B** | **698,960** B | 20 / 20 |
 
 So the toolchain alone costs +1,400 B on the DCE smoke and +38,264 B without DCE, and passes every
 suite with no source change, no lint warning and no fmt drift. The drop is the deps, kashi's fix
@@ -77,6 +78,41 @@ above all. The 6.6.7 – 6.6.20 notes were read for shapes that reach this repo,
   0 uses.
 - **6.6.18: a sidecar is what the compile-verify proves, nothing more.** See the next section.
 
+### Changed — the CP437 map is kashi's (`dh_text_cp437`)
+
+0.10.4 carried its own 128-slot table, and kashi 1.1.0 then put the same map into the core this repo
+vendors. The table and its init are gone, and `dh_text_cp437` is a thin seam over
+`kashi_cp437_from_unicode`: one implementation per concern, a binary search where this was a linear
+scan, and −1,032 B on the DCE smoke.
+
+- **Three scalars draw differently, and only three.** The removed table against the new function,
+  over every scalar: U+2026 `…` is now extension cell 0x100, U+FFFD is 0x101, and U+2302 `⌂` is cell
+  0x7F. All three drew '?'. The other 1,114,109 scalars answer exactly as they did, all 128 high
+  cells included.
+- **A scalar with no cell still draws '?'.** kashi suggests its U+FFFD glyph as that fallback. That
+  would change how every unmapped character looks, so it is not part of this.
+- **It is a seam, not an alias, for two reasons, both pinned.** kashi answers 0 for the C0 controls
+  and DEL, where this name has answered them with themselves since 0.10.4. And kashi's high half
+  answers 0 until `kashi_font_init` has built its table, where the old table built itself, so a
+  caller asking before the first draw would quietly have got 0.
+- ⛔ **kashi >= 1.1.0 is a hard floor for every consumer, and crab's declared tag is below it.**
+  crab builds today only because its `path = "../kashi"` is live; `tag = "1.0.10"` must move when it
+  takes this release. Below the floor the build is refused, not a binary that faults: the name has
+  one call site, so the first-call-site rule in `[deps.sadish]` cannot misjudge it. puka pins 1.3.0.
+
+| consumer (Linux / agnos) | before the map | with it |
+|---|---:|---:|
+| crab, `path` kashi, on 6.6.6 | 525,352 / 791,560 B | 524,312 / 790,520 B |
+| crab, tag 1.1.1 | | 524,312 / 790,520 B |
+| crab, tag 1.0.10 | | **refused**: `1 reachable undefined function(s)`, both targets |
+| puka, tag 1.3.0, on 6.7.18 | 1,428,672 / 1,411,408 B | 1,423,536 / 1,410,368 B |
+
+`text_utf8_test`'s group B no longer has a table to round-trip against, so it sweeps every scalar
+and requires each high cell to be reached exactly once; which scalar goes where is kashi's to pin.
+It now asks for a cell before anything has drawn, pins the controls, and draws all three new scalars
+by pixel identity against kashi's cells, with ink checks and one cell of width. **Negative controls,
+each red:** no self-init, no ASCII line, extension cells dropped, U+2302 dropped.
+
 ### Removed — `dist/dhancha.deps` and `scripts/sync-deps-sidecar.sh`
 
 `cyrius distlib` now deletes the sidecar: *"no stdlib leaves remain"*, because the bundle needs nothing
@@ -85,14 +121,14 @@ its five named deps do not already bring in their requires blocks. The script ex
 every run, so both go, as setu's did at 0.8.11. CI now gates `dist/` with `cyrius distlib --check`,
 which measured red on a stale bundle and on the old bad sidecar put back.
 
-⚠ **This is the one change a consumer could feel, because 13 stdlib leaves used to reach it through
-this file, so it was tested on the real consumers.** The bundle's closure: `smoke` and six suites
+⚠ **A consumer could have felt this, because 13 stdlib leaves used to reach it through this file, so
+it was tested on the real consumers.** The bundle's closure: `smoke` and six suites
 (`poll`, `draw`, `text`, `text_utf8`, `textinput`, `key`) were rebuilt against `dist/dhancha.cyr` and
 the five named deps' bundles under `--no-deps`, and all link and pass. crab and puka, each on its own
-toolchain (6.6.6, 6.7.18), built control vs this release in scratch copies, with the vendored
+toolchain (6.6.6, 6.7.18), built control vs no sidecar in scratch copies, with the vendored
 `# Version:` line read to confirm which dhancha each got:
 
-| consumer | control (0.10.4) | this release | `lib/` delta |
+| consumer | with the sidecar (0.10.4) | without it | `lib/` delta |
 |---|---:|---:|---|
 | crab, Linux / agnos | 525,352 / 791,560 B | 525,352 / 791,560 B | 0 files |
 | puka, Linux / agnos | 1,428,672 / 1,411,408 B | 1,428,672 / 1,411,408 B | 0 files |
@@ -122,7 +158,6 @@ swallowing the -6, 4; with the fixture back on fd -1, 5.
 - **`dh_client_next_event` said it blocks until a frame arrives.** On agnos, 8 s of silence is -6.
   That predates this release and the behaviour is unchanged; the header now says so, and the fix is
   pinned in the roadmap because waiting and surfacing a timeout are different designs.
-- **`surface.cyr` said kashi's core has no Unicode table.** It has had one since 1.1.0.
 
 ### Removed — `include "lib/net.cyr"` and `"lib/result.cyr"` from `src/lib.cyr`
 
@@ -141,7 +176,8 @@ The final tree was replayed through CI's whole build job in a fresh clone holdin
 slot, with an empty deps cache, so all five tags resolved from GitHub with no `path` line live; neither
 `cyrius.lock` nor `dist/` moved under it. All 32 vendored stdlib files are byte-equal to the 6.6.20 snapshot. CI's
 installer was run against a throwaway home and installs a `cycc` byte-identical to that slot.
-`dist/dhancha.cyr` 249,318 → 250,404 B (4,855 → 4,867 lines), comments only. Agnos DCE smoke 44,912 B.
+`dist/dhancha.cyr` 249,318 → 247,763 B (4,855 → 4,811 lines); apart from comments, the only code lines
+that moved are the map's. Agnos DCE smoke 43,880 B.
 
 ## [0.10.4] - 2026-09-21 — the draw reads characters, not bytes; and nothing is blocked on a sibling
 

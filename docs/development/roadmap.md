@@ -79,22 +79,18 @@ needs; when one does, the design rule above is the whole of the requirement.
 ## Pinned — real, evidenced, unscheduled
 
 - **Only what CP437 has, under kashi.** Since 0.10.4 every text walk decodes UTF-8
-  (`dh_text_decode`, `src/textinput.cyr`) and the bitmap arm maps the scalar to its CP437 cell
-  (`dh_text_cp437`, `src/surface.cyr`); a scalar the code page has no cell for — Δ, CJK, emoji —
-  draws '?', one cell wide. That is the built-in face's limit, not the decoder's: the core this repo
-  vendors holds the code page plus two extension cells, and kashi's wider Unicode tables exist only
+  (`dh_text_decode`, `src/textinput.cyr`) and the bitmap arm maps the scalar to a cell through
+  kashi's own map (`dh_text_cp437`, `src/surface.cyr`, a seam since 0.10.5); a scalar with no cell —
+  Δ, CJK, emoji — draws '?', one cell wide. That is the built-in face's limit, not the decoder's: the
+  core this repo vendors holds the code page plus `…` and U+FFFD, and kashi's wider Unicode tables exist only
   for runtime-loaded PSF fonts in its library face (`kashi_attach_unicode_table`), which this repo
   does not vendor (`cyrius.cyml`, the `[deps.kashi]` ⛔). A consumer that needs more
   than the code page under the system font needs a wider bitmap font first; under a scalable face
   the scalar reaches rekha's cmap and the face answers.
-- **Two CP437 maps.** kashi 1.1.0 put `kashi_cp437_from_unicode` into the core this repo vendors
-  (`lib/kashi_font_data.cyr`), so `dh_text_cp437` and its 128-slot table (`src/surface.cyr:310`,
-  `:259`) are a second copy of a sibling's implementation, and a linear scan where kashi's is a
-  binary search. MEASURED over every scalar at 0.10.5: the two agree on all 128 high cells and on
-  every scalar neither can draw, and differ on exactly 35. 32 are the C0 controls and DEL, which this
-  map passes through as cells and kashi answers 0; U+2302 is kashi's cell 0x7F; U+2026 and U+FFFD are
-  kashi's extension cells 0x100 and 0x101, which draw '?' here today. Adopting kashi's map would draw
-  a real ellipsis and replacement glyph, and `programs/text_utf8_test.cyr` is the gate that would move.
+- **The system font re-initialises per label.** `dh_draw_text_ink`'s bitmap arm calls
+  `kashi_font_init()` unguarded (`src/surface.cyr:386`), and an init rewrites every glyph: 22 µs on
+  kashi's own bench table, so about 2 ms of a frame with 100 labels. It is safe, because kashi's init
+  writes fixed slots, and it is a one-line guard: `dh_text_cp437` already has it.
 - **On agnos, `dh_client_next_event` ends an idle app.** setu's default read has an 8 s deadline there
   (`SETU_READ_DEFAULT_MS`) and none on Linux, and `dh_setu_read_event` (`src/setu_input.cyr:88`) turns
   every failed read into -6, so 8 s of silence reads as the compositor leaving, and a loop that stops

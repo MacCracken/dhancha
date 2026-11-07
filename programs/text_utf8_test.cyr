@@ -16,7 +16,7 @@
 # from kashi (`ref_cells`, the arm's own inner loop), and the raw-byte passthrough is checked only
 # where it holds — Ω (0xEA) and the box-drawing bytes.
 #
-# Groups: A the decoder, well-formed and not · B the CP437 map, every cell round-tripped · C the
+# Groups: A the decoder, well-formed and not · B the cell map, every high cell reached once · C the
 # bitmap arm, by pixel identity against kashi cells painted directly (the cell the character SHOULD
 # be) · D the scalable arm, by pixel identity against an ASCII run the face maps to the same glyphs
 # · E the caret agrees with the draw in both arms · F none of it allocates.
@@ -225,34 +225,49 @@ var SH = 44;
 var g_bg = 0;
 var g_ink = 0;
 
+# Paint kashi cell `kc` at column `k` of the bitmap arm's geometry. ⚠ `kc` is a number, not a byte:
+# kashi's extension cells sit past 0xFF, which is why this is not the body of `ref_cells`.
+fn ref_cell_at(sds, kc, k): i64 {
+    var pix = sd_surface_pixels(sds);
+    var sstride = sd_surface_stride(sds) / 4;
+    var kx = 10 + 3 + k * 9;
+    var ky = 10 + 2;
+    var kr = 0;
+    while (kr < 16) {
+        var kb = kashi_glyph_row(0, kc, kr);
+        var kcol = 0;
+        while (kcol < 8) {
+            if ((kb & (1 << (7 - kcol))) != 0) {
+                store32(pix + ((ky + kr) * sstride + kx + kcol) * 4, g_ink | 0xFF000000);
+            }
+            kcol = kcol + 1;
+        }
+        kr = kr + 1;
+    }
+    return 0;
+}
+
 # Paint kashi cells `cells[0..n)` at the bitmap arm's own geometry for a draw at (10, 10, h 20) —
 # origin x + 3, 9 px a cell, 16 rows from y + (20 - 16) / 2, `ink | 0xFF000000` per pixel — the
 # oracle for what a character's cell SHOULD look like, independent of the text path.
 fn ref_cells(sds, cells, n): i64 {
     sd_clear(sds, g_bg);
     kashi_font_init();
-    var pix = sd_surface_pixels(sds);
-    var sstride = sd_surface_stride(sds) / 4;
     var k = 0;
     while (k < n) {
-        var kc = load8(cells + k);
-        var kx = 10 + 3 + k * 9;
-        var ky = 10 + 2;
-        var kr = 0;
-        while (kr < 16) {
-            var kb = kashi_glyph_row(0, kc, kr);
-            var kcol = 0;
-            while (kcol < 8) {
-                if ((kb & (1 << (7 - kcol))) != 0) {
-                    store32(pix + ((ky + kr) * sstride + kx + kcol) * 4, g_ink | 0xFF000000);
-                }
-                kcol = kcol + 1;
-            }
-            kr = kr + 1;
-        }
+        ref_cell_at(sds, load8(cells + k), k);
         k = k + 1;
     }
     return 0;
+}
+
+# Draw `text` through the bitmap arm and count its pixels differing from the ONE cell `kc` on `sb`.
+fn diff_cell(sa, sb, text, kc): i64 {
+    sd_clear(sa, g_bg);
+    dh_draw_text_ink(sa, 0, text, 10, 10, 20, 0, 0, SW, SH, g_ink);
+    sd_clear(sb, g_bg);
+    ref_cell_at(sb, kc, 0);
+    return count_diff(sa, sb, SW, SH);
 }
 
 # Draw `text` on `sa` through the bitmap arm and count its pixels differing from `n` cells on `sb`.
@@ -365,30 +380,51 @@ fn main(): i64 {
     check(dec(bad, 0, &lenv), 0xC4);            check(load64(&lenv), 1);
     check(dec(bad, 1, &lenv), 0x41);            check(load64(&lenv), 1);
 
-    # ── B) THE CP437 MAP ──────
+    # ── B) THE CELL MAP ──────
+    # ⛔ THIS ORDER IS THE CHECK. Nothing above has drawn, so kashi's table is empty, and its map
+    # answers 0 for the whole high half until `kashi_font_init` has run. dhancha's own table used to
+    # build itself; a public `dh_text_cp437` asked before the first draw must not quietly get worse.
+    check(kashi_font_is_ready(), 0);
+    check(dh_text_cp437(0xC4), 0x8E);            # Ä, before any draw
+    check(kashi_font_is_ready(), 1);
     check(dh_text_cp437(0x41), 0x41);
     check(dh_text_cp437(0x20), 0x20);
+    # ⚠ Controls and DEL are themselves, where kashi's map answers 0: the contract this name has had
+    # since 0.10.4, and the reason it is a seam and not an alias.
+    check(dh_text_cp437(0x01), 0x01);
+    check(dh_text_cp437(0x1F), 0x1F);
     check(dh_text_cp437(0x7F), 0x7F);
-    check(dh_text_cp437(0xC4), 0x8E);            # Ä
     check(dh_text_cp437(0xE9), 0x82);            # é
     check(dh_text_cp437(0xDF), 0xE1);            # ß
     check(dh_text_cp437(0x2500), 0xC4);          # ─
     check(dh_text_cp437(0x2588), 0xDB);          # █
     check(dh_text_cp437(0x3A9), 0xEA);           # Ω
     check(dh_text_cp437(0xA0), 0xFF);            # NBSP
-    check(dh_text_cp437(0x394), 0);              # Δ is not on the page
+    check(dh_text_cp437(0x2302), 0x7F);          # ⌂ — kashi's map, 0.10.5
+    check(dh_text_cp437(0x2026), 0x100);         # … — extension cell, past the page
+    check(dh_text_cp437(0xFFFD), 0x101);         # the replacement character — extension cell
+    check(dh_text_cp437(0x394), 0);              # Δ has no cell
     check(dh_text_cp437(0x1F600), 0);
     check(dh_text_cp437(0x80), 0);               # C1 controls are not cells
     check(dh_text_cp437(0 - 1), 0);
-    # Every cell round-trips, and no two cells claim one scalar: the map is a bijection on its range.
+    # Over every scalar, each of the 128 high cells is reached by exactly one: the map is a bijection
+    # on the page. Which scalar goes where is kashi's to pin now, and its suite does.
+    var seen = alloc(256);
+    memset(seen, 0, 256);
     var rt = 0;
-    var cell = 0x80;
-    while (cell <= 0xFF) {
-        var u = load64(&_dh_cp437_uni + (cell - 0x80) * 8);
-        if (u > 0x7F) { if (dh_text_cp437(u) == cell) { rt = rt + 1; } }
-        cell = cell + 1;
+    var hits = 0;
+    var sweep = 0x80;
+    while (sweep < 0x110000) {
+        var cell = dh_text_cp437(sweep);
+        if (cell >= 0x80) { if (cell <= 0xFF) {
+                if (load8(seen + cell) == 0) { rt = rt + 1; }
+                store8(seen + cell, 1);
+                hits = hits + 1;
+            } }
+        sweep = sweep + 1;
     }
     check(rt, 128);
+    check(hits, 128);
 
     # ── C) THE BITMAP ARM ──────
     var sa = sd_surface_new(SW, SH);
@@ -419,6 +455,25 @@ fn main(): i64 {
     # A scalar the page has no cell for is '?', one cell: "ΔB" == "?B".
     var u_dl = bytes7(0xCE, 0x94, 0x42, 0, 0, 0, 0);
     check(diff2(sa, sb2, 0, u_dl, "?B"), 0);
+    # ⭐ THE THREE SCALARS KASHI'S MAP ADDED (0.10.5): each is its own cell, not the '?' above. The ink
+    # checks are what keep the pixel identities honest: a blank extension cell would match a blank draw.
+    var u_ell = bytes7(0xE2, 0x80, 0xA6, 0, 0, 0, 0);             # … U+2026 -> cell 0x100
+    var u_rep = bytes7(0xEF, 0xBF, 0xBD, 0, 0, 0, 0);             # U+FFFD   -> cell 0x101
+    var u_hse = bytes7(0xE2, 0x8C, 0x82, 0, 0, 0, 0);             # ⌂ U+2302 -> cell 0x7F
+    check(diff_cell(sa, sb2, u_ell, 0x100), 0);
+    check(count_nonbg(sa, SW, SH, g_bg) > 0, 1);
+    check(diff_cell(sa, sb2, u_rep, 0x101), 0);
+    check(count_nonbg(sa, SW, SH, g_bg) > 0, 1);
+    check(diff_cell(sa, sb2, u_hse, 0x7F), 0);
+    check(count_nonbg(sa, SW, SH, g_bg) > 0, 1);
+    check(diff2(sa, sb2, 0, u_ell, "?") > 0, 1);
+    check(diff2(sa, sb2, 0, u_rep, "?") > 0, 1);
+    check(diff2(sa, sb2, 0, u_hse, "?") > 0, 1);
+    check(diff2(sa, sb2, 0, u_ell, u_rep) > 0, 1);                # and they are not each other
+    # An extension cell is still ONE cell wide: "…B" puts B exactly where "AB" does.
+    var u_ellb = bytes7(0xE2, 0x80, 0xA6, 0x42, 0, 0, 0);
+    draw(sa, 0, u_ellb);
+    check(ink_right(sa, SW, SH, g_bg), ab_right);
     # A stray continuation byte is nobody's: "A" 0x84 "B" == "AB".
     var stray = bytes7(0x41, 0x84, 0x42, 0, 0, 0, 0);
     check(diff2(sa, sb2, 0, stray, "AB"), 0);

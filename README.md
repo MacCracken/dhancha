@@ -89,7 +89,10 @@ design and makes no GPU call of its own.
 - **rupa** (0.1.9) — the shared desktop theme tokens (`dh_theme_*`), the same
   source the compositor reads.
 - **kashi** (1.1.1) — the VGA 8x16 system font the default (`font = 0`) text
-  path blits; vendored as its freestanding core (see the manifest's ⛔).
+  path blits, and the map from a Unicode scalar to its cell; vendored as its
+  freestanding core (see the manifest's ⛔). ⛔ The floor is HARD at 1.1.0: the
+  bundle calls `kashi_cp437_from_unicode`, so a consumer vendoring kashi needs
+  that too, and a build below it is refused.
 - **setu** (0.8.14) — the display-protocol contract and reference client that
   `dh_client_connect` / `dh_setu_*` delegate to.
 - **mabda** (GPU) — not a dependency, by design: dhancha draws on the CPU and

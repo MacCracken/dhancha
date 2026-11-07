@@ -82,7 +82,8 @@ fn dh_setu_msg_scratch(): i64 {
 }
 
 # Read one setu frame off `fd` (exact framing) and map it to a DhEvent. Returns
-# the DhEvent (*DhEvent, > 0), 0 on a non-input frame, or -6 on EOF / recv error.
+# the DhEvent (*DhEvent, > 0), 0 on a non-input frame, or -6 on EOF / recv error —
+# or, on agnos, on setu's 8 s read deadline (see dh_client_next_event).
 # The seam the compositor-fd loop in dh_run will pump.
 fn dh_setu_read_event(fd): i64 {
     var m = dh_setu_msg_scratch();          # 0.9.16 — one per process, not one per call
@@ -92,7 +93,8 @@ fn dh_setu_read_event(fd): i64 {
 }
 
 # @public — NON-BLOCKING sibling of `dh_setu_read_event`. -> a *DhEvent (> 0), 0 when nothing is
-# pending, or -6 on EOF.
+# pending, or -6 once the peer is gone: EOF or a read error, on both targets since setu 0.8.11, and
+# only after anything already buffered has been handed out. -6 is final; drain WHILE this is > 0.
 #
 # ⭐⭐ WHY THE TOOLKIT OWES BOTH SHAPES. `dh_setu_read_event` BLOCKS: it waits for a frame. That is
 # right for an app whose display only changes when input arrives, and wrong for one that redraws on

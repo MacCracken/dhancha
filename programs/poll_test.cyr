@@ -6,8 +6,14 @@
 # arrives is fine with that; one that redraws on its own — a file manager, a terminal — stalls on an
 # idle connection. Offering only the blocking read is what pushed crab into a hand-rolled setu loop.
 #
-# ⚠ NO SOCKET IS NEEDED. `setu_client_poll_input` drains the client's reassembly buffer BEFORE any
-# syscall, so seeding that buffer exercises the real code path on a host.
+# ⚠ SEEDING THE BUFFER NEEDS NO FRAMES ON THE WIRE, BUT "IDLE" NEEDS A LIVE PEER. `setu_client_poll_input`
+# drains the client's reassembly buffer BEFORE any syscall, so seeding that buffer exercises the real
+# code path on a host. Once it is empty the poll goes to the fd, and the answer depends on what is there.
+# ⛔ UNTIL 0.10.5 THESE CLIENTS HELD fd -1, and "nothing pending" held only because setu read -EBADF as
+# idle — setu 0.8.11's bug, fixed there, and 3 checks here went red on it. Worse than those 3: the
+# idle-allocation gate below does not read the poll's answer, so it would have stayed GREEN while
+# measuring the error path instead of the idle one. ⇒ every client now shares the client end of a real
+# pair whose peer stays open and silent: EAGAIN, which is what idle actually is.
 
 include "src/lib.cyr"
 
@@ -28,16 +34,32 @@ fn ev_kind(e): i64 { if (e <= 0) { return 0 - 1; } return dh_event_kind(e); }
 fn ev_a(e): i64    { if (e <= 0) { return 0 - 1; } return dh_event_a(e); }
 fn ev_b(e): i64    { if (e <= 0) { return 0 - 1; } return dh_event_b(e); }
 
-# A client whose reassembly buffer holds `n` pre-encoded frames and whose fd is invalid.
-fn mk_client(): i64 {
+var g_live_fd = 0 - 1;      # client end of a pair whose peer stays open and silent (set in main)
+
+# A connected pair of the socket setu speaks on Linux.
+# -> a 16-byte record {client end, peer end}, or 0.
+fn mk_pair(): i64 {
+    var fds = alloc(8);
+    if (sys_socketpair(SETU_AF_UNIX, SETU_SOCK_SEQPACKET, 0, fds) < 0) { return 0; }
+    var p = alloc(16);
+    store64(p, load32(fds));
+    store64(p + 8, load32(fds + 4));
+    return p;
+}
+
+# A client on `fd` with an empty reassembly buffer, ready for `seed`.
+fn mk_client_on(fd): i64 {
     var c = alloc(SETU_C_SZ);
     var i = 0;
     while (i < SETU_C_SZ) { store8(c + i, 0); i = i + 1; }
-    store64(c + SETU_C_FD, 0 - 1);                  # no real fd — buffer path only
+    store64(c + SETU_C_FD, fd);
     store64(c + SETU_C_INBUF, alloc(SETU_C_INBUF_CAP));
     store64(c + SETU_C_INLEN, 0);
     return c;
 }
+
+# A client on the live pair: once its buffer is empty a poll reads EAGAIN, never EOF or an error.
+fn mk_client(): i64 { return mk_client_on(g_live_fd); }
 
 # Append one encoded message to the client's inbuf.
 fn seed(c, msg): i64 {
@@ -51,6 +73,9 @@ fn seed(c, msg): i64 {
 
 fn main(): i64 {
     alloc_init();
+    var live = mk_pair();
+    if (live == 0) { return 1; }
+    g_live_fd = load64(live);
 
     # ---- an idle connection yields 0, and does NOT block ----------------------------------
     var idle = mk_client();
@@ -168,11 +193,16 @@ fn main(): i64 {
     # measuring from a cold client would report their one-time cost as a per-poll one — which is the
     # shape of measurement that makes a real fix look broken.
     var idle2 = mk_client();
-    dh_setu_poll_event(idle2);
+    check(dh_setu_poll_event(idle2), 0);
     var p0 = alloc_used();
     var pi = 0;
-    while (pi < 200) { dh_setu_poll_event(idle2); pi = pi + 1; }
+    var not_idle = 0;
+    while (pi < 200) {
+        if (dh_setu_poll_event(idle2) != 0) { not_idle = not_idle + 1; }
+        pi = pi + 1;
+    }
     check(alloc_used() - p0, 0);                 # 200 idle polls, zero bytes
+    check(not_idle, 0);                          # ...and they WERE idle, not the error path
 
     # ⚠ NON-VACUITY: the same loop against a client that DOES have frames must still cost something,
     # or a zero above would only prove the poll did nothing. An event is a real `dh_event_new`.
@@ -202,6 +232,34 @@ fn main(): i64 {
     check(ev_kind(ce2), WINDOW_CLOSE);
     check(ev_a(ce2), 0);
     check(ev_b(ce2), 0);
+
+    # ---- ⛔⛔ A COMPOSITOR THAT GOES AWAY IS REPORTED (0.10.5, setu 0.8.11) --------------------
+    # The header has promised -6 on EOF since the poll was written, and on Linux it never came: every
+    # recvfrom that was not a record read as "nothing pending", so a client whose compositor crashed
+    # without sending SETU_CLOSE polled a dead channel forever. crab's "connection closed" exit is
+    # reached through this call, and on Linux could not fire.
+    var gone = mk_pair();
+    var gc = mk_client_on(load64(gone));
+    check(dh_client_poll_event(gc), 0);                       # live and silent is idle, not gone
+    setu_send(load64(gone + 8), setu_input_key(7, 65, 1));    # one frame in flight...
+    setu_send(load64(gone + 8), setu_hello(1, 0));            # ...a non-input frame behind it...
+    sys_close(load64(gone + 8));                              # ...and the peer is gone.
+    check(ev_kind(dh_client_poll_event(gc)), KEY);            # ⚠ what arrived first still arrives
+    check(dh_client_poll_event(gc), 0 - 6);                   # the HELLO is consumed, then EOF
+    # ⛔ -6 IS FINAL: it does not decay back to 0. A drain loop written "until 0" spins here, which
+    # is why dh_client_poll_event's header says WHILE > 0.
+    check(dh_client_poll_event(gc), 0 - 6);
+    check(dh_client_next_event(gc), 0 - 6);                   # the blocking read sees it too, at once
+
+    # A close with one of the client's records unread is a RESET, not an EOF, and must read the same.
+    var rst = mk_pair();
+    var rc2 = mk_client_on(load64(rst));
+    setu_send(load64(rst), setu_commit(1));
+    sys_close(load64(rst + 8));
+    check(dh_client_poll_event(rc2), 0 - 6);
+
+    # An fd that was never a connection is an error too, not an idle channel.
+    check(dh_setu_poll_event(mk_client_on(0 - 1)), 0 - 6);
 
     return g_fails;
 }

@@ -5,6 +5,144 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.10.5] - 2026-11-06 — toolchain 6.6.20, and every dep on the tag cut for it
+
+The toolchain moves fourteen releases to the close of the 6.6.x line, and all five deps move to the
+tag their repos cut for that toolchain. Nothing dhancha itself does changed: the code lines of
+`dist/dhancha.cyr` are identical to 0.10.4's (2,550; comments and the version stamp moved). What
+changes for a consumer is what the deps fixed underneath it: a poll that reports a dead compositor
+on Linux, a present that cannot strand an ATTACH, and 88 KB back in every binary.
+
+### Changed — each dep to its 6.6.20 tag
+
+The selector is the pinned language version, not the latest tag. All five repos have since moved to
+cyrius 6.7.18, so each pin is the newest tag whose own `[package].cyrius` is `6.6.20`. The later
+lines are in the roadmap.
+
+| dep | from | to | code lines changed in its bundle | reaches dhancha |
+|---|---|---:|---:|---|
+| sadish | 0.11.2 | **0.11.3** | 5: requires block, `sadish_version` | nothing |
+| rekha | 0.9.0 | **1.0.0** | 0 | nothing; its sidecar is gone (rekha ADR 0010) |
+| rupa | 0.1.7 | **0.1.9** | 1: requires block | nothing |
+| kashi | 1.0.10 | **1.1.1** | glyph-buffer sizes, a Unicode map, two cells | −88,576 B; see below |
+| setu | 0.8.9 | **0.8.14** | the client's read, present and buffer paths | see below |
+
+- **kashi.** The three glyph buffers declared their byte counts as u64 slots and reserved 8× what
+  they use, 88,576 B of zeros in the image of every binary linking the core. That is why smoke fell
+  (below). No glyph, signature or accessor result changed. ⚠ 1.1.0 also added
+  `kashi_cp437_from_unicode` to the vendored core, which overlaps `dh_text_cp437`; both stay for now
+  (roadmap, *Two CP437 maps*).
+- **setu**, what reaches dhancha, all checked against its call sites:
+  - **0.8.11: `setu_client_poll_input` reports a dead peer on Linux.** EOF and read errors read as
+    "nothing pending" until then, so a client whose compositor died without `SETU_CLOSE` polled
+    forever, and crab's *connection closed* exit, reached through `dh_client_poll_event`, could not
+    fire. It now can. This is the one change that broke a test here (below).
+  - **0.8.11: the inline-pixel fallback is gone.** `setu_client_present` fills the shared buffer
+    before it sends anything, so a failed present leaves the wire untouched. `-43` is retired for
+    `-45` (no buffer) and `-46` (write failed). No caller here matched `-43`.
+  - **0.8.11:** a resize makes the new buffer before freeing the one the compositor reads.
+  - **0.8.12:** every socket is close-on-exec; deadline reads exist (`setu_read_msg_ms`). The Linux
+    default stays unbounded, and setu says why: `dh_client_next_event` relies on it.
+  - **0.8.13:** the per-message allocations are gone, `setu_client_present` at a held buffer going
+    416 B → 0, and the client no longer follows a symlink planted at its next buffer name.
+- ⚠ **rekha 1.0.0 still names sadish 0.11.2 in its own manifest.** The rule here has been that the
+  two move together, and it holds in substance: 0.11.3's bundle is 0.11.2's code but for
+  `sadish_version` and the requires block, so rekha sits on the same sadish in every line it calls.
+- The lock is regenerated from no lock at all. `cyrius deps` over the old one keeps the old tags'
+  `commit` lines beside the new ones (10, not 5), which still resolves but pins nothing true:
+  **37 entries, 5 commit-pinned** — sadish `f851906`, rupa `4cf24e2`, rekha `426d6fd`, kashi
+  `435c3be`, setu `710ccc4`. `lib/poison.cyr` joins (6.6.18's seam) and `lib/net.cyr` leaves (setu's
+  sidecar stopped naming it); 32 of the 36 carried files change hash.
+
+### Changed — toolchain `6.6.6` → `6.6.20`
+
+The toolchain and the deps were isolated from each other, each row a fresh clone with only that
+toolchain installed and an empty deps cache:
+
+| | smoke (`CYRIUS_DCE=1`) | `text_test` (no DCE) | RUN suites |
+|---|---:|---:|---|
+| 6.6.6, old pins (0.10.4) | 134,160 B | 760,904 B | 20 / 20 |
+| 6.6.20, old pins | 135,560 B | 799,168 B | 20 / 20 |
+| 6.6.20, new pins (this release) | **48,672 B** | **699,992 B** | 20 / 20 |
+
+So the toolchain alone costs +1,400 B on the DCE smoke and +38,264 B without DCE, and passes every
+suite with no source change, no lint warning and no fmt drift. The drop is the deps, kashi's fix
+above all. The 6.6.7 – 6.6.20 notes were read for shapes that reach this repo, and each was checked:
+
+- **6.6.20 binds a call to a redefined fn's LAST definition**, where it bound the first. That could
+  move behaviour silently, so it was checked first: 0 of 1,455 fn names in the compile closure are
+  defined twice, in or across files.
+- **Reserved at 6.6.20:** `sizeof`, `mulh64`, `fncall0`..`fncall8`: 0 declarations here. **6.6.16**
+  (`struct` arguments copy): 0 `struct` declarations. **6.6.13** (`f64_le` / `f64_ge` / `f64_trunc`):
+  0 uses.
+- **6.6.18: a sidecar is what the compile-verify proves, nothing more.** See the next section.
+
+### Removed — `dist/dhancha.deps` and `scripts/sync-deps-sidecar.sh`
+
+`cyrius distlib` now deletes the sidecar: *"no stdlib leaves remain"*, because the bundle needs nothing
+its five named deps do not already bring in their requires blocks. The script existed to overwrite a
+`kashi_font_data` line distlib no longer writes, and the old CI step would have fought distlib on
+every run, so both go, as setu's did at 0.8.11. CI now gates `dist/` with `cyrius distlib --check`,
+which measured red on a stale bundle and on the old bad sidecar put back.
+
+⚠ **This is the one change a consumer could feel, because 13 stdlib leaves used to reach it through
+this file, so it was tested on the real consumers.** The bundle's closure: `smoke` and six suites
+(`poll`, `draw`, `text`, `text_utf8`, `textinput`, `key`) were rebuilt against `dist/dhancha.cyr` and
+the five named deps' bundles under `--no-deps`, and all link and pass. crab and puka, each on its own
+toolchain (6.6.6, 6.7.18), built control vs this release in scratch copies, with the vendored
+`# Version:` line read to confirm which dhancha each got:
+
+| consumer | control (0.10.4) | this release | `lib/` delta |
+|---|---:|---:|---|
+| crab, Linux / agnos | 525,352 / 791,560 B | 525,352 / 791,560 B | 0 files |
+| puka, Linux / agnos | 1,428,672 / 1,411,408 B | 1,428,672 / 1,411,408 B | 0 files |
+
+### Fixed — `poll_test`'s "idle" was an accident
+
+Its clients held fd -1, and "nothing pending" held only because setu read `-EBADF` as idle, so
+setu 0.8.11's fix turned 3 checks red, as setu's own changelog predicted. Expecting -6 there would
+have kept the suite green and tested nothing. ⛔ And the 3 were the lesser problem: the idle-allocation
+gate ("200 idle polls, zero bytes") never read the poll's answer, so it would have stayed GREEN while
+measuring the error path. Every client now shares a real `SOCK_SEQPACKET` pair whose peer stays open
+and silent, which is what idle is, and the gate asserts the polls were idle.
+
+New group, *a compositor that goes away is reported*, over a real pair: live and silent is 0; a frame
+in flight still arrives, then a non-input frame is consumed, then -6; -6 is final; the blocking read
+sees it too; a reset and a bad fd read the same.
+
+**Negative controls, each red:** against setu 0.8.9, 4 checks fail; with `dh_setu_poll_event`
+swallowing the -6, 4; with the fixture back on fd -1, 5.
+
+### Fixed — comments the new pins made false
+
+- **`dh_client_poll_event` said to loop "until it returns 0".** -6 is final, so that loop now spins
+  forever on a dead connection, on Linux too. It says WHILE > 0, and why. No caller here loops that
+  way; a consumer who copied the old wording should check.
+- **`dh_client_present` listed `-43`** and described pixels sent after ATTACH. It lists `-45` / `-46`.
+- **`dh_client_next_event` said it blocks until a frame arrives.** On agnos, 8 s of silence is -6.
+  That predates this release and the behaviour is unchanged; the header now says so, and the fix is
+  pinned in the roadmap because waiting and surfacing a timeout are different designs.
+- **`surface.cyr` said kashi's core has no Unicode table.** It has had one since 1.1.0.
+
+### Removed — `include "lib/net.cyr"` and `"lib/result.cyr"` from `src/lib.cyr`
+
+They served the TCP transport setu retired at 0.8.4, and nothing here calls `net`. Once setu's sidecar
+stopped vendoring it, the include resolved only through the toolchain's snapshot. `result` still
+arrives through `io`. Every non-test program was built for Linux and `--agnos` with no undefined name.
+
+### Added — `[coverage] programs`
+
+The roadmap's 6.6.17 note, taken: `cyrius coverage` went from 0/272 to **189/272 fns, 15/17 files**.
+⚠ References, not execution. The note leaves the roadmap with this.
+
+### Verified
+
+The final tree was replayed through CI's whole build job in a fresh clone holding only the 6.6.20
+slot, with an empty deps cache, so all five tags resolved from GitHub with no `path` line live; neither
+`cyrius.lock` nor `dist/` moved under it. All 32 vendored stdlib files are byte-equal to the 6.6.20 snapshot. CI's
+installer was run against a throwaway home and installs a `cycc` byte-identical to that slot.
+`dist/dhancha.cyr` 249,318 → 250,404 B (4,855 → 4,867 lines), comments only. Agnos DCE smoke 44,912 B.
+
 ## [0.10.4] - 2026-09-21 — the draw reads characters, not bytes; and nothing is blocked on a sibling
 
 The roadmap's top pinned item, taken: every walk over a label's text decodes UTF-8 and draws one

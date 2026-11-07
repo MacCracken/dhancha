@@ -70,38 +70,27 @@ jobs:
       - name: Vet
         run: cyrius vet programs/smoke.cyr
 
-      - name: Verify dist bundle is in sync with src/
+      - name: Verify dist/ is current
+        # `cyrius distlib --check` regenerates into a temp file and byte-compares it with what is
+        # committed, writing nothing. It fails on a stale bundle AND on a sidecar that should not
+        # exist (both measured on 6.6.20). Plain `distlib` runs after it, as setu's and rupa's do.
+        # Keep this order: plain distlib rewrites dist/, and --check would then find nothing stale.
+        # ⛔ dist/dhancha.deps IS GONE SINCE 0.10.5 AND MUST NOT BE HAND-WRITTEN BACK. Until then a
+        # script regenerated it from the declared [deps] stdlib, because distlib emitted
+        # `kashi_font_data` (a vendored module, not a stdlib leaf) and `cyrius deps` refused that in
+        # every consumer. cyrius 6.6.18 made the compile-verify the only authority for a sidecar,
+        # the bundle needs no leaf its five named deps do not already bring, and distlib now writes
+        # no file. The reasoning and the consumer proof are in CHANGELOG 0.10.5.
         run: |
+          if ! cyrius distlib --check; then
+            cyrius distlib > /dev/null 2>&1 || true
+            echo "ERROR: dist/ is stale. Run 'cyrius distlib' and commit dist/ exactly as it writes it."
+            git status --short dist/
+            git --no-pager diff dist/ | head -60
+            exit 1
+          fi
           cyrius distlib
-          if ! git diff --quiet dist/dhancha.cyr; then
-            echo "ERROR: dist/dhancha.cyr is stale. Run 'cyrius distlib' and commit the result."
-            git --no-pager diff dist/dhancha.cyr | head -40
-            exit 1
-          fi
-          echo "dist/dhancha.cyr matches src/"
-
-      # ⛔⛔ THE STEP ABOVE RUNS `cyrius distlib`, WHICH REWRITES dist/dhancha.deps AND RE-ADDS A LINE
-      # THAT BREAKS EVERY CONSUMER. distlib emits `kashi_font_data` into the "stdlib leaves" sidecar,
-      # but kashi is VENDORED (`[deps.kashi] modules = ["src/font_data.cyr"]`), so `cyrius deps` in a
-      # consumer hunts for it in the stdlib and hard-errors:
-      #     error: dep dhancha requires 'kashi_font_data' but it is not in the cyrius stdlib
-      # crab and puka could not resolve dhancha at all until this was found (2026-08-17), and the
-      # sidecar was the LAST thing anyone looked at — three wrong diagnoses came first.
-      # ⚠ Mirror of setu's gate (ci.yml:99) for the SAME cyrius defect in the other direction: setu's
-      # sidecar under-reports 8 of 12 leaves, dhancha's over-reports a vendored module. One open issue
-      # covers both — setu docs/development/issues/2026-08-07-distlib-deps-sidecar-under-reports.md.
-      # ⇒ Generating from the DECLARED [deps] stdlib makes both directions impossible, and this gate is
-      # what stops a distlib run from silently undoing it.
-      - name: Verify deps sidecar matches the declared stdlib
-        run: |
-          sh scripts/sync-deps-sidecar.sh
-          if ! git diff --quiet dist/dhancha.deps; then
-            echo "ERROR: dist/dhancha.deps does not match [deps] stdlib in cyrius.cyml."
-            echo "Run 'cyrius distlib && sh scripts/sync-deps-sidecar.sh' and commit the result."
-            git --no-pager diff dist/dhancha.deps
-            exit 1
-          fi
-          echo "dist/dhancha.deps matches the declared stdlib ($(grep -vc '^#' dist/dhancha.deps) leaves)"
+          echo "dist/ matches src/"
 
       - name: Build (link-check, DCE on)
         run: |

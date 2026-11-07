@@ -1,6 +1,6 @@
 # dhancha — Roadmap
 
-> **Last updated:** 2026-09-21, at **0.10.4**.
+> **Last updated:** 2026-11-06, at **0.10.5**.
 >
 > This file tracks **forward-facing work only**. A finished item leaves. What already shipped is in
 > [`CHANGELOG.md`](../../CHANGELOG.md), release by release, with the measurement each claim rests
@@ -19,8 +19,9 @@ rekha + kashi + rupa, the frame arena, and the setu connection — `dh_client_co
 `dh_client_present` / `dh_client_next_event` / `dh_client_poll_event` / `dh_client_close`
 (`src/dh_client.cyr`) over setu's reference client. A consumer (crab) renders a real face with a
 frame costing the global heap **0 B** (0.10.0), a label is one bounded flatten operation (0.10.2),
-every dependency resolves from a published tag with its commit in `cyrius.lock` (0.10.3), and the
-draw reads UTF-8 characters, not bytes, in both arms and the caret (0.10.4).
+every dependency resolves from a published tag with its commit in `cyrius.lock` (0.10.3), the
+draw reads UTF-8 characters, not bytes, in both arms and the caret (0.10.4), and the toolchain and
+all five deps sit on the cyrius 6.6.20 cut (0.10.5).
 
 The present path is complete end to end, and the hardware half of it is not dhancha's to build:
 `dh_client_present` hands sadish's pixels to `setu_client_present`, which copies them into a
@@ -80,11 +81,32 @@ needs; when one does, the design rule above is the whole of the requirement.
 - **Only what CP437 has, under kashi.** Since 0.10.4 every text walk decodes UTF-8
   (`dh_text_decode`, `src/textinput.cyr`) and the bitmap arm maps the scalar to its CP437 cell
   (`dh_text_cp437`, `src/surface.cyr`); a scalar the code page has no cell for — Δ, CJK, emoji —
-  draws '?', one cell wide. That is the built-in face's limit, not the decoder's: kashi's Unicode
-  tables exist only for runtime-loaded PSF fonts in its library face (`kashi_attach_unicode_table`),
-  which this repo does not vendor (`cyrius.cyml`, the `[deps.kashi]` ⛔). A consumer that needs more
+  draws '?', one cell wide. That is the built-in face's limit, not the decoder's: the core this repo
+  vendors holds the code page plus two extension cells, and kashi's wider Unicode tables exist only
+  for runtime-loaded PSF fonts in its library face (`kashi_attach_unicode_table`), which this repo
+  does not vendor (`cyrius.cyml`, the `[deps.kashi]` ⛔). A consumer that needs more
   than the code page under the system font needs a wider bitmap font first; under a scalable face
   the scalar reaches rekha's cmap and the face answers.
+- **Two CP437 maps.** kashi 1.1.0 put `kashi_cp437_from_unicode` into the core this repo vendors
+  (`lib/kashi_font_data.cyr`), so `dh_text_cp437` and its 128-slot table (`src/surface.cyr:310`,
+  `:259`) are a second copy of a sibling's implementation, and a linear scan where kashi's is a
+  binary search. MEASURED over every scalar at 0.10.5: the two agree on all 128 high cells and on
+  every scalar neither can draw, and differ on exactly 35. 32 are the C0 controls and DEL, which this
+  map passes through as cells and kashi answers 0; U+2302 is kashi's cell 0x7F; U+2026 and U+FFFD are
+  kashi's extension cells 0x100 and 0x101, which draw '?' here today. Adopting kashi's map would draw
+  a real ellipsis and replacement glyph, and `programs/text_utf8_test.cyr` is the gate that would move.
+- **On agnos, `dh_client_next_event` ends an idle app.** setu's default read has an 8 s deadline there
+  (`SETU_READ_DEFAULT_MS`) and none on Linux, and `dh_setu_read_event` (`src/setu_input.cyr:88`) turns
+  every failed read into -6, so 8 s of silence reads as the compositor leaving, and a loop that stops
+  on a negative stops (`programs/setu_session_demo.cyr:73`). crab polls, so nothing shipping hits it;
+  a retained-mode loop on agnos would, so this belongs with *The compositor-connected loop*. setu's
+  0.8.12 note names the tools: `setu_read_timed_out()` tells a timeout from an EOF, and
+  `setu_read_msg_ms(fd, m, -1)` waits indefinitely, by spinning on agnos. Whether to wait or to
+  surface the timeout is a design call, not a one-liner.
+- **The 6.7.x pin move.** 0.10.5 took each dep to the tag cut for cyrius 6.6.20, on purpose, and all
+  five have a later line pinned to 6.7.18: sadish 0.12.1, rekha 1.1.2, rupa 0.2.1, kashi 1.3.0, setu
+  0.9.1 (`git -C ../sadish show 0.12.1:cyrius.cyml | grep '^cyrius = '`). puka is on that line already
+  and pins this repo at 0.10.4. The move is the same shape as 0.10.5: every pin to one toolchain's cut.
 - **No kerning.** `dh_text_advance` (`src/surface.cyr:218`) is `rekha_char_advance_px` per
   codepoint. rekha publishes pair kerning — `rekha_kern_pair_px`, `rekha_gpos_kern_pair`
   (`lib/rekha.cyr`, 0.6.5 / 0.6.6) — and nothing here reads it. A run's width and its caret would
@@ -141,14 +163,5 @@ needs; when one does, the design rule above is the whole of the requirement.
   release that did).
 - **the dependency floors and why each is hard** — `cyrius.cyml`, the `[deps.*]` blocks.
 - **the gates** — `programs/*_test.cyr`, every one a self-checking RUN test; `.github/workflows/ci.yml`
-  runs them all, plus lint / fmt / vet / distlib / sidecar.
-
-## Recorded by cyrius 6.6.17 (2026-10-05) — for the next cyrius pin move
-
-⛔ **Nothing to do until cyrius 6.6.17 is tagged and out.** Docs-only note from the cyrius 6.6.17 lanes; each item
-is this repo's to adopt when it pins ≥ 6.6.17. Nothing here gates a cyrius release.
-
-- **`cyrius coverage` can count the RUN programs from 6.6.17** (cyrius m7, P5-A): `[coverage] programs =
-  ["programs/*_test.cyr"]` in cyrius.cyml (or `cyrius coverage --programs <glob>`) adds them to the corpus,
-  and `--per-entry` names which program references which public fn. ⚠ TEXT coverage (references, as `.tcyr`
-  corpora get) — not execution coverage, which is cyrius P5-B (v6.7.x).
+  runs them all, plus lint / fmt / vet / `distlib --check`. `cyrius coverage` counts them too
+  (`[coverage]` in `cyrius.cyml`): text references, not execution.

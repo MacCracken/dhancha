@@ -234,9 +234,10 @@ fn dh_text_advance(font, cp, h): i64 {
 # arm about it: `dh_text_char_index` counted one character, the draw spent two cells.
 #
 # THE BITMAP ARM NEEDS A MAP, because kashi's built-in face is CP437 — a BYTE font (`kashi_glyph_row`
-# takes the cell number; its Unicode tables exist only for runtime-loaded PSF fonts in the library
-# face, not for the freestanding core this repo vendors). So a decoded scalar becomes a cell through
-# `dh_text_cp437`: ASCII is itself, the upper half is the CP437 code page (the Unicode Consortium's
+# takes the cell number). ⚠ This map predates kashi 1.1.0, which ships its own in the core this repo
+# vendors (`kashi_cp437_from_unicode`); see the roadmap's "Two CP437 maps" before growing this one.
+# So a decoded scalar becomes a cell through `dh_text_cp437`: ASCII is itself, the upper half is the
+# CP437 code page (the Unicode Consortium's
 # CP437.TXT — Latin-1 accents, box drawing, the Greek and maths cells), and a scalar the page has no
 # cell for draws '?' — ONE cell, so the caret's character count still lands. A byte that is not part
 # of a valid sequence is drawn as the raw CP437 cell it always was (`dh_text_decode` hands it back

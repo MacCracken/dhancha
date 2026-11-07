@@ -18,11 +18,12 @@ fn dh_client_fd(c): i64  { return setu_client_fd(c); }
 fn dh_client_sid(c): i64 { return setu_client_sid(c); }
 
 # Render `surf` (via `font`, may be 0) and present it over the client's
-# connection. setu_client_present creates the surface once on the first present
-# (CREATE_SURFACE -> SURFACE_CREATED, storing the id) and sends ATTACH + pixels +
-# COMMIT every time. Returns 0, -40 on a render failure, or setu_client_present's
-# negative code (-41 create / -6 recv / -8 unexpected reply / -42 attach /
-# -43 pixel write / -44 commit).
+# connection. setu_client_present fills the shared buffer first, creates the surface
+# once on the first present (CREATE_SURFACE -> SURFACE_CREATED, storing the id), then
+# sends ATTACH + COMMIT every time. Returns 0, -40 on a render failure, or
+# setu_client_present's negative code: -45 no shared buffer could be made / -46
+# writing it failed (for both NOTHING was sent, so presenting again is a clean retry),
+# or -41 create / -6 recv / -8 unexpected reply / -42 attach / -44 commit.
 fn dh_client_present(c, surf, font): i64 {
     var sds = dh_surface_render(surf, font);
     if (sds == 0) { return 0 - 40; }
@@ -30,15 +31,23 @@ fn dh_client_present(c, surf, font): i64 {
 }
 
 # Read the next input event off the client's connection as a DhEvent (*DhEvent,
-# > 0), 0 on a non-input frame, or -6 on EOF. (dh_setu_read_event lives in
-# setu_input.cyr — it reads one setu frame via setu's framing + maps it.)
+# > 0), 0 on a non-input frame, or -6 when the read ended without a frame.
+# (dh_setu_read_event lives in setu_input.cyr — it reads one setu frame via setu's
+# framing + maps it.)
+# ⚠ On Linux that -6 means the compositor is gone: setu's default read has no deadline,
+# so this waits as long as it takes. ON agnos IT ALSO MEANS 8 s OF SILENCE
+# (`SETU_READ_DEFAULT_MS`), and the two are not told apart here, so a loop that ends on
+# any negative ends an idle app there. Pinned in docs/development/roadmap.md.
 fn dh_client_next_event(c): i64 { return dh_setu_read_event(setu_client_fd(c)); }
 
-# @public — NON-BLOCKING event read. -> *DhEvent (> 0), 0 when nothing is pending, -6 on EOF.
+# @public — NON-BLOCKING event read. -> *DhEvent (> 0), 0 when nothing is pending, -6 once the
+# compositor is gone (EOF or a read error, after anything already buffered has been handed out).
 # ⚠ The pair matters: `dh_client_next_event` BLOCKS until a frame arrives, which suits an app that
 # only changes when input does. An app that redraws on its own — a file manager, a terminal — must
-# poll or its render loop stalls on an idle connection. Call this in a loop until it returns 0 to
+# poll or its render loop stalls on an idle connection. Call this in a loop WHILE it returns > 0 to
 # drain everything buffered, then draw once.
+# ⛔ NOT "UNTIL IT RETURNS 0". -6 is final, so a loop waiting for 0 spins forever on a dead
+# connection. On Linux that could not happen before setu 0.8.11, which is when -6 began to arrive.
 fn dh_client_poll_event(c): i64 { return dh_setu_poll_event(c); }
 
 fn dh_client_close(c): i64 { return setu_client_close(c); }

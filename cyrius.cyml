@@ -5,7 +5,7 @@ description = "dhancha (ढाँचा — framework) — pure-Cyrius client-si
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/dhancha"
 language = "cyrius"
-cyrius = "6.6.6"
+cyrius = "6.6.20"
 
 # dhancha is a library — no CLI binary. `cyrius build` targets a smoke
 # program that links the full include chain to prove lib.cyr parses clean.
@@ -17,6 +17,12 @@ cyrius = "6.6.6"
 [build]
 entry = "programs/smoke.cyr"
 output = "build/dhancha-smoke"
+
+# `cyrius coverage` reads tests/**/*.tcyr by default and this repo has none, so without this it
+# reports 0/272. Every RUN suite is a coverage entry: 189/272 fns, 15/17 files at 0.10.5.
+# ⚠ TEXT coverage — which public fns a suite NAMES, not what it executes.
+[coverage]
+programs = ["programs/*_test.cyr"]
 
 # `[lib]` feeds `cyrius distlib` — module order matters: stdlib first
 # (declared in src/lib.cyr), then domain modules in dependency order.
@@ -36,6 +42,11 @@ output = "build/dhancha-smoke"
 # `setu_client` + `setu_input` + `surface`, and its own header names that order.
 # ⚠ These reference `setu_*`, so a consumer of this bundle MUST also declare `[deps.setu]` (>= 0.8.5 for
 # the agnos channel band). That coupling is real and is the point: the client half is setu's wire.
+# ⛔ `dist/dhancha.deps` IS GONE (0.10.5), AND MUST NOT BE HAND-WRITTEN BACK. Since cyrius 6.6.18 a
+# sidecar is what the compile-verify proves and nothing more, and `[deps] stdlib` no longer reaches it.
+# This bundle needs no stdlib leaf its five named deps do not already bring in their requires blocks,
+# so `distlib` writes no file. A consumer declares sadish, rupa, rekha, kashi and setu, as it already had
+# to; it inherits no stdlib leaf from this repo. `cyrius distlib --check` fails on a sidecar that returns.
 modules = [
     "src/error.cyr",
     "src/widget.cyr",
@@ -123,9 +134,13 @@ git = "https://github.com/MacCracken/sadish.git"
 # still stands beneath this pin. ⚠ rekha 0.9.0 pins sadish 0.11.2 exactly, so both vendored bundles
 # are cut against ONE sadish; move the two together. Verified with this `path` line disabled: the
 # 0.11.2 tag resolves from git and its `dist/sadish.cyr` is byte-identical to the sibling checkout.
+# 0.10.5 moved this pin 0.11.2 -> 0.11.3, the tag cut for cyrius 6.6.20. The bundle's code is 0.11.2's
+# but for `sadish_version` and a requires block (`syscalls`, `alloc`, `string`), so rekha 1.0.0, whose
+# own pin still names 0.11.2, sits on the same sadish in every line it calls. The rule above is a rule
+# about code, not tag numbers: a sadish move that changes code still moves rekha with it.
 # ⚠ dormant (0.10.3) — uncomment for local work on an unpushed sibling; never commit it live.
 # path = "../sadish"
-tag = "0.11.2"
+tag = "0.11.3"
 modules = ["dist/sadish.cyr"]
 
 # rupa (रूप — form / appearance) — the shared desktop theme-token core. Widgets +
@@ -138,7 +153,7 @@ git = "https://github.com/MacCracken/rupa.git"
 # built against until it is pushed, which is how a burn ends up testing last week's tokens.
 # ⚠ dormant (0.10.3) — uncomment for local work on an unpushed sibling; never commit it live.
 # path = "../rupa"
-tag = "0.1.7"
+tag = "0.1.9"
 modules = ["dist/rupa.cyr"]
 
 [deps.rekha]
@@ -163,7 +178,9 @@ git = "https://github.com/MacCracken/rekha.git"
 # 0.10.1 moved this pin 0.3.10 -> 0.9.0. The five `rekha_*` names dhancha calls (`font_open`,
 # `char_to_glyph`, `char_to_sdpath`, `char_advance_px`, `units_per_em`) keep their arity; dhancha
 # never reads `SdPath` internals, so the inline-point port rekha made for sadish 0.9.0 is not ours.
-tag = "0.9.0"
+# 0.10.5 moved this pin 0.9.0 -> 1.0.0, the surface freeze and rekha's tag for cyrius 6.6.20: zero code
+# lines of `dist/rekha.cyr` changed, and the sidecar it used to publish is gone (rekha ADR 0010).
+tag = "1.0.0"
 modules = ["dist/rekha.cyr"]
 
 # kashi (काशि) — the AGNOS system console font (full CP437, VGA 8x16). dh_draw_text
@@ -174,8 +191,10 @@ git = "https://github.com/MacCracken/kashi.git"
 # ⚠ `path` — kashi is VENDORED (lib/kashi_font_data.cyr); every other dep in this stack carries both.
 # ⚠ dormant (0.10.3) — uncomment for local work on an unpushed sibling; never commit it live.
 # path = "../kashi"
-# 1.0.10 (0.10.1's pin): no public-API change, and `src/font_data.cyr` is byte-identical to 1.0.8's.
-tag = "1.0.10"
+# 1.1.1 (0.10.5's pin, its tag for cyrius 6.6.20) stops the glyph buffers reserving 8x what they use:
+# -88,576 B in every binary that links this core. No glyph or signature changed. 1.1.0 added
+# `kashi_cp437_from_unicode` and two extension cells to this core; see the roadmap's "Two CP437 maps".
+tag = "1.1.1"
 # ⛔⛔ THE FREESTANDING CORE IS A MEASURED CHOICE, NOT A SHORTCUT (recorded 2026-08-17, kashi 1.0.6).
 # kashi's ADR 0001 says stdlib-linked consumers should take the LIBRARY FACE, and this project links
 # the full stdlib — so `src/font_data.cyr` looks like the wrong surface. Two reasons it is not:
@@ -217,5 +236,8 @@ git = "https://github.com/MacCracken/setu.git"
 # every build and every test was green while this line still said 0.8.7; CI has no `../setu`, resolved
 # the tag, and `dist/dhancha.cyr` would not compile. The manifest note below said a green local build
 # is not evidence the declared graph resolves — this is that, measured.
-tag = "0.8.9"
+# ⚠ 0.8.11 IS THE FLOOR `programs/poll_test.cyr` NOW GATES (0.10.5). Below it, on Linux,
+# `setu_client_poll_input` read EOF and every error as "nothing pending", so `dh_client_poll_event`
+# could not report a dead compositor. 0.8.14 is setu's tag for cyrius 6.6.20.
+tag = "0.8.14"
 modules = ["dist/setu.cyr"]

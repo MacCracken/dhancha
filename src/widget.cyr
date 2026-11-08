@@ -7,7 +7,7 @@
 # Layout (layout.cyr) walks the tree to assign bounds; event dispatch
 # (event.cyr) hit-tests it; the surface (surface.cyr) draws it.
 #
-# DhWidget struct layout (288 bytes, 36 u64 slots — see `DH_WIDGET_SIZE` below):
+# DhWidget struct layout (328 bytes, 41 u64 slots — see `DH_WIDGET_SIZE` below):
 # ⚠ THIS HEADER READ "144 bytes, 18 u64 slots" UNTIL 0.9.22 while the field list below it already
 # ran past +168. It contradicted itself and understated the record by 112 bytes, which is exactly
 # how a reader sizing a NEW field off the header picks an offset that collides with a live one.
@@ -170,17 +170,21 @@ enum DhWidgetField {
     # field rather than a reinterpretation of this one."* Reusing `DH_W_SCROLL_Y` for a row would be
     # a horizontal scroll wearing a field named `scroll_y` — a silent lie at every call site.
     DH_W_SCROLL_X     = 312;
+    # ⭐ THE TAIL OF THE CHILD CHAIN (0.12.0). Children were a singly-linked list with no tail, so every
+    # append walked the chain: a list of n rows cost n²/2 hops to BUILD, per frame. crab rebuilds a
+    # 1,024-row list every frame, and that was 524,000 hops and 2 ms of each one.
+    DH_W_LAST_CHILD   = 320;
 }
 # ⚠ 256 -> 264 at 0.9.22. A consumer with a FIXED-size arena sized against the old footprint will
 # now spill to the global allocator, and `dh_falloc` degrades to a leak rather than to a null — so
 # it passes every functional test and shows up only in an `alloc_used()` convergence check. crab is
 # safe (`arena_new_growable`, which chains); check any other consumer before shipping.
 # ⚠ 320 as of 0.9.26 (288 at 0.9.23, 296 at 0.9.24, 312 at 0.9.25) — `DH_W_KEY`, `DH_W_CELL_W` /
-# `_CELL_H`, then `DH_W_SCROLL_X`.
+# `_CELL_H`, then `DH_W_SCROLL_X`. 328 at 0.12.0 — `DH_W_LAST_CHILD`, appended, so no offset moved.
 # ⛔ This constant and the layout above must move together; the header comment has been stale before,
 # so re-derive it from the last field rather than trusting either. ⭐ `progress_test` pins the value
 # as a literal precisely so a change here has to be confirmed by a human — it has fired three times.
-var DH_WIDGET_SIZE = 320;
+var DH_WIDGET_SIZE = 328;
 
 # ============================================================================================
 # ⭐⭐ MOTION — the app's half of "the compositor grants, apps override per widget"
@@ -411,6 +415,7 @@ fn dh_widget_new(kind): i64 {
     store64(wgt + DH_W_CELL_W, 0);
     store64(wgt + DH_W_CELL_H, 0);
     store64(wgt + DH_W_SCROLL_X, 0);      # ⛔ seeded: arena memory is RECYCLED, not zero
+    store64(wgt + DH_W_LAST_CHILD, 0);    # ⛔ seeded: a recycled tail would append into a dead widget
     return wgt;
 }
 
@@ -420,17 +425,10 @@ fn dh_widget_add_child(parent, child): i64 {
     if (parent == 0) { return DHANCHA_ERR_BAD_WIDGET; }
     if (child == 0)  { return DHANCHA_ERR_BAD_WIDGET; }
     store64(child + DH_W_PARENT, parent);
-    var head = load64(parent + DH_W_FIRST_CHILD);
-    if (head == 0) {
-        store64(parent + DH_W_FIRST_CHILD, child);
-        return DHANCHA_OK;
-    }
-    # walk to the last sibling and append
-    var cur = head;
-    while (load64(cur + DH_W_NEXT_SIBLING) != 0) {
-        cur = load64(cur + DH_W_NEXT_SIBLING);
-    }
-    store64(cur + DH_W_NEXT_SIBLING, child);
+    var tail = load64(parent + DH_W_LAST_CHILD);
+    if (tail == 0) { store64(parent + DH_W_FIRST_CHILD, child); }
+    else { store64(tail + DH_W_NEXT_SIBLING, child); }
+    store64(parent + DH_W_LAST_CHILD, child);
     return DHANCHA_OK;
 }
 
@@ -454,17 +452,9 @@ fn dh_widget_next_sibling(wgt): i64 { return load64(wgt + DH_W_NEXT_SIBLING); }
 # hand-roll the walk to assert it. A toolkit whose own header says *"sibling order IS z-order in
 # BOTH passes"* should answer that question itself.
 #
-# ⚠ IT WALKS, and that is not an oversight: children are a singly-linked list with no tail pointer,
-# so `dh_widget_add_child` above is already O(n) per append. This accessor is the same cost as the
-# call that built the list. ⛔ A `DH_W_LAST_CHILD` field would make both O(1), but it widens the
-# widget struct — `DH_W_SZ` and every offset after it — which is not a patch-release change. If the
-# child count ever grows past the tens, do that instead of memoising here.
 fn dh_widget_last_child(wgt): i64 {
     if (wgt == 0) { return 0; }
-    var c = load64(wgt + DH_W_FIRST_CHILD);
-    if (c == 0) { return 0; }
-    while (load64(c + DH_W_NEXT_SIBLING) != 0) { c = load64(c + DH_W_NEXT_SIBLING); }
-    return c;
+    return load64(wgt + DH_W_LAST_CHILD);
 }
 
 # Set the resolved bounds (called by the layout pass).

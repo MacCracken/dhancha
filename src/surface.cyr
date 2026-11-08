@@ -8,14 +8,15 @@
 # the draw + present code lands in v0.2 once sadish / rekha / mabda are
 # wired.
 #
-# DhSurface struct layout (48 bytes):
+# DhSurface struct layout (56 bytes):
 #   +0:  width   — surface width in pixels
 #   +8:  height  — surface height in pixels
 #   +16: pixels  — owned RGBA8 buffer (width*height*4 bytes), or 0 until first ASKED for
 #   +24: root    — the DhWidget tree root drawn into this surface (or 0)
 #   +32: dirty   — 1 if the buffer needs a redraw before next present
 #   +40: sds     — the cached sadish render target `dh_surface_render` draws into, or 0 until the
-#                  first render. ⚠ 0.9.14 — the struct was 40 bytes before this field.
+#                  first render.
+#   +48: room    — how many pixels that target's buffer can hold (0.12.0)
 enum DhSurfaceField {
     DH_S_WIDTH  = 0;
     DH_S_HEIGHT = 8;
@@ -23,6 +24,7 @@ enum DhSurfaceField {
     DH_S_ROOT   = 24;
     DH_S_DIRTY  = 32;
     DH_S_SDS    = 40;
+    DH_S_ROOM   = 48;
 }
 
 # Allocate a DhSurface. Returns a DhSurface* (or 0 on OOM — the caller
@@ -49,13 +51,14 @@ enum DhSurfaceField {
 fn dh_surface_new(w, h): i64 {
     if (w <= 0) { return 0; }
     if (h <= 0) { return 0; }
-    var surf = alloc(48);
+    var surf = alloc(56);
     store64(surf + DH_S_WIDTH, w);
     store64(surf + DH_S_HEIGHT, h);
     store64(surf + DH_S_PIXELS, 0);
     store64(surf + DH_S_ROOT, 0);
     store64(surf + DH_S_DIRTY, 1);
     store64(surf + DH_S_SDS, 0);
+    store64(surf + DH_S_ROOM, 0);
     return surf;
 }
 
@@ -98,11 +101,8 @@ fn dh_surface_root(surf): i64   { return load64(surf + DH_S_ROOT); }
 # ⚠ The old buffer is abandoned, not freed — there is nothing to free it with. A resize therefore costs
 # one screenful, once, which is the right trade against handing back a short one.
 #
-# ⭐ THE RENDER TARGET IS **NOT** DROPPED HERE, DELIBERATELY. `dh_surface_render` already compares the
-# cached target's dimensions against the surface's and re-allocates on a mismatch. That branch was
-# written in 0.9.14, documented as unreachable, and measured as such — deleting it did not fail
-# `draw_test`. **This function is what makes it live**, which is exactly what its ⚠ said would happen,
-# so the check stays the mechanism rather than being duplicated into a second place that can drift.
+# ⭐ THE RENDER TARGET IS **NOT** DROPPED HERE, DELIBERATELY. `dh_surface_render` fits it to the surface
+# on every call (`_dh_surface_target`), so there is one place that can get the extent right.
 fn dh_surface_resize(surf, w, h): i64 {
     if (surf == 0) { return DHANCHA_ERR_NO_SURFACE; }
     if (w <= 0) { return DHANCHA_ERR_BAD_ARG; }
@@ -221,6 +221,22 @@ fn dh_text_advance(font, cp, h): i64 {
     var advf = (h * 6) / 10;               # fallback: the old fixed ~0.6 em
     if (advf <= 0) { advf = 4; }
     return advf;
+}
+
+# The pixel em of the system font, and the em a widget's label draws at when its box has room.
+var DH_TEXT_EM = 16;
+
+# @public — the em a widget of height `h` draws its text at: `DH_TEXT_EM`, or `h` in a box too short
+# for it. The run is centred in the box on that em.
+# ⛔⛔ THE BOX DOES NOT SIZE THE TEXT (0.12.0). The scalable path used to take the box height as the em,
+# so a label's width was a side effect of layout: a consumer that measured at 16 and laid its text out
+# in a 26 px row had every string drawn 1.6x wider than it had just been measured, running past the
+# cut it had made to fit. The bitmap path has always drawn 16 px centred, whatever the box.
+# ⚠ THIS IS THE WIDGET'S RULE, NOT `dh_draw_text_ink`'s. A caller wanting another size draws the run
+# itself; `h` there is the em, as it always was.
+fn dh_text_em_for(h): i64 {
+    if (h < DH_TEXT_EM) { return h; }
+    return DH_TEXT_EM;
 }
 
 # ============================================================================================
@@ -371,7 +387,7 @@ fn dh_text_degraded_runs(): i64 { return _dh_text_degraded_runs; }
 # per frame, with nothing failing. MEASURED (`text_arena_test` B3): the 12-label frame under a fixed
 # 64 KiB arena costs the global heap 351,520 B per frame while `arena_used` reads 65,536 — twenty
 # frames, 7,030,400 B. ⇒ A fixed arena must hold a WHOLE frame: ~417 KB for that one — ~4.3 KB per
-# glyph drawn + 320 B per widget (`DH_WIDGET_SIZE`; its 14 widgets and layout scratch are 4,736 B).
+# glyph drawn + 328 B per widget (`DH_WIDGET_SIZE`; its 14 widgets and layout scratch are 4,848 B).
 # Prefer `arena_new_growable`, which chains instead of refusing (the 0.9.15 advice, restated for
 # text): the same 64 KiB as a growable arena costs 0 B after warm-up.
 # ⛔ NOTHING sadish OR rekha RETURNS UNDER THE HOOK MAY OUTLIVE THE FRAME. Nothing here does: the
@@ -630,31 +646,21 @@ fn dh_draw_widget_ink(sds, wgt, font, clx, cly, clw, clh, ink, forced): i64 {
         dh_draw_progress(sds, wgt, x, y, w, h, clx, cly, clw, clh);
     }
     var text = dh_widget_text(wgt);
+    var tem = dh_text_em_for(h);
+    var ty = y + (h - tem) / 2;
     if (text != 0) {
-        dh_draw_text_ink(sds, font, text, x, y, h, clx, cly, clw, clh, ink);
+        dh_draw_text_ink(sds, font, text, x, ty, tem, clx, cly, clw, clh, ink);
     }
     # ⭐ THE CARET (0.9.7). Drawn only on the FOCUSED field: a caret in every text box at once says
     # every box is taking input, which is exactly the thing the operator uses it to find out.
-    # ⭐ THE CARET FOLLOWS THE FACE (0.10.0). Until 0.10.0 ONE geometry served both draw paths — the
-    # bitmap font's: `x + 3 + chars * 9`, 16 px tall at `y + (h - 16) / 2` — and the comment called the
-    # drift under a proportional face "a rekha-advance item". The advances have been read from `hmtx`
-    # since 0.9.27; the caret simply never used them. MEASURED (`text_arena_test` G, the suite's face,
-    # advances 12 / 20 / 5 px at h = 20): 'AB AB' with the caret after all five characters drew it at
-    # x + 48 (column 78) while the run's pen ended at x + 71 (column 101; last glyph ink at x + 67) —
-    # **23 px short, in the blank second-'A' cell 3 px before the second 'B'** — and 16 px tall in a
-    # 20 px box, 2 px clear of the em the glyphs were scaled to.
-    # ⇒ Each arm now uses ITS OWN draw's geometry, and nothing else:
+    # ⭐ THE CARET FOLLOWS THE FACE: each arm uses its own draw's geometry, and nothing else.
     #   `font == 0` — the kashi cell: origin `x + 3`, 9 px per CHARACTER (`dh_text_char_index`, so a
-    #                 multi-byte character is one cell), 16 rows centred in the box. Verbatim from
-    #                 0.9.7; this is the path everything ships with and its pixels did not move.
-    #   `font != 0` — the scalable run: origin `x + 2`, then `dh_text_advance` summed over the
-    #                 CHARACTERS in the first `cbytes` bytes of the text, decoded exactly as the draw
-    #                 decodes them (0.10.4; through 0.10.3 both walked BYTES, so a 2-byte sequence was
-    #                 two `.notdef` advances in each — consistent, and wrong by one glyph for every
-    #                 non-ASCII character). The height is the em box the draw
-    #                 scales to (`scale` is `h` / unitsPerEm; the baseline sits at `y + h - 2`), inset by
-    #                 the box's own border rows: `y + 1` to `y + h - 1`, so h - 2 px. `dh_text_advance`
-    #                 allocates nothing (rekha 0.3.10 asserts it), so the caret needs no hook.
+    #                 multi-byte character is one cell), 16 rows centred in the box.
+    #   `font != 0` — the scalable run: origin `x + 2`, then `dh_text_advance` at the label's em, summed
+    #                 over the CHARACTERS in the first `cbytes` bytes of the text, decoded exactly as
+    #                 the draw decodes them. Its rows are the em box, kept off the box's own border
+    #                 rows when the em fills it. `dh_text_advance` allocates nothing (rekha 0.3.10
+    #                 asserts it), so the caret needs no hook.
     if (dh_widget_kind(wgt) == TEXTINPUT) {
         if (dh_focus_get() == wgt) {
             var cbytes = dh_text_caret(wgt);
@@ -671,9 +677,13 @@ fn dh_draw_widget_ink(sds, wgt, font, clx, cly, clw, clh, ink, forced): i64 {
                 while (cb < cbytes) {
                     cb = cb + dh_text_decode(text, cb, &ccv);
                     var ccp = load64(&ccv);
-                    if (ccp >= 0) { cx3 = cx3 + dh_text_advance(font, ccp, h); }
+                    if (ccp >= 0) { cx3 = cx3 + dh_text_advance(font, ccp, tem); }
                 }
-                dh_fill_rect_clip(sds, cx3, y + 1, 1, h - 2, dh_theme_ink(), clx, cly, clw, clh);
+                var cy3 = ty;
+                if (cy3 < y + 1) { cy3 = y + 1; }
+                var cend = ty + tem;
+                if (cend > y + h - 1) { cend = y + h - 1; }
+                dh_fill_rect_clip(sds, cx3, cy3, 1, cend - cy3, dh_theme_ink(), clx, cly, clw, clh);
             }
         }
     }
@@ -841,6 +851,45 @@ fn dh_draw_list_selection(sds, wgt, clx, cly, clw, clh): i64 {
     return dh_fill_rect_clip(sds, rx, ry, rw, rh, col, clx, cly, clw, clh);
 }
 
+# The render target for a `w`x`h` frame: the one `surf` already owns when its buffer can hold the frame,
+# re-pointed at that extent, otherwise a larger one. Returns 0 on an extent sadish refuses or on OOM,
+# and leaves any existing target as it was.
+# ⛔ THE EDGES ARE BOUNDED FIRST, BEFORE THE ROOM IS CONSULTED. `dh_surface_resize` accepts any positive
+# pair, so `w * h` can wrap: 2^35 x 2^29 reads as an area of 0, fits any room, and would be handed a
+# stride of 2^37 over a buffer of a few KB. `sd_surface_new` enforces these bounds, and reuse can skip
+# it. Past them the product cannot wrap, and an area too large for sadish still reaches it and is refused.
+# ⚠ THE HEADER IS REWRITTEN WITH `stride = w * 4`, NOT LEFT WIDE. A consumer presents the frame as
+# `w * h * 4` contiguous bytes, so a shrunk target must be packed, not a window onto the old rows.
+# `sd_clear` fills exactly `w` x `h`, so nothing of a previous, larger frame can show.
+# ⚠ GROWTH DOUBLES, so a drag that creeps larger re-allocates a logarithmic number of times; the sum of
+# every buffer ever abandoned stays under the size of the last one. A jump past double is exact, and
+# so is the first frame, so a window that never changes size pays what it always did.
+# ⚠ THE DOUBLED REQUEST MAY NOT REFUSE WHAT THE EXACT ONE WOULD HAVE MET: past `SD_PIXELS_MAX`, or with
+# the heap nearly gone, the frame is still drawn, and the room recorded is what was really obtained.
+fn _dh_surface_target(surf, w, h): i64 {
+    if (w > SD_DIM_MAX) { return 0; }
+    if (h > SD_DIM_MAX) { return 0; }
+    var area = w * h;
+    var sds = load64(surf + DH_S_SDS);
+    var room = load64(surf + DH_S_ROOM);
+    if (area > room) {
+        var want = room * 2;
+        if (want < area) { want = area; }
+        sds = sd_surface_new(want, 1);
+        if (sds == 0) {
+            want = area;
+            sds = sd_surface_new(want, 1);
+        }
+        if (sds == 0) { return 0; }
+        store64(surf + DH_S_SDS, sds);
+        store64(surf + DH_S_ROOM, want);
+    }
+    store64(sds + SD_SURFACE_WIDTH_OFFSET, w);
+    store64(sds + SD_SURFACE_HEIGHT_OFFSET, h);
+    store64(sds + SD_SURFACE_STRIDE_OFFSET, w * 4);
+    return sds;
+}
+
 # @public — render `surf`'s widget tree into a sadish SdSurface and return it (BGRA pixels; the
 # caller can present/PPM it). `font` may be 0. Returns 0 on a bad surface or on OOM.
 #
@@ -858,35 +907,15 @@ fn dh_draw_list_selection(sds, wgt, clx, cly, clw, clh): i64 {
 # 0.9.13's fix was **81 % of the whole frame cost**. An immediate-mode toolkit that cannot repaint
 # without leaking a screenful cannot host an animation, a progress bar or a clock.
 #
-# ⭐ THE DIMENSION CHECK IS LIVE AS OF 0.9.17, AND IT WAS WRITTEN BEFORE ANYTHING COULD REACH IT.
-# Through 0.9.14–0.9.16 there was no `dh_surface_resize`, so `w`/`h` could not change on a live
-# DhSurface and this branch was **unreachable** — deleting it did not fail `draw_test`, which was
-# measured and said out loud rather than glossed. It was kept because `WINDOW_CONFIGURE` (0.9.12)
-# exists precisely so clients can resize, and whoever added that entry point would otherwise have had
-# to remember to invalidate this cache. `dh_surface_resize` landed, the branch became reachable, and
-# `draw_test` S) now pins it: deleting these four lines fails three checks.
-# ⇒ Correct by construction beat correct by "nothing calls resize yet", and the bill came due in three
-# releases rather than never.
-# ⚠ On a miss the previous target is ABANDONED, not freed — there is nothing to free it with. A
-# resize therefore costs one screenful, once, which is the right trade against leaking one per frame.
+# ⛔⛔ A SIZE CHANGE RE-USES THE BUFFER (0.12.0). Until 0.12.0 any change of extent abandoned the target
+# and allocated a new one, and there is no `free`. MEASURED, a drag through 500 sizes from 400x300 to
+# 900x700: 683,850,400 B retained on 0.11.1, 6,720,096 B now. ⇒ See `_dh_surface_target`.
 fn dh_surface_render(surf, font): i64 {
     if (surf == 0) { return 0; }
     var w = dh_surface_width(surf);
     var h = dh_surface_height(surf);
-    var sds = load64(surf + DH_S_SDS);
-    if (sds != 0) {
-        if (sd_surface_width(sds) != w) { sds = 0; }
-    }
-    if (sds != 0) {
-        if (sd_surface_height(sds) != h) { sds = 0; }
-    }
-    if (sds == 0) {
-        sds = sd_surface_new(w, h);
-        # ⚠ GUARD ADDED 0.9.14. The old body passed `sd_surface_new`'s result straight into
-        # `sd_clear` without checking it, so an OOM here dereferenced 0 instead of returning it.
-        if (sds == 0) { return 0; }
-        store64(surf + DH_S_SDS, sds);
-    }
+    var sds = _dh_surface_target(surf, w, h);
+    if (sds == 0) { return 0; }
     sd_clear(sds, dh_theme_bg());          # the active rupa theme's desktop void
     # ⭐ `sd_clear` fills EVERY pixel of the surface (`sd_fill_rect(s, 0, 0, w, h, …)`), which is what
     # makes reuse pixel-identical to a fresh allocation: no residue from the previous frame can

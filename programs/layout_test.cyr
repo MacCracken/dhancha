@@ -252,6 +252,66 @@ fn main(): i64 {
     check(dh_widget_h(rfx), 100);
     check(dh_widget_h(cfx), 100);      # child fits inside the parent (no spill)
 
+    # ---- ⭐ APPEND KEEPS ORDER AND DOES NOT WALK (0.12.0) ------------------------------------------
+    var tp = dh_widget_new(BOX);
+    check(dh_widget_last_child(tp), 0);
+    var ta = dh_widget_new(BOX);
+    var tb = dh_widget_new(BOX);
+    var tc = dh_widget_new(BOX);
+    dh_widget_add_child(tp, ta);
+    check(dh_widget_first_child(tp), ta);
+    check(dh_widget_last_child(tp), ta);
+    dh_widget_add_child(tp, tb);
+    dh_widget_add_child(tp, tc);
+    check(dh_widget_first_child(tp), ta);
+    check(dh_widget_next_sibling(ta), tb);
+    check(dh_widget_next_sibling(tb), tc);
+    check(dh_widget_next_sibling(tc), 0);
+    check(dh_widget_last_child(tp), tc);
+    check(dh_widget_parent(tc), tp);
+    # ⛔ THE PROOF THAT NOTHING WALKS: cut the chain after `ta`. A walk would end at `ta` and link there.
+    store64(ta + DH_W_NEXT_SIBLING, 0);
+    var td = dh_widget_new(BOX);
+    dh_widget_add_child(tp, td);
+    check(dh_widget_next_sibling(tc), td);
+    check(dh_widget_next_sibling(ta), 0);
+    # A long list arrives whole, in order.
+    var tl = dh_widget_new(BOX);
+    var tn = 0;
+    var tlast = 0;
+    while (tn < 20000) {
+        tlast = dh_widget_new(BOX);
+        dh_widget_set_pref(tlast, tn + 1, 1);
+        dh_widget_add_child(tl, tlast);
+        tn = tn + 1;
+    }
+    check(dh_widget_last_child(tl), tlast);
+    var tw = dh_widget_first_child(tl);
+    var tseen = 0;
+    var tbad = 0;
+    while (tw != 0) {
+        tseen = tseen + 1;
+        if (dh_widget_pref_w(tw) != tseen) { tbad = tbad + 1; }
+        tw = dh_widget_next_sibling(tw);
+    }
+    check(tseen, 20000);
+    check(tbad, 0);
+    # ⛔ A WIDGET ON A RECYCLED ARENA HAS NO TAIL: `arena_reset` does not scrub, so the next frame's
+    # root lands on the bytes of this one's, and an unseeded tail would link its first child to itself.
+    var fa = arena_new(65536);
+    dh_frame_arena_set(fa);
+    dh_frame_begin();
+    var fr1 = dh_widget_new(BOX);
+    dh_widget_add_child(fr1, dh_widget_new(BOX));
+    dh_frame_begin();
+    var fr2 = dh_widget_new(BOX);
+    var fc2 = dh_widget_new(BOX);
+    check(fr2, fr1);                                 # really the same bytes
+    dh_widget_add_child(fr2, fc2);
+    check(dh_widget_first_child(fr2), fc2);
+    check(dh_widget_next_sibling(fc2), 0);
+    dh_frame_arena_set(0);
+
     if (g_fails == 0) {
         var ok = "layout_test: PASS (box stacking, padding, gap, flex, align, measure, fit)\n";
         syscall(1, 1, ok, strlen(ok));

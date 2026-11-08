@@ -5,6 +5,74 @@ All notable changes to dhancha are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.12.0] - 2026-11-08 — what crab's audit found in the toolkit
+
+crab 0.11.2's P(-1) audit traced four of its findings into this repo: a permanent screenful for every
+window size, 56 B for every input event, an append that walked the child list, and a label drawn at a
+different size from the one it was measured at. All four are fixed here. It is a minor release because
+two contracts change, and both are listed first.
+
+### Changed — read these if you consume dhancha
+
+**A polled event is valid until the next poll.** `dh_setu_poll_event` and `dh_setu_read_event` (and so
+`dh_client_poll_event` and `dh_client_next_event`) now return one event, re-used. An event kept past
+the next poll must go through the new `dh_event_copy`. crab uses each event at once, and puka calls
+none of these. `dh_emit` and `dh_emit_drag` still allocate their own, because propagation can nest.
+
+**A widget's text draws at 16 px, or at its box height in a box shorter than that.** Through 0.11.1
+the scalable arm took the em from the box height, so a label's width was a side effect of layout. A
+consumer that measured at 16 and laid out a 26 px row had every string drawn 1.6x wider than it had
+just measured, and past the cut it had made to fit. `dh_text_em_for(h)` now decides, the run is centred
+on that em, and the caret takes its advance and its rows from it. The bitmap arm's pixels do not move,
+and a test pins that. `dh_draw_text` and `dh_draw_text_ink` still take `h` as the em, so a caller that
+wants another size draws the run itself: a taller box is no longer a way to get larger text.
+
+`DhSurface` is 56 bytes and `DH_WIDGET_SIZE` 328. Both new fields are appended, so no offset moved.
+
+### Fixed
+
+- **A size change re-uses the render target** (`_dh_surface_target`, `src/surface.cyr`). Any new extent
+  used to abandon the target and allocate another, in a heap with no `free`. The buffer now stays when
+  the frame fits and is re-pointed with `stride = w * 4`, so a shrunk frame is still packed. Growth
+  doubles. The first frame is exact, so a window that never changes size pays what it always did.
+  ⛔ `dh_surface_resize` accepts any positive pair, so `w * h` can wrap: the edges are bounded before
+  the room is consulted, or 2^35 x 2^29 would read as an area of 0 and fit.
+- **A polled event no longer allocates** after the first. Out of memory for that first one now drops
+  the frame instead of writing through 0.
+- **`dh_widget_add_child` no longer walks the list.** A tail pointer makes each append constant.
+
+### Added
+
+`dh_event_copy`, `dh_text_em_for`, `DH_TEXT_EM`.
+
+### Measured
+
+| | 0.11.1 | 0.12.0 |
+|---|---:|---:|
+| retained by a drag through 500 sizes, 400x300 to 900x700 | 683,850,400 B | **6,720,096 B** |
+| one polled input event, after the first | 56 B | **0 B** |
+| 50,000 appends to one parent | 2.29 s | **0.004 s** |
+| crab, Liberation Sans: pixel columns of a name past its own cell | 69 | **0** |
+
+Every fix was removed in turn and the suites went red, 29 mutants in all, including the wrap bounds, the
+room recorded after an out-of-memory fallback, and the tail seed on a recycled arena. One further mutant
+survives by being equivalent: seeding `DH_S_ROOM`, since `alloc` always returns zeroed memory. The seed
+stays with its sibling fields.
+
+### Consumer proof
+
+Built against this tree through a local `path` override, each on its own pin (cyrius 6.7.18).
+
+| consumer | Linux | agnos | tests |
+|---|---:|---:|---|
+| crab | 390,400 B | 663,336 B | both suites and `render_test` (55) pass; render dump byte-identical to 0.11.1 |
+| puka | 1,436,264 B | 1,423,056 B | all pass |
+
+Every crab QEMU harness ran on that exact agnos binary, with the same verdict on each as crab 0.11.2 on
+dhancha 0.11.1: 10 pass, including `face` on the kernel's real font. `door` and `drop` arm 2 stay
+UNMEASURED, as they were. ⚠ `resize` is PARTIAL as before: QEMU cannot back a larger extent, so it proves
+the refusal path only. The reuse of a target through a real grow is proven on the host, not on the target.
+
 ## [0.11.1] - 2026-11-07 — cyrius 6.7.18, and every dep on its latest tag
 
 The toolchain moves 6.7.9 → 6.7.18 and all five deps move to their latest tags, each of which is that

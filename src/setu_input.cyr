@@ -27,7 +27,8 @@ fn dh_setu_map_input(m): i64 {
     elif (k == SETU_CLOSE)          { dk = WINDOW_CLOSE; a = 0; b = 0; }
     elif (k == SETU_CONFIGURE)      { dk = WINDOW_CONFIGURE; a = setu_msg_arg(m, 1); b = setu_msg_arg(m, 2); }
     else { return 0; }
-    var ev = dh_event_new(dk);
+    var ev = dh_event_scratch(dk);          # 0.12.0 — one per process; valid until the next poll
+    if (ev == 0) { return 0; }
     store64(ev + DH_E_A, a);
     store64(ev + DH_E_B, b);
     return ev;

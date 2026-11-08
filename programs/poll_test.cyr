@@ -109,11 +109,10 @@ fn main(): i64 {
     seed(d, setu_input_key(7, 97, 1));
     seed(d, setu_input_key(7, 98, 1));
     seed(d, setu_input_key(7, 99, 0));
-    var e1 = dh_setu_poll_event(d);
-    var e2 = dh_setu_poll_event(d);
+    # ⚠ READ BEFORE THE NEXT POLL: since 0.12.0 a polled event lasts only that long.
+    check(ev_a(dh_setu_poll_event(d)), 97);
+    check(ev_a(dh_setu_poll_event(d)), 98);
     var e3 = dh_setu_poll_event(d);
-    check(ev_a(e1), 97);
-    check(ev_a(e2), 98);
     check(ev_a(e3), 99);
     check(ev_b(e3), 0);                       # ⚠ the RELEASE — the event a dropped tail loses
     check(dh_setu_poll_event(d), 0);                # drained
@@ -204,15 +203,61 @@ fn main(): i64 {
     check(alloc_used() - p0, 0);                 # 200 idle polls, zero bytes
     check(not_idle, 0);                          # ...and they WERE idle, not the error path
 
-    # ⚠ NON-VACUITY: the same loop against a client that DOES have frames must still cost something,
-    # or a zero above would only prove the poll did nothing. An event is a real `dh_event_new`.
+    # ---- ⭐⭐ NOR DOES A BUSY ONE (0.12.0) -----------------------------------------------------------
+    # 56 B per input frame, permanently, was the last allocation on the input path.
     var busy = mk_client();
     seed(busy, setu_input_key(7, 65, 1));
-    dh_setu_poll_event(busy);                    # warm the inbuf
-    seed(busy, setu_input_key(7, 66, 1));
-    var b0 = alloc_used();
-    check(ev_kind(dh_setu_poll_event(busy)), KEY);
-    check(alloc_used() - b0 > 0, 1);             # an event still allocates — only the IDLE path is free
+    check(ev_kind(dh_setu_poll_event(busy)), KEY);    # warm the inbuf and the one event
+    var busyspent = 0;
+    var bi = 0;
+    while (bi < 1000) {
+        seed(busy, setu_input_key(7, 66, 1));
+        var b0 = alloc_used();
+        var bev = dh_setu_poll_event(busy);
+        busyspent = busyspent + (alloc_used() - b0);
+        check(ev_a(bev), 66);                    # ...and the frame really was delivered
+        bi = bi + 1;
+    }
+    check(busyspent, 0);
+    # ⚠ NON-VACUITY: the meter sees an event that really is allocated.
+    var bm = alloc_used();
+    dh_event_new(KEY);
+    check(alloc_used() - bm > 0, 1);
+
+    # ⛔ THE CONTRACT THAT PAYS FOR IT: an event lasts until the next poll, and a copy lasts.
+    var kp = mk_client();
+    seed(kp, setu_input_key(7, 10, 1));
+    seed(kp, setu_input_key(7, 20, 1));
+    var kept = dh_event_copy(dh_setu_poll_event(kp));
+    check(ev_a(dh_setu_poll_event(kp)), 20);
+    check(ev_a(kept), 10);
+    check(dh_event_copy(0), 0);
+
+    # ⛔ THE ONE EVENT STARTS CLEAN EACH TIME: a handler's `consumed` may not reach the next frame.
+    seed(kp, setu_input_key(7, 40, 1));
+    var cev = dh_setu_poll_event(kp);
+    store64(cev + DH_E_CONSUMED, 1);
+    store64(cev + DH_E_TARGET, 99);
+    seed(kp, setu_input_key(7, 41, 1));
+    var cev2 = dh_setu_poll_event(kp);
+    check(cev2, cev);
+    check(load64(cev2 + DH_E_CONSUMED), 0);
+    check(load64(cev2 + DH_E_TARGET), 0);
+
+    # ⚠ OUT OF MEMORY ON THE FIRST EVENT: the frame is dropped, not written through 0, and the next is read.
+    var oc = mk_client();
+    seed(oc, setu_input_key(7, 30, 1));
+    check(dh_setu_poll_event(oc) != 0, 1);                # warm the inbuf: it allocates too
+    seed(oc, setu_input_key(7, 31, 1));
+    var oev = _dh_ev_scratch;
+    _dh_ev_scratch = 0;
+    var oamax = ALLOC_MAX;
+    ALLOC_MAX = 16;
+    check(dh_setu_poll_event(oc), 0);
+    ALLOC_MAX = oamax;
+    _dh_ev_scratch = oev;
+    seed(oc, setu_input_key(7, 32, 1));
+    check(ev_a(dh_setu_poll_event(oc)), 32);
 
     # ⚠ A CONFIGURE followed by a CLOSE through the SHARED scratch — the sequence that would expose
     # stale args if anything read past `argc`.

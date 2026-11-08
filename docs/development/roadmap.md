@@ -1,6 +1,6 @@
 # dhancha — Roadmap
 
-> **Last updated:** 2026-11-07, at **0.11.1**.
+> **Last updated:** 2026-11-08, at **0.12.0**.
 >
 > This file tracks **forward-facing work only**. A finished item leaves. What already shipped is in
 > [`CHANGELOG.md`](../../CHANGELOG.md), release by release, with the measurement each claim rests
@@ -20,8 +20,9 @@ rekha + kashi + rupa, the frame arena, and the setu connection — `dh_client_co
 (`src/dh_client.cyr`) over setu's reference client. A consumer (crab) renders a real face with a
 frame costing the global heap **0 B** (0.10.0), a label is one bounded flatten operation (0.10.2),
 every dependency resolves from a published tag with its commit in `cyrius.lock` (0.10.3), the
-draw reads UTF-8 characters, not bytes, in both arms and the caret (0.10.4), and the toolchain and
-all five deps sit on the cyrius 6.7.18 cut (0.11.1).
+draw reads UTF-8 characters, not bytes, in both arms and the caret (0.10.4), the toolchain and all
+five deps sit on the cyrius 6.7.18 cut (0.11.1), and a window resize, a polled input event and a
+child append are each bounded, with a label drawn at the em it is measured at (0.12.0).
 
 The present path is complete end to end, and the hardware half of it is not dhancha's to build:
 `dh_client_present` hands sadish's pixels to `setu_client_present`, which copies them into a

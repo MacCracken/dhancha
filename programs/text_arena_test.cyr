@@ -441,11 +441,11 @@ fn main(): i64 {
     say("B2: the same run again: ", alloc_used() - w1);
     # ⚠ B3. A FIXED ARENA THAT CANNOT HOLD A FRAME SPILLS THE TEXT TO THE GLOBAL HEAP, SILENTLY.
     # `dh_falloc` (widget.cyr) falls back to `alloc()` when the arena refuses — by design, since a 0
-    # from `arena_alloc` faults several layers away — so under `arena_new(65536)` the tree (4,736 B)
+    # from `arena_alloc` faults several layers away — so under `arena_new(65536)` the tree (4,848 B)
     # and the first few paths land on the arena, `arena_used` stops at the capacity, the hook is
     # restored correctly, and everything after the refusal is the pre-0.10.0 cost, every frame, with
     # nothing failing. ⇒ A fixed arena must hold a whole frame (122,328 B for this one under sadish
-    # 0.11.2 — ~1 KB per glyph drawn + 320 B per widget, `DH_WIDGET_SIZE`; it was ~417 KB at ~4.3 KB
+    # 0.11.2 — ~1 KB per glyph drawn + 328 B per widget, `DH_WIDGET_SIZE`; it was ~417 KB at ~4.3 KB
     # per glyph under 0.5.5); `arena_new_growable` chains instead of refusing (0.9.15's advice,
     # restated for text). Both halves measured, so the number is known — and the check is the
     # IDENTITY, not the figure: every request is 8-byte rounded on both sides and lands on exactly
@@ -651,17 +651,10 @@ fn main(): i64 {
     say("F: frame with no arena again: ", alloc_used() - d0);
 
     # ── G) THE CARET FOLLOWS THE FACE ──────
-    # ⛔ UNTIL 0.10.0 THE TEXTINPUT CARET USED THE BITMAP GEOMETRY UNDER EVERY FONT: `x + 3 + chars * 9`,
-    # 16 px tall at `y + (h - 16) / 2`. MEASURED here before the fix, with this face at h = 20: 'AB AB'
-    # with the caret after all five characters drew it at x + 48 (column 78) while the run's pen ends
-    # at x + 2 + 69 = x + 71 (column 101; last glyph ink at x + 67) — 23 px short, in the BLANK
-    # second-'A' cell (pen x + 39 .. x + 51; the triangle rasterises no ink at h = 20) 3 px before the
-    # second 'B' cell and 5 px before its first ink column — and 16 px tall in a 20 px box.
-    # ⚠ 21 was the figure written first: 69 - 48 subtracts an origin-INCLUSIVE offset (48 = 3 + 45)
-    # from an origin-EXCLUSIVE advance sum. Both columns are asserted below, and their difference.
-    # Now (`font != 0`) it is `x + 2 + Σ dh_text_advance` over the first `cbytes` BYTES, from `y + 1`
-    # to `y + h - 1`.
-    # The caret is the ONE column of h - 2 exact-ink rows: the 'B' box is 0.7 em (14 px), 'A' 1.6 px.
+    # `font != 0`: `x + 2 + Σ dh_text_advance` at the label's em, over the characters before the caret,
+    # on the em's rows. This field is 20 px tall, so the em is 16, centred: rows y + 2 .. y + 17, and
+    # this face advances 10 / 16 / 4 for 'A' / 'B' / space.
+    # The caret is the ONE column of 16 exact-ink rows: the 'B' box is 0.7 em (11 px), 'A' about 1 px.
     var fld = dh_text_new(32);
     check(dh_widget_kind(fld), TEXTINPUT);
     dh_widget_set_bounds(fld, 30, 20, 160, 20);
@@ -675,54 +668,50 @@ fn main(): i64 {
     check(dh_text_caret(fld), 5);
     sd_clear(s_car, bg);
     dh_draw_widget(s_car, fld, font, 0, 0, 200, 60);
-    var gcol = ta_find_col(s_car, 0, 200, 20, 20, gink, 18);
-    check(gcol, 30 + 2 + ta_adv_sum(font, abab, 5, 20));
-    check(gcol, 101);                           # the literal: x 30 + 2 + (12 + 20 + 5 + 12 + 20)
-    check(sd_surface_pixel_at(s_car, gcol, 20) != gink, 1);    # row y: the top border row is clear
-    check(sd_surface_pixel_at(s_car, gcol, 21), gink);         # y + 1: the caret's first row
-    check(sd_surface_pixel_at(s_car, gcol, 38), gink);         # y + h - 2: its last
-    check(sd_surface_pixel_at(s_car, gcol, 39) != gink, 1);    # y + h - 1: the bottom border row
+    var gcol = ta_find_col(s_car, 0, 200, 20, 20, gink, 16);
+    check(gcol, 30 + 2 + ta_adv_sum(font, abab, 5, 16));
+    check(gcol, 88);                            # the literal: x 30 + 2 + (10 + 16 + 4 + 10 + 16)
+    check(sd_surface_pixel_at(s_car, gcol, 21) != gink, 1);    # above the em
+    check(sd_surface_pixel_at(s_car, gcol, 22), gink);         # the em's first row
+    check(sd_surface_pixel_at(s_car, gcol, 37), gink);         # its last
+    check(sd_surface_pixel_at(s_car, gcol, 38) != gink, 1);    # below the em
     say("G: caret column, 'AB AB' at byte 5, h 20, face: ", gcol);
-    # The pre-0.10.0 column, 78, carries NO ink under the face (the second-'A' cell); the last glyph
-    # ink is the second 'B' box's right edge at x + 67 (14 rows), and x + 68 .. x + 70 are clear.
-    check(ta_col_ink(s_car, 78, 20, 20, gink), 0);
-    check(ta_col_ink(s_car, 30 + 67, 20, 20, gink), 14);
-    check(ta_col_ink(s_car, 30 + 68, 20, 20, gink), 0);
-    # Space counts: '.notdef' advances 250 units (5 px); a caret that skipped it would sit at 96.
-    check(dh_text_advance(font, 32, 20), 5);
+    # The second 'B' cell starts at x + 42 and its box ends 0.9 em in: the last solid ink column is
+    # x + 55, and the caret stands clear of it. Under the bitmap geometry it would sit inside the glyph.
+    check(ta_col_ink(s_car, 30 + 55, 20, 20, gink), 11);
+    check(ta_col_ink(s_car, 30 + 57, 20, 20, gink), 0);
+    # Space counts: '.notdef' advances 250 units (4 px); a caret that skipped it would sit at 84.
+    check(dh_text_advance(font, 32, 16), 4);
     # caret at 0: the run origin, x + 2.
     dh_text_home(fld);
     sd_clear(s_car, bg);
     dh_draw_widget(s_car, fld, font, 0, 0, 200, 60);
-    check(ta_find_col(s_car, 0, 200, 20, 20, gink, 18), 32);
+    check(ta_find_col(s_car, 0, 200, 20, 20, gink, 16), 32);
     # a longer text, caret at its end (byte 8) and then moved back to byte 5 — mid-text, same x.
     var ababab = "AB AB AB";
     check(dh_text_set(fld, ababab), 8);
     sd_clear(s_car, bg);
     dh_draw_widget(s_car, fld, font, 0, 0, 200, 60);
-    check(ta_find_col(s_car, 0, 200, 20, 20, gink, 18), 30 + 2 + ta_adv_sum(font, ababab, 8, 20));
-    check(30 + 2 + ta_adv_sum(font, ababab, 8, 20), 138);
+    check(ta_find_col(s_car, 0, 200, 20, 20, gink, 16), 30 + 2 + ta_adv_sum(font, ababab, 8, 16));
+    check(30 + 2 + ta_adv_sum(font, ababab, 8, 16), 118);
     check(dh_text_caret_move(fld, 0 - 3), 5);
     sd_clear(s_car, bg);
     dh_draw_widget(s_car, fld, font, 0, 0, 200, 60);
-    check(ta_find_col(s_car, 0, 200, 20, 20, gink, 18), 101);
-    # ⭐ CHARACTERS, NOT BYTES (0.10.4). 'AB' + the 2-byte sequence C3 84 is THREE characters, and the
-    # draw, the caret and `dh_text_char_index` now agree on that: U+00C4 is one glyph — `.notdef` in
-    # this face, 5 px — so the run ends at 2 + 12 + 20 + 5 and the caret sits there. Through 0.10.3
-    # both the draw and the caret walked BYTES, spending two `.notdef`s (42, the figure this check
-    # carried) — consistent with each other and one glyph wrong for every non-ASCII character;
-    # `ta_adv_sum` is still that byte-wise sum, kept here as the measure of what moved.
+    check(ta_find_col(s_car, 0, 200, 20, 20, gink, 16), 88);
+    # ⭐ CHARACTERS, NOT BYTES. 'AB' + the 2-byte sequence C3 84 is THREE characters, and the draw, the
+    # caret and `dh_text_char_index` agree on that: U+00C4 is one glyph — `.notdef` in this face, 4 px.
+    # `ta_adv_sum` is the byte-wise sum, here as the measure of what a byte walk would have spent.
     var u8 = alloc(8);
     store8(u8, 65); store8(u8 + 1, 66); store8(u8 + 2, 0xC3); store8(u8 + 3, 0x84); store8(u8 + 4, 0);
     check(dh_text_set(fld, u8), 4);
     check(dh_text_char_index(fld, 4), 3);
-    check(ta_adv_sum(font, u8, 4, 20), 42);      # the byte-wise sum: what 0.10.3 drew AND caret-ed
-    check(dh_text_advance(font, 0xC4, 20), 5);   # the character: one `.notdef`
+    check(ta_adv_sum(font, u8, 4, 16), 34);      # the byte-wise sum
+    check(dh_text_advance(font, 0xC4, 16), 4);   # the character: one `.notdef`
     sd_clear(s_car, bg);
     dh_draw_widget(s_car, fld, font, 0, 0, 200, 60);
-    var ucol = ta_find_col(s_car, 0, 200, 20, 20, gink, 18);
-    check(ucol, 30 + 2 + 12 + 20 + 5);
-    check(ucol, 69);                             # 0.10.3: 74
+    var ucol = ta_find_col(s_car, 0, 200, 20, 20, gink, 16);
+    check(ucol, 30 + 2 + 10 + 16 + 4);
+    check(ucol, 62);                             # a byte walk: 66
     say("G: caret column after 'AB' + C3 84 (4 bytes, 3 characters): ", ucol);
     # ⚠ THE BITMAP ARM IS UNCHANGED: `font = 0`, 'AB AB' at byte 5 → x + 3 + 5 * 9 = 78, 16 rows from
     # y + 2; at byte 0 → x + 3. The path everything ships with did not move a pixel.
@@ -731,7 +720,6 @@ fn main(): i64 {
     dh_draw_widget(s_car, fld, 0, 0, 0, 200, 60);
     var bcol = ta_find_col(s_car, 0, 200, 20, 20, gink, 16);
     check(bcol, 78);
-    check(gcol - bcol, 23);                     # the drift the comment above states, measured
     check(sd_surface_pixel_at(s_car, bcol, 21) != gink, 1);
     check(sd_surface_pixel_at(s_car, bcol, 22), gink);
     check(sd_surface_pixel_at(s_car, bcol, 37), gink);
@@ -741,6 +729,59 @@ fn main(): i64 {
     dh_draw_widget(s_car, fld, 0, 0, 0, 200, 60);
     check(ta_find_col(s_car, 0, 200, 20, 20, gink, 16), 33);
     say("G: caret column, 'AB AB' at byte 5, font 0 (bitmap, unchanged): ", bcol);
+
+    # ── H) A LABEL DRAWS AT THE EM IT WAS MEASURED AT (0.12.0) ──────
+    check(dh_text_em_for(26), 16);
+    check(dh_text_em_for(16), 16);
+    check(dh_text_em_for(15), 15);
+    # 'BB' in a 26 px row. Measured at the em it is 32 wide, and the em box is rows 15 .. 30.
+    # ⛔ At the box height it was 52 wide, with ink out to x + 49: past the cut a consumer measured for.
+    var hs = sd_surface_new(200, 60);
+    var hl = dh_widget_new(LABEL);
+    dh_widget_set_bg(hl, 0 - 1);
+    dh_widget_set_text(hl, "BB");
+    dh_widget_set_bounds(hl, 10, 10, 180, 26);
+    sd_clear(hs, bg);
+    dh_draw_widget(hs, hl, font, 0, 0, 200, 60);
+    var hw = dh_text_advance(font, 0x42, 16) * 2;
+    check(hw, 32);
+    check(count_nonbg_in(hs, 10 + 2 + hw, 0, 200 - (10 + 2 + hw), 60, bg), 0);
+    check(count_nonbg_in(hs, 10, 0, 2 + hw, 60, bg) > 0, 1);     # non-vacuity: the run did draw
+    check(count_nonbg_in(hs, 0, 0, 200, 15, bg), 0);             # nothing above the em...
+    check(count_nonbg_in(hs, 0, 31, 200, 29, bg), 0);            # ...nor below it
+    # The caret stands on those rows, at that width.
+    var hf = dh_text_new(16);
+    dh_widget_set_bounds(hf, 10, 10, 100, 26);
+    dh_focus_set(hf);
+    check(dh_text_set(hf, "BB"), 2);
+    sd_clear(hs, bg);
+    dh_draw_widget(hs, hf, font, 0, 0, 200, 60);
+    var hc = ta_find_col(hs, 0, 200, 10, 26, gink, 16);
+    check(hc, 10 + 2 + hw);
+    check(sd_surface_pixel_at(hs, hc, 14) != gink, 1);
+    check(sd_surface_pixel_at(hs, hc, 15), gink);
+    check(sd_surface_pixel_at(hs, hc, 30), gink);
+    check(sd_surface_pixel_at(hs, hc, 31) != gink, 1);
+    # ⚠ A BOX SHORTER THAN THE EM: the em is the box, and the caret stays off its border rows.
+    dh_widget_set_bounds(hf, 10, 10, 100, 12);
+    sd_clear(hs, bg);
+    dh_draw_widget(hs, hf, font, 0, 0, 200, 60);
+    var hc2 = ta_find_col(hs, 0, 200, 10, 12, gink, 10);
+    check(hc2, 10 + 2 + dh_text_advance(font, 0x42, 12) * 2);
+    check(sd_surface_pixel_at(hs, hc2, 10) != gink, 1);
+    check(sd_surface_pixel_at(hs, hc2, 11), gink);
+    check(sd_surface_pixel_at(hs, hc2, 20), gink);
+    check(sd_surface_pixel_at(hs, hc2, 21) != gink, 1);
+    dh_focus_set(0);
+    # ⚠ THE BITMAP ARM DID NOT MOVE: a widget draws what the public call at the box's own `h` draws.
+    var hb1 = sd_surface_new(200, 60);
+    var hb2 = sd_surface_new(200, 60);
+    sd_clear(hb1, bg);
+    sd_clear(hb2, bg);
+    dh_draw_text_ink(hb1, 0, "BB", 10, 10, 26, 0, 0, 200, 60, gink);
+    dh_draw_widget(hb2, hl, 0, 0, 0, 200, 60);
+    check(count_nonbg(hb1, 200, 60, bg) > 0, 1);
+    check(count_diff(hb1, hb2, 200, 60), 0);
 
     say("text_arena_test: checks run: ", g_n);
     if (g_fails == 0) {

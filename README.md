@@ -1,6 +1,6 @@
 # dhancha
 
-Version: 0.11.1
+Version: 0.12.0
 
 **dhancha** (ढाँचा — Hindi/Sanskrit: *framework / structure / scaffold*)
 is a pure-Cyrius **client-side widget toolkit / desktop app framework**

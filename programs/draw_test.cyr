@@ -101,11 +101,7 @@ fn main(): i64 {
     check(sd_surface_pixel_at(sds2, 20, 35), 16711680);  # surf2 holds the alt frame...
     check(sd_surface_pixel_at(sds, 20, 35), 13158600);   # ...and surf still holds its own
 
-    # ── S) RESIZE (0.9.17) — and it makes 0.9.14's dormant branch live ─────────────
-    # ⛔ 0.9.14 cached the render target on the DhSurface and compared its dimensions before reusing
-    # it. That comparison was documented as UNREACHABLE and measured as such — deleting it did not
-    # fail this file, because `w`/`h` could not change on a live surface. `dh_surface_resize` is the
-    # entry point that ⚠ said would make it live. These are the checks that note promised.
+    # ── S) RESIZE — the target follows the surface to its new extent; T) is what that costs ────
     var rs2 = dh_surface_new(40, 40);
     dh_surface_set_root(rs2, root);
     dh_layout_apply(root, 40, 40);
@@ -152,6 +148,123 @@ fn main(): i64 {
     check(dh_surface_resize(rs2, 80, 60), DHANCHA_OK);
     check(dh_surface_pixels(rs2), same_px);
     check(dh_surface_render(rs2, 0), after);
+
+    # ── T) A SIZE CHANGE RE-USES THE BUFFER (0.12.0) ─────────────
+    var rt = dh_surface_new(200, 100);
+    var t0 = dh_surface_render(rt, 0);
+    var t0px = sd_surface_pixels(t0);
+    check(sd_surface_stride(t0), 800);
+    # ⭐ A shrink keeps the object and the buffer, and packs the rows.
+    check(dh_surface_resize(rt, 50, 20), DHANCHA_OK);
+    check(dh_surface_render(rt, 0), t0);
+    check(sd_surface_pixels(t0), t0px);
+    check(sd_surface_width(t0), 50);
+    check(sd_surface_height(t0), 20);
+    check(sd_surface_stride(t0), 200);
+    # ...and growing back inside it costs nothing either.
+    var tg0 = alloc_used();
+    check(dh_surface_resize(rt, 200, 100), DHANCHA_OK);
+    check(dh_surface_render(rt, 0), t0);
+    check(alloc_used() - tg0, 0);
+    check(sd_surface_width(t0), 200);
+    check(sd_surface_height(t0), 100);
+    check(sd_surface_stride(t0), 800);
+    # ⭐ THE WIDGETS DRAW AT THE NEW EXTENT: the last pixel of a re-pointed target is reachable.
+    var tr = dh_widget_new(BOX);
+    dh_widget_set_bg(tr, 0x00FF00);
+    dh_widget_set_bounds(tr, 0, 0, 200, 100);
+    dh_surface_set_root(rt, tr);
+    dh_surface_render(rt, 0);
+    var tgreen = sd_surface_pixel_at(t0, 199, 99);
+    check(tgreen != sd_surface_pixel_at(t0, 200, 99), 1);        # off the surface: not the fill
+    # ⛔ NOTHING OF THE LARGER FRAME SHOWS. A consumer presents `w * h * 4` contiguous bytes.
+    dh_surface_set_root(rt, 0);
+    check(dh_surface_resize(rt, 50, 20), DHANCHA_OK);
+    dh_surface_render(rt, 0);
+    var tvoid = load32(t0px);
+    check(tvoid != tgreen, 1);
+    var tdirty = 0;
+    var tk = 0;
+    while (tk < 50 * 20) {
+        if (load32(t0px + tk * 4) != tvoid) { tdirty = tdirty + 1; }
+        tk = tk + 1;
+    }
+    check(tdirty, 0);
+
+    # ⭐⭐ A DRAG THAT GROWS: 500 sizes, 3 re-allocations, under four times the last frame.
+    var dr = dh_surface_new(400, 300);
+    var dt = dh_surface_render(dr, 0);
+    var dg0 = alloc_used();
+    var dswaps = 0;
+    var dwrong = 0;
+    var di = 1;
+    while (di <= 500) {
+        var dw = 400 + di;
+        var dh2 = 300 + (di * 4) / 5;
+        dh_surface_resize(dr, dw, dh2);
+        var dn = dh_surface_render(dr, 0);
+        if (dn != dt) { dswaps = dswaps + 1; dt = dn; }
+        if (sd_surface_width(dn) != dw) { dwrong = dwrong + 1; }
+        if (sd_surface_height(dn) != dh2) { dwrong = dwrong + 1; }
+        if (sd_surface_stride(dn) != dw * 4) { dwrong = dwrong + 1; }
+        di = di + 1;
+    }
+    check(dwrong, 0);
+    check(dswaps, 3);
+    check(alloc_used() - dg0 < 4 * 900 * 700 * 4, 1);
+    # ⭐ AND A DRAG BACK AND FORTH, once the largest size has been seen, costs nothing at all.
+    var dg1 = alloc_used();
+    di = 0;
+    while (di < 1000) {
+        dh_surface_resize(dr, 300 + (di % 5) * 100, 200 + (di % 7) * 60);
+        check(dh_surface_render(dr, 0), dt);
+        di = di + 1;
+    }
+    check(alloc_used() - dg1, 0);
+
+    # ⛔ AN EXTENT THAT WRAPS IS REFUSED, NOT RE-POINTED: 2^35 x 2^29 is an area of 0.
+    var wr = dh_surface_new(10, 10);
+    var wt = dh_surface_render(wr, 0);
+    check(dh_surface_resize(wr, 1 << 35, 1 << 29), DHANCHA_OK);
+    check(dh_surface_render(wr, 0), 0);
+    check(sd_surface_width(wt), 10);
+    check(dh_surface_resize(wr, 1 << 29, 1 << 35), DHANCHA_OK);
+    check(dh_surface_render(wr, 0), 0);
+    check(sd_surface_height(wt), 10);
+    check(dh_surface_resize(wr, 1 << 15, 1 << 15), DHANCHA_OK);  # too large a product, and no wrap
+    check(dh_surface_render(wr, 0), 0);
+    check(sd_surface_width(wt), 10);
+    check(dh_surface_resize(wr, 10, 10), DHANCHA_OK);
+    check(dh_surface_render(wr, 0), wt);
+
+    # ⚠ DOUBLING MAY NOT REFUSE WHAT THE EXACT SIZE WOULD MEET.
+    var fb = dh_surface_new(500, 200);                           # 100,000 px
+    var ft = dh_surface_render(fb, 0);
+    var amax = ALLOC_MAX;
+    ALLOC_MAX = 500000;                                          # room for 105,000 px, not 200,000
+    check(dh_surface_resize(fb, 500, 210), DHANCHA_OK);
+    var fbn = dh_surface_render(fb, 0);
+    ALLOC_MAX = amax;
+    check(fbn != 0, 1);
+    check(fbn != ft, 1);
+    check(sd_surface_height(fbn), 210);
+    # ⛔ AND THE ROOM IS WHAT WAS OBTAINED: 180,000 px does not fit the 105,000 this buffer holds.
+    check(dh_surface_resize(fb, 450, 400), DHANCHA_OK);
+    var fbg = dh_surface_render(fb, 0);
+    check(fbg != 0, 1);
+    check(fbg != fbn, 1);
+
+    # ⚠ OUT OF MEMORY RETURNS 0 AND THE TARGET IT HAD IS STILL GOOD.
+    var oo = dh_surface_new(20, 20);
+    var ot = dh_surface_render(oo, 0);
+    ALLOC_MAX = 64;
+    check(dh_surface_resize(oo, 40, 40), DHANCHA_OK);
+    var oz = dh_surface_render(oo, 0);
+    ALLOC_MAX = amax;
+    check(oz, 0);
+    check(sd_surface_width(ot), 20);
+    check(dh_surface_resize(oo, 20, 20), DHANCHA_OK);
+    check(dh_surface_render(oo, 0), ot);
 
     if (g_fails == 0) {
         var ok = "draw_test: PASS (bg + border render, reused target)\n";

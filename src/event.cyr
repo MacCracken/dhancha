@@ -155,9 +155,7 @@ var _dh_drag_key = 0;
 # The event-loop run flag. dh_run sets it; dh_quit clears it.
 var _dh_running = 0;
 
-# Allocate a DhEvent of `kind` with zeroed payload.
-fn dh_event_new(kind): i64 {
-    var ev = alloc(56);
+fn dh_event_init(ev, kind): i64 {
     store64(ev + DH_E_KIND, kind);
     store64(ev + DH_E_A, 0);
     store64(ev + DH_E_B, 0);
@@ -166,6 +164,37 @@ fn dh_event_new(kind): i64 {
     store64(ev + DH_E_PHASE, 0);
     store64(ev + DH_E_SOURCE, 0);
     return ev;
+}
+
+# Allocate a DhEvent of `kind` with zeroed payload.
+fn dh_event_new(kind): i64 {
+    return dh_event_init(alloc(56), kind);
+}
+
+# ⭐⭐ ONE EVENT FOR THE WIRE (0.12.0) — the same defect `_dh_msg_scratch` closed for messages at 0.9.16.
+# Every input frame cost 56 B of a heap with no free(), for the life of the process, and it was the
+# last allocation left on the input path.
+# ⛔ SO WHAT `dh_setu_poll_event` AND `dh_setu_read_event` RETURN IS VALID ONLY UNTIL THE NEXT ONE. A consumer
+# that keeps an event past its next poll must `dh_event_copy` it first.
+var _dh_ev_scratch = 0;
+
+fn dh_event_scratch(kind): i64 {
+    if (_dh_ev_scratch == 0) {
+        _dh_ev_scratch = alloc(56);
+        if (_dh_ev_scratch == 0) { return 0; }
+    }
+    return dh_event_init(_dh_ev_scratch, kind);
+}
+
+# @public — a copy of `ev` that outlives the next poll. Allocated, so permanent: for an event a consumer
+# queues or keeps, not for every event.
+fn dh_event_copy(ev): i64 {
+    if (ev == 0) { return 0; }
+    var c = alloc(56);
+    if (c == 0) { return 0; }
+    var i = 0;
+    while (i < 56) { store64(c + i, load64(ev + i)); i = i + 8; }
+    return c;
 }
 
 fn dh_event_kind(ev): i64     { return load64(ev + DH_E_KIND); }
